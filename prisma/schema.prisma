@@ -1,0 +1,100 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model FinancialTransaction {
+  id            String   @id @default(cuid())
+  externalSource String?
+  externalId    String?
+  type          String
+  categoryId    String?
+  amountCents   Int
+  currency      String   @default("BRL")
+  occurredAt    DateTime
+  description   String?
+  source        String
+  status        String   @default("pending")
+  createdBy     String?
+  updatedBy     String?
+  changeReason  String?
+  deletedAt     DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([occurredAt])
+  @@index([source])
+  @@index([type])
+  @@index([status])
+  @@index([deletedAt])
+  @@unique([externalSource, externalId])
+}
+
+model TransactionCategory {
+  id        String   @id @default(cuid())
+  name      String
+  direction String
+  color     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ImportBatch {
+  id         String   @id @default(cuid())
+  source     String
+  fileHash   String
+  status     String
+  rowCount   Int      @default(0)
+  errorCount Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([source])
+  @@index([status])
+}
+
+model ReconciliationSnapshot {
+  id          String   @id @default(cuid())
+  startDate   DateTime
+  endDate     DateTime
+  issueCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@index([startDate, endDate])
+}
+
+model WebhookEvent {
+  id           String    @id @default(cuid())
+  eventId      String    @unique
+  source       String
+  topic        String
+  status       String
+  payload      Json?
+  errorMessage String?
+  processedAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([source, status])
+  @@index([processedAt])
+}
+
+model MarketplaceFee {
+  id              String   @id @default(cuid())
+  marketplace     String
+  feeType         String
+  ratePercent     Decimal  @db.Decimal(8, 4)
+  fixedCents      Int      @default(0)
+  currency        String   @default("BRL")
+  effectiveFrom   DateTime
+  effectiveUntil  DateTime?
+  createdBy       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([marketplace, feeType])
+  @@index([effectiveFrom])
+}

@@ -6,12 +6,21 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "check:boundaries": "node scripts/check-boundaries.mjs",
+    "check:contracts": "node scripts/check-contracts.mjs",
+    "prisma:generate": "prisma generate",
+    "postinstall": "prisma generate",
+    "check": "npm run lint && npm run typecheck && npm run check:boundaries && npm run check:contracts && npm run test && npm run build"
   },
   "dependencies": {
+    "@prisma/client": "^5.22.0",
     "next": "16.2.4",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -20,7 +29,9 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
+    "prisma": "^5.22.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^2.1.8"
   }
 }

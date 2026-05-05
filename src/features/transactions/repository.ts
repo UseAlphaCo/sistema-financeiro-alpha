@@ -1,0 +1,288 @@
+import type { Prisma } from "@prisma/client";
+
+import { getPrismaClient } from "@/core/db/prisma-client";
+import {
+  type CreateTransactionInput,
+  type FinancialTransaction,
+  type ListTransactionsFilters,
+  type PaginatedTransactions,
+  type UpdateTransactionInput,
+} from "@/features/transactions/types";
+
+type DeleteInput = {
+  id: string;
+};
+
+export interface TransactionsRepository {
+  list(filters: ListTransactionsFilters): Promise<PaginatedTransactions>;
+  create(input: CreateTransactionInput, actorId: string): Promise<FinancialTransaction>;
+  update(input: UpdateTransactionInput, actorId: string): Promise<FinancialTransaction | null>;
+  remove(input: DeleteInput, actorId: string): Promise<boolean>;
+}
+
+class InMemoryTransactionsRepository implements TransactionsRepository {
+  private items: FinancialTransaction[] = [];
+
+  async list(filters: ListTransactionsFilters): Promise<PaginatedTransactions> {
+    const filtered = this.items
+      .filter((item) => item.deletedAt === null)
+      .filter((item) => {
+        if (filters.type && item.type !== filters.type) return false;
+        if (filters.source && item.source !== filters.source) return false;
+        if (filters.status && item.status !== filters.status) return false;
+
+        if (filters.startDate && new Date(item.occurredAt) < new Date(filters.startDate)) {
+          return false;
+        }
+
+        if (filters.endDate && new Date(item.occurredAt) > new Date(filters.endDate)) {
+          return false;
+        }
+
+        if (filters.search) {
+          const haystack = `${item.description ?? ""} ${item.externalId ?? ""}`.toLowerCase();
+          return haystack.includes(filters.search.toLowerCase());
+        }
+
+        return true;
+      })
+      .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
+
+    const offset = (filters.page - 1) * filters.limit;
+    const pageItems = filtered.slice(offset, offset + filters.limit);
+
+    return {
+      items: pageItems,
+      pagination: {
+        page: filters.page,
+        limit: filters.limit,
+        total: filtered.length,
+        hasNext: offset + filters.limit < filtered.length,
+      },
+    };
+  }
+
+  async create(input: CreateTransactionInput, actorId: string): Promise<FinancialTransaction> {
+    const now = new Date().toISOString();
+    const item: FinancialTransaction = {
+      id: crypto.randomUUID(),
+      externalSource: input.externalSource ?? null,
+      externalId: input.externalId ?? null,
+      type: input.type,
+      categoryId: input.categoryId ?? null,
+      amountCents: input.amountCents,
+      currency: input.currency ?? "BRL",
+      occurredAt: input.occurredAt,
+      description: input.description ?? null,
+      source: input.source,
+      status: input.status ?? "pending",
+      createdBy: actorId,
+      updatedBy: actorId,
+      changeReason: input.changeReason ?? null,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+    };
+
+    this.items.push(item);
+    return item;
+  }
+
+  async update(input: UpdateTransactionInput, actorId: string): Promise<FinancialTransaction | null> {
+    const index = this.items.findIndex((item) => item.id === input.id && item.deletedAt === null);
+    if (index < 0) return null;
+
+    const current = this.items[index];
+    const next: FinancialTransaction = {
+      ...current,
+      categoryId: input.categoryId !== undefined ? input.categoryId : current.categoryId,
+      amountCents: input.amountCents ?? current.amountCents,
+      occurredAt: input.occurredAt ?? current.occurredAt,
+      description: input.description !== undefined ? input.description : current.description,
+      status: input.status ?? current.status,
+      changeReason: input.changeReason ?? current.changeReason,
+      updatedBy: actorId,
+      updatedAt: new Date().toISOString(),
+    };
+
+    this.items[index] = next;
+    return next;
+  }
+
+  async remove(input: DeleteInput, actorId: string): Promise<boolean> {
+    const index = this.items.findIndex((item) => item.id === input.id && item.deletedAt === null);
+    if (index < 0) return false;
+
+    this.items[index] = {
+      ...this.items[index],
+      deletedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      updatedBy: actorId,
+    };
+
+    return true;
+  }
+}
+
+function mapDbTransaction(item: {
+  id: string;
+  externalSource: string | null;
+  externalId: string | null;
+  type: string;
+  categoryId: string | null;
+  amountCents: number;
+  currency: string;
+  occurredAt: Date;
+  description: string | null;
+  source: string;
+  status: string;
+  createdBy: string | null;
+  updatedBy: string | null;
+  changeReason: string | null;
+  deletedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): FinancialTransaction {
+  return {
+    id: item.id,
+    externalSource: item.externalSource,
+    externalId: item.externalId,
+    type: item.type as FinancialTransaction["type"],
+    categoryId: item.categoryId,
+    amountCents: item.amountCents,
+    currency: item.currency,
+    occurredAt: item.occurredAt.toISOString(),
+    description: item.description,
+    source: item.source as FinancialTransaction["source"],
+    status: item.status as FinancialTransaction["status"],
+    createdBy: item.createdBy,
+    updatedBy: item.updatedBy,
+    changeReason: item.changeReason,
+    deletedAt: item.deletedAt ? item.deletedAt.toISOString() : null,
+    createdAt: item.createdAt.toISOString(),
+    updatedAt: item.updatedAt.toISOString(),
+  };
+}
+
+class PrismaTransactionsRepository implements TransactionsRepository {
+  async list(filters: ListTransactionsFilters): Promise<PaginatedTransactions> {
+    const prisma = getPrismaClient();
+
+    const where: Prisma.FinancialTransactionWhereInput = {
+      deletedAt: null,
+    };
+
+    if (filters.type) where.type = filters.type;
+    if (filters.source) where.source = filters.source;
+    if (filters.status) where.status = filters.status;
+
+    if (filters.startDate || filters.endDate) {
+      where.occurredAt = {};
+      if (filters.startDate) where.occurredAt.gte = new Date(filters.startDate);
+      if (filters.endDate) where.occurredAt.lte = new Date(filters.endDate);
+    }
+
+    if (filters.search) {
+      where.OR = [
+        { description: { contains: filters.search, mode: "insensitive" } },
+        { externalId: { contains: filters.search, mode: "insensitive" } },
+      ];
+    }
+
+    const skip = (filters.page - 1) * filters.limit;
+    const [total, rows] = await Promise.all([
+      prisma.financialTransaction.count({ where }),
+      prisma.financialTransaction.findMany({
+        where,
+        orderBy: { occurredAt: "desc" },
+        skip,
+        take: filters.limit,
+      }),
+    ]);
+
+    return {
+      items: rows.map(mapDbTransaction),
+      pagination: {
+        page: filters.page,
+        limit: filters.limit,
+        total,
+        hasNext: skip + filters.limit < total,
+      },
+    };
+  }
+
+  async create(input: CreateTransactionInput, actorId: string): Promise<FinancialTransaction> {
+    const prisma = getPrismaClient();
+    const row = await prisma.financialTransaction.create({
+      data: {
+        externalSource: input.externalSource ?? null,
+        externalId: input.externalId ?? null,
+        type: input.type,
+        categoryId: input.categoryId ?? null,
+        amountCents: input.amountCents,
+        currency: input.currency ?? "BRL",
+        occurredAt: new Date(input.occurredAt),
+        description: input.description ?? null,
+        source: input.source,
+        status: input.status ?? "pending",
+        createdBy: actorId,
+        updatedBy: actorId,
+        changeReason: input.changeReason ?? null,
+      },
+    });
+
+    return mapDbTransaction(row);
+  }
+
+  async update(input: UpdateTransactionInput, actorId: string): Promise<FinancialTransaction | null> {
+    const prisma = getPrismaClient();
+    const existing = await prisma.financialTransaction.findUnique({ where: { id: input.id } });
+    if (!existing || existing.deletedAt) return null;
+
+    const row = await prisma.financialTransaction.update({
+      where: { id: input.id },
+      data: {
+        categoryId: input.categoryId !== undefined ? input.categoryId : undefined,
+        amountCents: input.amountCents,
+        occurredAt: input.occurredAt ? new Date(input.occurredAt) : undefined,
+        description: input.description !== undefined ? input.description : undefined,
+        status: input.status,
+        changeReason: input.changeReason,
+        updatedBy: actorId,
+      },
+    });
+
+    return mapDbTransaction(row);
+  }
+
+  async remove(input: DeleteInput, actorId: string): Promise<boolean> {
+    const prisma = getPrismaClient();
+    const existing = await prisma.financialTransaction.findUnique({ where: { id: input.id } });
+    if (!existing || existing.deletedAt) return false;
+
+    await prisma.financialTransaction.update({
+      where: { id: input.id },
+      data: {
+        deletedAt: new Date(),
+        updatedBy: actorId,
+      },
+    });
+
+    return true;
+  }
+}
+
+const globalStore = globalThis as typeof globalThis & {
+  __transactionsRepository?: TransactionsRepository;
+};
+
+export function getTransactionsRepository(): TransactionsRepository {
+  if (!globalStore.__transactionsRepository) {
+    const useDatabase = Boolean(process.env.DATABASE_URL);
+    globalStore.__transactionsRepository = useDatabase
+      ? new PrismaTransactionsRepository()
+      : new InMemoryTransactionsRepository();
+  }
+
+  return globalStore.__transactionsRepository;
+}
