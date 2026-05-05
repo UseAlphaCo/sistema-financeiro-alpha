@@ -10,6 +10,7 @@ export default async function FinanceiroPage() {
 
   const links = [
     { href: "/financeiro/fluxo-de-caixa", label: "Fluxo de Caixa", description: "Entradas, saídas e saldo líquido por período" },
+    { href: "/financeiro/importacoes", label: "Importações", description: "Upload e confirmação de lançamentos via CSV" },
     { href: "/financeiro/integracoes", label: "Integrações", description: "Eventos recebidos via webhook Shopify" },
   ];
 

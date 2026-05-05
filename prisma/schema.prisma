@@ -45,15 +45,35 @@ model TransactionCategory {
 }
 
 model ImportBatch {
-  id         String   @id @default(cuid())
+  id         String            @id @default(cuid())
   source     String
-  fileHash   String
+  fileHash   String            @unique
   status     String
-  rowCount   Int      @default(0)
-  errorCount Int      @default(0)
-  createdAt  DateTime @default(now())
+  rowCount   Int               @default(0)
+  errorCount Int               @default(0)
+  createdAt  DateTime          @default(now())
+  rows       ImportBatchRow[]
 
   @@index([source])
+  @@index([status])
+}
+
+model ImportBatchRow {
+  id          String      @id @default(cuid())
+  batchId     String
+  batch       ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  rowIndex    Int
+  occurredAt  DateTime
+  type        String
+  amountCents Int
+  description String?
+  category    String?
+  source      String?
+  status      String      @default("pending")
+  errorMsg    String?
+  createdAt   DateTime    @default(now())
+
+  @@index([batchId])
   @@index([status])
 }
 
