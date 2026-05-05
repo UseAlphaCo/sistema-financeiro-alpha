@@ -27,15 +27,31 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+
+  // Env vars ausentes — fail seguro em vez de crash (MIDDLEWARE_INVOCATION_FAILED)
+  if (!supabaseUrl || !supabaseKey) {
+    if (isProtectedApi) {
+      return NextResponse.json(
+        { success: false, data: null, error: "Servico de autenticacao nao configurado.", requestId: crypto.randomUUID(), meta: { timestamp: new Date().toISOString() } },
+        { status: 503 }
+      );
+    }
+    const url = new URL("/login", request.url);
+    url.searchParams.set("error", "misconfigured");
+    return NextResponse.redirect(url);
+  }
+
   // Renovação de sessão Supabase via SSR
   const response = NextResponse.next({
     request: { headers: new Headers(request.headers) },
   });
 
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
-    {
+  let user: { id: string; email?: string; user_metadata?: Record<string, unknown> } | null = null;
+
+  try {
+    const supabase = createServerClient(supabaseUrl, supabaseKey, {
       cookies: {
         getAll() {
           return request.cookies.getAll();
@@ -46,23 +62,25 @@ export async function middleware(request: NextRequest) {
           });
         },
       },
+    });
+    const { data } = await supabase.auth.getUser();
+    user = data.user;
+  } catch {
+    if (isProtectedApi) {
+      return NextResponse.json(
+        { success: false, data: null, error: "Erro ao verificar autenticacao.", requestId: crypto.randomUUID(), meta: { timestamp: new Date().toISOString() } },
+        { status: 503 }
+      );
     }
-  );
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    const url = new URL("/login", request.url);
+    url.searchParams.set("error", "auth_error");
+    return NextResponse.redirect(url);
+  }
 
   if (!user) {
     if (isProtectedApi) {
       return NextResponse.json(
-        {
-          success: false,
-          data: null,
-          error: "Nao autenticado para acessar este recurso.",
-          requestId: crypto.randomUUID(),
-          meta: { timestamp: new Date().toISOString() },
-        },
+        { success: false, data: null, error: "Nao autenticado para acessar este recurso.", requestId: crypto.randomUUID(), meta: { timestamp: new Date().toISOString() } },
         { status: 401 }
       );
     }
@@ -77,13 +95,7 @@ export async function middleware(request: NextRequest) {
   if (!isAllowedRole(role)) {
     if (isProtectedApi) {
       return NextResponse.json(
-        {
-          success: false,
-          data: null,
-          error: "Sem permissao para acessar este recurso.",
-          requestId: crypto.randomUUID(),
-          meta: { timestamp: new Date().toISOString() },
-        },
+        { success: false, data: null, error: "Sem permissao para acessar este recurso.", requestId: crypto.randomUUID(), meta: { timestamp: new Date().toISOString() } },
         { status: 403 }
       );
     }
