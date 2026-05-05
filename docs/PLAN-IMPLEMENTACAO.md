@@ -84,18 +84,19 @@ Objetivo: sistema funcional de ponta a ponta com login, importacao, dashboard co
 **Decisao**: role armazenada em user_metadata.role no Supabase
 **Nota**: chave nomeada PUBLISHABLE_KEY (nova convencao Supabase) e nao ANON_KEY
 
-### Fase B — Pipeline de Importacao CSV [ ]
+### Fase B — Pipeline de Importacao CSV [CONCLUIDO]
 
-- [ ] Model ImportBatchRow no schema.prisma
-- [ ] src/features/imports/types.ts
-- [ ] src/features/imports/csv-parser.ts — parse com validacao por linha
-- [ ] src/features/imports/repository.ts — createBatch, findByHash, listBatches, rollbackBatch
-- [ ] src/features/imports/actions.ts — previewImportAction, commitImportAction, rollbackImportAction
-- [ ] Atualizar API /api/financial/imports — GET (listar) + POST (upload multipart)
-- [ ] UI /importacoes — upload, preview, confirmar/cancelar
+- [x] Model ImportBatchRow no schema.prisma (relacao Cascade com ImportBatch)
+- [x] src/features/imports/types.ts
+- [x] src/features/imports/csv-parser.ts — parse zero-dependencia (DD/MM/AAAA, valores BRL)
+- [x] src/features/imports/repository.ts — createBatch, findByHash, listBatches, commitBatch, rollbackBatch
+- [x] src/features/imports/actions.ts — previewImportAction, commitImportAction, rollbackImportAction
+- [x] Atualizar API /api/financial/imports — GET (listar) + POST (upload multipart + commit/rollback JSON)
+- [x] UI /importacoes — upload, preview, confirmar/cancelar + historico de lotes
 
 **Colunas CSV**: data, tipo, valor, descricao, categoria, origem
-**Garantia**: dedupe por hash do arquivo (idempotencia)
+**Garantia**: dedupe por hash do arquivo (idempotencia via fileHash unique)
+**Nota**: migration add-import-batch-row pendente de aplicar com DIRECT_URL configurado
 
 ### Fase C — Dashboard UI completo [ ]
 
