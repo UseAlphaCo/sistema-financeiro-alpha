@@ -68,19 +68,21 @@ Construir um app financeiro separado para fluxo de caixa, dashboard consolidado,
 
 Objetivo: sistema funcional de ponta a ponta com login, importacao, dashboard completo e reconciliacao.
 
-### Fase A — Autenticacao Supabase Auth [ ]
+### Fase A — Autenticacao Supabase Auth [CONCLUIDO]
 
-- [ ] Instalar @supabase/supabase-js e @supabase/ssr
-- [ ] src/core/auth/supabase-server.ts — client para Server Components
-- [ ] src/core/auth/supabase-client.ts — client para browser
-- [ ] src/app/login/page.tsx — formulario email + senha
-- [ ] Atualizar middleware.ts — verificar sessao Supabase via cookie, injetar x-user-* nos headers
-- [ ] src/app/api/auth/callback/route.ts — troca code por sessao
-- [ ] src/app/api/auth/logout/route.ts — signOut + limpar cookies
-- [ ] Atualizar (financeiro)/layout.tsx — exibir email logado + botao logout
+- [x] Instalar @supabase/supabase-js e @supabase/ssr
+- [x] src/core/auth/supabase-server.ts — client para Server Components
+- [x] src/core/auth/supabase-client.ts — client para browser
+- [x] src/app/login/page.tsx — formulario email + senha
+- [x] Atualizar middleware.ts — verificar sessao Supabase via cookie, injetar x-user-* nos headers
+- [x] src/app/api/auth/callback/route.ts — troca code por sessao
+- [x] src/app/api/auth/logout/route.ts — signOut + redirect para /login
+- [x] Atualizar (financeiro)/layout.tsx — exibir email logado + botao logout
+- [x] src/app/(financeiro)/page.tsx — dashboard index com links
 
-**Variaveis necessarias**: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY
+**Variaveis necessarias**: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 **Decisao**: role armazenada em user_metadata.role no Supabase
+**Nota**: chave nomeada PUBLISHABLE_KEY (nova convencao Supabase) e nao ANON_KEY
 
 ### Fase B — Pipeline de Importacao CSV [ ]
 
