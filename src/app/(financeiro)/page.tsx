@@ -9,8 +9,10 @@ export default async function FinanceiroPage() {
   const role = (user?.user_metadata?.role as string) ?? "—";
 
   const links = [
+    { href: "/financeiro/dashboard", label: "Dashboard", description: "Visão consolidada com breakdown por marketplace" },
     { href: "/financeiro/fluxo-de-caixa", label: "Fluxo de Caixa", description: "Entradas, saídas e saldo líquido por período" },
     { href: "/financeiro/importacoes", label: "Importações", description: "Upload e confirmação de lançamentos via CSV" },
+    { href: "/financeiro/reconciliacao", label: "Reconciliação", description: "Detecta duplicatas, itens sem categoria e saldo negativo" },
     { href: "/financeiro/integracoes", label: "Integrações", description: "Eventos recebidos via webhook Shopify" },
   ];
 

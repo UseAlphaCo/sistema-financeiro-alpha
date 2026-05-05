@@ -17,7 +17,7 @@ export default async function FinanceiroLayout({
           <span className="text-base font-semibold text-gray-900">
             Sistema Financeiro
           </span>
-          <a href="/financeiro" className="hover:text-gray-900">
+          <a href="/financeiro/dashboard" className="hover:text-gray-900">
             Dashboard
           </a>
           <a href="/financeiro/fluxo-de-caixa" className="hover:text-gray-900">
@@ -25,6 +25,9 @@ export default async function FinanceiroLayout({
           </a>
           <a href="/financeiro/importacoes" className="hover:text-gray-900">
             Importações
+          </a>
+          <a href="/financeiro/reconciliacao" className="hover:text-gray-900">
+            Reconciliação
           </a>
           <a href="/financeiro/integracoes" className="hover:text-gray-900">
             Integrações
