@@ -1,71 +1,107 @@
+import { createServerClient } from "@supabase/ssr";
 import { NextRequest, NextResponse } from "next/server";
 
-import { ROLES, type UserRole } from "@/types/api";
+import type { UserRole } from "@/types/api";
 
-const PROTECTED_PAGE_PREFIXES = ["/dashboard", "/financeiro"];
+const PROTECTED_PAGE_PREFIXES = ["/financeiro"];
 const PROTECTED_API_PREFIX = "/api/financial";
 
-function normalizeRole(value: string | null): UserRole | null {
-  if (!value) return null;
+function normalizeRole(value: unknown): UserRole | null {
+  if (typeof value !== "string") return null;
   const lowered = value.toLowerCase();
-  return ROLES.includes(lowered as UserRole) ? (lowered as UserRole) : null;
-}
-
-function getRoleFromRequest(request: NextRequest): UserRole | null {
-  const headerRole = normalizeRole(request.headers.get("x-user-role"));
-  if (headerRole) return headerRole;
-
-  const cookieRole = normalizeRole(request.cookies.get("sf_role")?.value ?? null);
-  if (cookieRole) return cookieRole;
-
-  const bypass = process.env.AUTH_BYPASS_IN_DEV === "true";
-  if (bypass && process.env.NODE_ENV !== "production") {
-    return "admin";
-  }
-
-  return null;
+  const allowed: UserRole[] = ["admin", "financeiro", "operador", "parceiro", "influenciador"];
+  return allowed.includes(lowered as UserRole) ? (lowered as UserRole) : null;
 }
 
 function isAllowedRole(role: UserRole | null): boolean {
-  if (!role) return false;
   return role === "admin" || role === "financeiro";
 }
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  const role = getRoleFromRequest(request);
 
-  const isProtectedPage = PROTECTED_PAGE_PREFIXES.some((prefix) =>
-    pathname.startsWith(prefix)
-  );
+  const isProtectedPage = PROTECTED_PAGE_PREFIXES.some((p) => pathname.startsWith(p));
   const isProtectedApi = pathname.startsWith(PROTECTED_API_PREFIX);
 
   if (!isProtectedPage && !isProtectedApi) {
     return NextResponse.next();
   }
 
-  if (isAllowedRole(role)) {
-    return NextResponse.next();
-  }
+  // Renovação de sessão Supabase via SSR
+  const response = NextResponse.next({
+    request: { headers: new Headers(request.headers) },
+  });
 
-  if (isProtectedApi) {
-    return NextResponse.json(
-      {
-        success: false,
-        data: null,
-        error: "Nao autenticado para acessar este recurso.",
-        requestId: crypto.randomUUID(),
-        meta: { timestamp: new Date().toISOString() },
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            response.cookies.set(name, value, options);
+          });
+        },
       },
-      { status: 401 }
-    );
+    }
+  );
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    if (isProtectedApi) {
+      return NextResponse.json(
+        {
+          success: false,
+          data: null,
+          error: "Nao autenticado para acessar este recurso.",
+          requestId: crypto.randomUUID(),
+          meta: { timestamp: new Date().toISOString() },
+        },
+        { status: 401 }
+      );
+    }
+
+    const loginUrl = new URL("/login", request.url);
+    loginUrl.searchParams.set("next", pathname);
+    return NextResponse.redirect(loginUrl);
   }
 
-  const redirectUrl = new URL("/", request.url);
-  redirectUrl.searchParams.set("auth", "required");
-  return NextResponse.redirect(redirectUrl);
+  const role = normalizeRole(user.user_metadata?.role);
+
+  if (!isAllowedRole(role)) {
+    if (isProtectedApi) {
+      return NextResponse.json(
+        {
+          success: false,
+          data: null,
+          error: "Sem permissao para acessar este recurso.",
+          requestId: crypto.randomUUID(),
+          meta: { timestamp: new Date().toISOString() },
+        },
+        { status: 403 }
+      );
+    }
+
+    const loginUrl = new URL("/login", request.url);
+    loginUrl.searchParams.set("error", "forbidden");
+    return NextResponse.redirect(loginUrl);
+  }
+
+  // Injeta headers para withApiSecurity e getSessionFromRequest
+  response.headers.set("x-user-id", user.id);
+  response.headers.set("x-user-email", user.email ?? "");
+  response.headers.set("x-user-role", role!);
+
+  return response;
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/financeiro/:path*", "/api/financial/:path*"],
+  matcher: ["/financeiro/:path*", "/api/financial/:path*"],
 };
+
