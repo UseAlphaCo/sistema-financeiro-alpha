@@ -5,25 +5,11 @@ Construir um app financeiro separado para fluxo de caixa, dashboard consolidado,
 
 ## Escopo confirmado
 - Integracao com endpoints financeiros do sistema atual
-- Ingestao por webhooks equivalentes da Shopify com HMAC e idempotencia
-- Lancamentos manuais e importacao de Excel/CSV
+- Ingestao por webhooks Shopify com HMAC e idempotencia
+- Lancamentos manuais e importacao de CSV
 - Cadastro/importacao de taxas por marketplace (Shopify, Mercado Livre, Shopee e Amazon)
 - Projecao de caixa com base em bruto, taxas e liquido
-- Reconcilacao de dados e observabilidade
-
-## Sprint 1 (em andamento)
-- Story 1.1 Bootstrap do projeto
-- Story 1.2 Guardrails arquiteturais
-- Story 1.3 Padrao operacional CLAUDE/agents
-- Story 2.1 Autenticacao e autorizacao por role
-- Story 2.2 Seguranca de API e observabilidade minima
-- Story 4.1 Modelo base de transacoes (scaffold inicial)
-
-## Ordem de execucao recomendada
-1. Sprint 1: fundacao, seguranca, guardrails e base de dados
-2. Sprint 2: integracoes externas e importacoes
-3. Sprint 3: fluxo de caixa e taxas de marketplace
-4. Sprint 4: previsao, dashboard consolidado e reconciliacao
+- Reconciliacao de dados e observabilidade
 
 ## Definicoes tecnicas obrigatorias
 - Envelope de API padrao: success, data, error, requestId, meta
@@ -32,3 +18,104 @@ Construir um app financeiro separado para fluxo de caixa, dashboard consolidado,
 - Rate limit por endpoint sensivel
 - RequestId obrigatorio em respostas e logs
 - Janela temporal com dias completos (00:00:00.000 -> 23:59:59.999)
+
+---
+
+## Sprint 1 — Fundacao [CONCLUIDO]
+
+- [x] Story 1.1 Bootstrap do projeto (Next.js 16, TypeScript, Prisma, Tailwind)
+- [x] Story 1.2 Guardrails arquiteturais (check-boundaries, check-contracts)
+- [x] Story 1.3 Padrao operacional CLAUDE/agents
+- [x] Story 2.1 Autenticacao e autorizacao por role (middleware + withApiSecurity)
+- [x] Story 2.2 Seguranca de API e observabilidade minima (logger, telemetria, rate limit)
+- [x] Story 4.1 Modelo base de transacoes — CRUD completo (repository, actions, validations, API route)
+
+**Schema criado**: FinancialTransaction, TransactionCategory, ImportBatch, ReconciliationSnapshot
+
+---
+
+## Sprint 2 — Integracoes [CONCLUIDO]
+
+- [x] Webhook Shopify: verificacao HMAC-SHA256 com timingSafeEqual
+- [x] Idempotencia por eventId (model WebhookEvent)
+- [x] Mapeamento orders/paid + orders/create -> FinancialTransaction
+- [x] Atomicidade via $transaction Prisma
+- [x] API route POST /api/webhooks/shopify
+- [x] UI basica /integracoes (listagem de eventos)
+
+**Schema adicionado**: WebhookEvent
+**Variavel de ambiente**: SHOPIFY_WEBHOOK_SECRET
+
+---
+
+## Sprint 3 — Fluxo de Caixa + Taxas [CONCLUIDO]
+
+- [x] Model MarketplaceFee (marketplace, feeType, ratePercent, fixedCents, effectiveFrom/Until)
+- [x] feature/marketplace-fees: types, repository, validations, actions
+- [x] API GET+POST /api/financial/marketplace-fees
+- [x] feature/cash-flow: tipos, service (calculo por periodo com raw SQL), actions
+- [x] API GET /api/financial/cash-flow
+- [x] API GET /api/financial/dashboard (real — substituiu placeholder)
+- [x] UI /fluxo-de-caixa: cards de totais + breakdown por origem + comparativo de periodo
+- [x] Deploy na Vercel + banco Supabase + migracao inicial aplicada
+
+**Schema adicionado**: MarketplaceFee
+**Variaveis de ambiente**: DATABASE_URL, DIRECT_URL, SHOPIFY_WEBHOOK_SECRET
+
+---
+
+## MVP Funcional — Sprint 4 [EM ANDAMENTO]
+
+Objetivo: sistema funcional de ponta a ponta com login, importacao, dashboard completo e reconciliacao.
+
+### Fase A — Autenticacao Supabase Auth [ ]
+
+- [ ] Instalar @supabase/supabase-js e @supabase/ssr
+- [ ] src/core/auth/supabase-server.ts — client para Server Components
+- [ ] src/core/auth/supabase-client.ts — client para browser
+- [ ] src/app/login/page.tsx — formulario email + senha
+- [ ] Atualizar middleware.ts — verificar sessao Supabase via cookie, injetar x-user-* nos headers
+- [ ] src/app/api/auth/callback/route.ts — troca code por sessao
+- [ ] src/app/api/auth/logout/route.ts — signOut + limpar cookies
+- [ ] Atualizar (financeiro)/layout.tsx — exibir email logado + botao logout
+
+**Variaveis necessarias**: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY
+**Decisao**: role armazenada em user_metadata.role no Supabase
+
+### Fase B — Pipeline de Importacao CSV [ ]
+
+- [ ] Model ImportBatchRow no schema.prisma
+- [ ] src/features/imports/types.ts
+- [ ] src/features/imports/csv-parser.ts — parse com validacao por linha
+- [ ] src/features/imports/repository.ts — createBatch, findByHash, listBatches, rollbackBatch
+- [ ] src/features/imports/actions.ts — previewImportAction, commitImportAction, rollbackImportAction
+- [ ] Atualizar API /api/financial/imports — GET (listar) + POST (upload multipart)
+- [ ] UI /importacoes — upload, preview, confirmar/cancelar
+
+**Colunas CSV**: data, tipo, valor, descricao, categoria, origem
+**Garantia**: dedupe por hash do arquivo (idempotencia)
+
+### Fase C — Dashboard UI completo [ ]
+
+- [ ] src/app/(financeiro)/page.tsx — indice da area financeira
+- [ ] src/app/(financeiro)/dashboard/page.tsx — cards + breakdown + projecao liquida por marketplace
+- [ ] Atualizar (financeiro)/layout.tsx — adicionar link Dashboard
+
+### Fase D — Reconciliacao [ ]
+
+- [ ] src/features/reconciliation/types.ts — ReconciliationIssue, IssueType
+- [ ] src/features/reconciliation/service.ts — detecta duplicatas, sem categoria, saldo negativo
+- [ ] src/features/reconciliation/actions.ts — runReconciliationAction
+- [ ] Atualizar API /api/financial/reconciliation — executa e persiste ReconciliationSnapshot
+- [ ] UI /reconciliacao — tabela de issues
+
+---
+
+## Backlog (pos-MVP)
+
+- Importacao de formato especifico por marketplace (Shopify, ML, Shopee, Amazon)
+- Projecao de caixa futuro aplicando taxas cadastradas
+- Lançamentos manuais via UI
+- Convite de usuarios com role pre-definida
+- Exportacao de relatorio PDF/CSV
+- Integracoes adicionais (Mercado Livre, Shopee)
