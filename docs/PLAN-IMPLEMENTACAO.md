@@ -98,19 +98,19 @@ Objetivo: sistema funcional de ponta a ponta com login, importacao, dashboard co
 **Garantia**: dedupe por hash do arquivo (idempotencia via fileHash unique)
 **Nota**: migration add-import-batch-row pendente de aplicar com DIRECT_URL configurado
 
-### Fase C — Dashboard UI completo [ ]
+### Fase C — Dashboard UI completo [CONCLUIDO]
 
-- [ ] src/app/(financeiro)/page.tsx — indice da area financeira
-- [ ] src/app/(financeiro)/dashboard/page.tsx — cards + breakdown + projecao liquida por marketplace
-- [ ] Atualizar (financeiro)/layout.tsx — adicionar link Dashboard
+- [x] src/app/(financeiro)/dashboard/page.tsx — cards + barra proporcional + tabela por marketplace + comparativo de periodo
+- [x] Seletor de periodo (7/30/90 dias) via searchParams
+- [x] Links Dashboard adicionados em layout e indice do financeiro
 
-### Fase D — Reconciliacao [ ]
+### Fase D — Reconciliacao [CONCLUIDO]
 
-- [ ] src/features/reconciliation/types.ts — ReconciliationIssue, IssueType
-- [ ] src/features/reconciliation/service.ts — detecta duplicatas, sem categoria, saldo negativo
-- [ ] src/features/reconciliation/actions.ts — runReconciliationAction
-- [ ] Atualizar API /api/financial/reconciliation — executa e persiste ReconciliationSnapshot
-- [ ] UI /reconciliacao — tabela de issues
+- [x] src/features/reconciliation/types.ts — ReconciliationIssue, IssueType
+- [x] src/features/reconciliation/service.ts — 5 verificacoes: duplicatas, sem categoria, saldo negativo, orphan import rows, webhooks nao processados
+- [x] src/features/reconciliation/actions.ts — runReconciliationAction
+- [x] Atualizar API /api/financial/reconciliation — GET e POST executam e persistem ReconciliationSnapshot
+- [x] UI /reconciliacao — resumo de issues por severidade com seletor de periodo
 
 ---
 
