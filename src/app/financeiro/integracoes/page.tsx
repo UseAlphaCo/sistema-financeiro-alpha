@@ -23,10 +23,31 @@ function formatDate(iso: string | null): string {
 }
 
 export default async function IntegracoesPage() {
-  const { items, pagination } = await webhookEventsRepository.list({
-    page: 1,
-    limit: 50,
-  });
+  let items: WebhookEvent[] = [];
+  let pagination: { total: number } = { total: 0 };
+
+  try {
+    const result = await webhookEventsRepository.list({
+      page: 1,
+      limit: 50,
+    });
+    items = result.items;
+    pagination = { total: result.pagination.total };
+  } catch {
+    return (
+      <div>
+        <div className="mb-6">
+          <h1 className="text-xl font-semibold text-gray-900">Integrações</h1>
+          <p className="mt-1 text-sm text-gray-500">
+            Ultimos eventos recebidos via webhook
+          </p>
+        </div>
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Falha ao consultar eventos. Verifique DATABASE_URL e DIRECT_URL no ambiente atual.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>

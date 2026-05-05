@@ -42,7 +42,22 @@ export default async function FluxoDeCaixaPage({
   const params = await searchParams;
   const days = Number(params.days ?? "30");
 
-  const summary = await computeCashFlow({ days });
+  let summary;
+  try {
+    summary = await computeCashFlow({ days });
+  } catch {
+    return (
+      <div>
+        <div className="mb-6">
+          <h1 className="text-xl font-semibold text-gray-900">Fluxo de Caixa</h1>
+          <p className="mt-1 text-sm text-gray-500">Nao foi possivel carregar os dados no momento.</p>
+        </div>
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Falha ao conectar ao banco de dados. Verifique DATABASE_URL e DIRECT_URL no ambiente atual.
+        </div>
+      </div>
+    );
+  }
 
   const { period, totalIncomeCents, totalExpenseCents, netCents, bySource, previousPeriod } =
     summary;
