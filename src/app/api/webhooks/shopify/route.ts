@@ -14,14 +14,21 @@ export async function POST(request: NextRequest) {
   const eventId = request.headers.get("x-shopify-webhook-id") ?? "";
   const topic = request.headers.get("x-shopify-topic") ?? "";
   const secret = process.env.SHOPIFY_WEBHOOK_SECRET ?? "";
+  const safeSecret = secret.replace(/^['"]+|['"]+$/g, "").replace(/\r?\n/g, "").trim();
 
-  if (!secret) {
+  if (!safeSecret) {
     logError("shopify_webhook_secret_missing", { requestId, topic });
     return createApiError(requestId, "SHOPIFY_WEBHOOK_SECRET nao configurado", 503);
   }
 
-  if (!verifyShopifyHmac(rawBody, hmacHeader, secret)) {
-    logInfo("shopify_webhook_hmac_invalid", { requestId, topic });
+  if (!verifyShopifyHmac(rawBody, hmacHeader, safeSecret)) {
+    logInfo("shopify_webhook_hmac_invalid", {
+      requestId,
+      topic,
+      hasHmacHeader: Boolean(hmacHeader),
+      hmacLength: hmacHeader.length,
+      secretLength: safeSecret.length,
+    });
     return createApiError(requestId, "Assinatura HMAC inválida", 401);
   }
 
