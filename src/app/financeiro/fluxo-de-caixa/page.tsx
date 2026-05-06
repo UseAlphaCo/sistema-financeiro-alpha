@@ -1,4 +1,10 @@
 import { computeCashFlow } from "@/features/cash-flow/service";
+import { getTransactionsRepository } from "@/features/transactions/repository";
+import {
+  PAYMENT_METHODS,
+  type FinancialTransaction,
+  type PaymentMethod,
+} from "@/features/transactions/types";
 
 export const dynamic = "force-dynamic";
 
@@ -34,17 +40,87 @@ const SOURCE_LABELS: Record<string, string> = {
   webhook: "Webhook",
 };
 
+const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  credit_card: "Cartão de crédito",
+  pix: "Pix",
+  boleto: "Boleto",
+  bank_transfer: "Transferência",
+  wallet: "Carteira digital",
+  cash: "Dinheiro",
+  other: "Outro",
+};
+
+function isPaymentMethod(value: string | undefined): value is PaymentMethod {
+  if (!value) return false;
+  return PAYMENT_METHODS.includes(value as PaymentMethod);
+}
+
+function normalizeDateInput(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  return undefined;
+}
+
+function parseOrderNumber(item: FinancialTransaction): string {
+  if (item.orderNumber) return item.orderNumber;
+  if (!item.description) return "—";
+  const match = item.description.match(/Pedido\s*#\s*([\w-]+)/i);
+  return match ? match[1] : "—";
+}
+
+function formatPaymentMethod(item: FinancialTransaction): string {
+  if (item.paymentMethodNormalized) {
+    return PAYMENT_METHOD_LABELS[item.paymentMethodNormalized];
+  }
+  if (item.paymentMethodRaw) return item.paymentMethodRaw;
+  return "Não informado";
+}
+
 export default async function FluxoDeCaixaPage({
   searchParams,
 }: {
-  searchParams: Promise<{ days?: string }>;
+  searchParams: Promise<{
+    days?: string;
+    startDate?: string;
+    endDate?: string;
+    paymentMethod?: string;
+  }>;
 }) {
   const params = await searchParams;
   const days = Number(params.days ?? "30");
+  const startDate = normalizeDateInput(params.startDate);
+  const endDate = normalizeDateInput(params.endDate);
+  const paymentMethod = isPaymentMethod(params.paymentMethod)
+    ? params.paymentMethod
+    : undefined;
+
+  const cashFlowFilters = {
+    days,
+    paymentMethod,
+    startDate,
+    endDate,
+  };
 
   let summary;
+  let marketplaceEntries: FinancialTransaction[] = [];
   try {
-    summary = await computeCashFlow({ days });
+    const transactionsRepository = getTransactionsRepository();
+    [summary, marketplaceEntries] = await Promise.all([
+      computeCashFlow(cashFlowFilters),
+      transactionsRepository
+        .list({
+          page: 1,
+          limit: 30,
+          type: "income",
+          sources: ["integration", "webhook"],
+          paymentMethod,
+          startDate,
+          endDate,
+        })
+        .then((result) => result.items.filter((item) => Boolean(item.externalSource))),
+    ]);
   } catch {
     return (
       <div>
@@ -75,7 +151,7 @@ export default async function FluxoDeCaixaPage({
           {[30, 60, 90].map((d) => (
             <a
               key={d}
-              href={`/financeiro/fluxo-de-caixa?days=${d}`}
+              href={`/financeiro/fluxo-de-caixa?days=${d}${paymentMethod ? `&paymentMethod=${paymentMethod}` : ""}`}
               className={`rounded-md px-3 py-1.5 ${
                 days === d
                   ? "bg-gray-900 text-white"
@@ -87,6 +163,69 @@ export default async function FluxoDeCaixaPage({
           ))}
         </div>
       </div>
+
+      <form method="GET" className="mb-6 grid grid-cols-1 gap-3 rounded-lg border border-gray-200 bg-white p-4 sm:grid-cols-5">
+        <div>
+          <label className="mb-1 block text-xs text-gray-600">Data inicial</label>
+          <input
+            type="date"
+            name="startDate"
+            defaultValue={startDate}
+            className="w-full rounded-md border border-gray-300 px-2 py-2 text-sm"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-gray-600">Data final</label>
+          <input
+            type="date"
+            name="endDate"
+            defaultValue={endDate}
+            className="w-full rounded-md border border-gray-300 px-2 py-2 text-sm"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-gray-600">Forma de pagamento</label>
+          <select
+            name="paymentMethod"
+            defaultValue={paymentMethod ?? ""}
+            className="w-full rounded-md border border-gray-300 px-2 py-2 text-sm"
+          >
+            <option value="">Todas</option>
+            {PAYMENT_METHODS.map((method) => (
+              <option key={method} value={method}>
+                {PAYMENT_METHOD_LABELS[method]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-gray-600">Atalho em dias</label>
+          <select
+            name="days"
+            defaultValue={String(days)}
+            className="w-full rounded-md border border-gray-300 px-2 py-2 text-sm"
+          >
+            <option value="7">7</option>
+            <option value="30">30</option>
+            <option value="60">60</option>
+            <option value="90">90</option>
+          </select>
+        </div>
+        <div className="flex items-end gap-2">
+          <button
+            type="submit"
+            className="rounded-md bg-gray-900 px-3 py-2 text-sm text-white hover:bg-gray-700"
+          >
+            Filtrar
+          </button>
+          <a
+            href="/financeiro/fluxo-de-caixa"
+            className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+          >
+            Limpar
+          </a>
+        </div>
+      </form>
 
       {/* Cards de totais */}
       <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -152,6 +291,53 @@ export default async function FluxoDeCaixaPage({
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-right text-gray-500">
                       {row.transactionCount}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-8">
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">
+          Entradas de marketplaces
+        </h2>
+
+        {marketplaceEntries.length === 0 ? (
+          <div className="rounded-md border border-dashed border-gray-300 py-10 text-center text-sm text-gray-500">
+            Nenhuma entrada de marketplace encontrada com os filtros atuais.
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="bg-gray-50 text-xs font-medium uppercase tracking-wide text-gray-500">
+                <tr>
+                  <th className="px-4 py-3 text-left">Marketplace</th>
+                  <th className="px-4 py-3 text-left">Número do pedido</th>
+                  <th className="px-4 py-3 text-left">Data</th>
+                  <th className="px-4 py-3 text-left">Forma de pagamento</th>
+                  <th className="px-4 py-3 text-right">Valor</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {marketplaceEntries.map((item) => (
+                  <tr key={item.id} className="hover:bg-gray-50">
+                    <td className="whitespace-nowrap px-4 py-3 text-gray-700 capitalize">
+                      {item.marketplace ?? item.externalSource ?? "—"}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
+                      {parseOrderNumber(item)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-gray-600">
+                      {formatDate(item.occurredAt)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-gray-600">
+                      {formatPaymentMethod(item)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-right font-medium text-green-700">
+                      {formatBRL(item.amountCents)}
                     </td>
                   </tr>
                 ))}

@@ -29,7 +29,14 @@ class InMemoryTransactionsRepository implements TransactionsRepository {
       .filter((item) => {
         if (filters.type && item.type !== filters.type) return false;
         if (filters.source && item.source !== filters.source) return false;
+        if (filters.sources && filters.sources.length > 0 && !filters.sources.includes(item.source)) {
+          return false;
+        }
         if (filters.status && item.status !== filters.status) return false;
+        if (filters.marketplace && item.marketplace !== filters.marketplace) return false;
+        if (filters.paymentMethod && item.paymentMethodNormalized !== filters.paymentMethod) {
+          return false;
+        }
 
         if (filters.startDate && new Date(item.occurredAt) < new Date(filters.startDate)) {
           return false;
@@ -68,6 +75,10 @@ class InMemoryTransactionsRepository implements TransactionsRepository {
       id: crypto.randomUUID(),
       externalSource: input.externalSource ?? null,
       externalId: input.externalId ?? null,
+      marketplace: input.marketplace ?? null,
+      orderNumber: input.orderNumber ?? null,
+      paymentMethodRaw: input.paymentMethodRaw ?? null,
+      paymentMethodNormalized: input.paymentMethodNormalized ?? null,
       type: input.type,
       categoryId: input.categoryId ?? null,
       amountCents: input.amountCents,
@@ -128,6 +139,10 @@ function mapDbTransaction(item: {
   id: string;
   externalSource: string | null;
   externalId: string | null;
+  marketplace?: string | null;
+  orderNumber?: string | null;
+  paymentMethodRaw?: string | null;
+  paymentMethodNormalized?: string | null;
   type: string;
   categoryId: string | null;
   amountCents: number;
@@ -147,6 +162,11 @@ function mapDbTransaction(item: {
     id: item.id,
     externalSource: item.externalSource,
     externalId: item.externalId,
+    marketplace: item.marketplace ?? null,
+    orderNumber: item.orderNumber ?? null,
+    paymentMethodRaw: item.paymentMethodRaw ?? null,
+    paymentMethodNormalized:
+      (item.paymentMethodNormalized as FinancialTransaction["paymentMethodNormalized"]) ?? null,
     type: item.type as FinancialTransaction["type"],
     categoryId: item.categoryId,
     amountCents: item.amountCents,
@@ -174,7 +194,12 @@ class PrismaTransactionsRepository implements TransactionsRepository {
 
     if (filters.type) where.type = filters.type;
     if (filters.source) where.source = filters.source;
+    if (filters.sources && filters.sources.length > 0) {
+      where.source = { in: filters.sources };
+    }
     if (filters.status) where.status = filters.status;
+    if (filters.marketplace) where.marketplace = filters.marketplace;
+    if (filters.paymentMethod) where.paymentMethodNormalized = filters.paymentMethod;
 
     if (filters.startDate || filters.endDate) {
       where.occurredAt = {};
@@ -217,6 +242,10 @@ class PrismaTransactionsRepository implements TransactionsRepository {
       data: {
         externalSource: input.externalSource ?? null,
         externalId: input.externalId ?? null,
+        marketplace: input.marketplace ?? null,
+        orderNumber: input.orderNumber ?? null,
+        paymentMethodRaw: input.paymentMethodRaw ?? null,
+        paymentMethodNormalized: input.paymentMethodNormalized ?? null,
         type: input.type,
         categoryId: input.categoryId ?? null,
         amountCents: input.amountCents,

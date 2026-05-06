@@ -2,6 +2,7 @@ import { getPrismaClient } from "@/core/db/prisma-client";
 import { logError, logInfo } from "@/core/observability/logger";
 import type { ActionResult } from "@/types/api";
 
+import { resolveShopifyPaymentMethod } from "./payment-method";
 import type { ShopifyOrderPayload } from "./types";
 
 type SyncResult = {
@@ -56,9 +57,14 @@ function formatFetchError(err: unknown): string {
 function mapOrderToPrismaData(order: ShopifyOrderPayload) {
   const rawPrice = parseFloat(order.total_price);
   const amountCents = Math.round((isNaN(rawPrice) ? 0 : rawPrice) * 100);
+  const paymentMethod = resolveShopifyPaymentMethod(order);
   return {
     externalSource: "shopify" as const,
     externalId: String(order.id),
+    marketplace: "shopify",
+    orderNumber: String(order.order_number),
+    paymentMethodRaw: paymentMethod.raw,
+    paymentMethodNormalized: paymentMethod.normalized,
     type: "income" as const,
     source: "integration" as const,
     status: "approved" as const,

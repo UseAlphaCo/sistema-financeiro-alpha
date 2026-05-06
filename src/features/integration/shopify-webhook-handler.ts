@@ -2,6 +2,7 @@ import { getPrismaClient } from "@/core/db/prisma-client";
 import type { CreateTransactionInput } from "@/features/transactions/types";
 import type { ActionResult } from "@/types/api";
 
+import { resolveShopifyPaymentMethod } from "./payment-method";
 import type { ShopifyOrderPayload, WebhookStatus } from "./types";
 import { webhookEventsRepository } from "./webhook-events-repository";
 
@@ -23,10 +24,15 @@ function mapOrderToTransaction(
 ): CreateTransactionInput {
   const rawPrice = parseFloat(order.total_price);
   const amountCents = Math.round((isNaN(rawPrice) ? 0 : rawPrice) * 100);
+  const paymentMethod = resolveShopifyPaymentMethod(order);
 
   return {
     externalSource: "shopify",
     externalId: String(order.id),
+    marketplace: "shopify",
+    orderNumber: String(order.order_number),
+    paymentMethodRaw: paymentMethod.raw ?? undefined,
+    paymentMethodNormalized: paymentMethod.normalized,
     type: "income",
     source: "webhook",
     status: "approved",
@@ -93,6 +99,10 @@ export async function handleShopifyWebhook(
         create: {
           externalSource: transactionInput.externalSource!,
           externalId: transactionInput.externalId!,
+          marketplace: transactionInput.marketplace ?? null,
+          orderNumber: transactionInput.orderNumber ?? null,
+          paymentMethodRaw: transactionInput.paymentMethodRaw ?? null,
+          paymentMethodNormalized: transactionInput.paymentMethodNormalized ?? null,
           type: transactionInput.type,
           source: transactionInput.source,
           status: transactionInput.status ?? "pending",

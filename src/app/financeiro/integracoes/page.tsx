@@ -2,13 +2,25 @@
 
 import { useEffect, useState } from "react";
 
-type WebhookEvent = {
+type TransactionItem = {
   id: string;
+  externalSource: string | null;
+  marketplace: string | null;
+  orderNumber: string | null;
+  paymentMethodRaw: string | null;
+  paymentMethodNormalized:
+    | "credit_card"
+    | "pix"
+    | "boleto"
+    | "bank_transfer"
+    | "wallet"
+    | "cash"
+    | "other"
+    | null;
+  amountCents: number;
+  occurredAt: string;
+  description: string | null;
   source: string;
-  topic: string;
-  status: "processed" | "failed" | "skipped";
-  processedAt: string | null;
-  createdAt: string;
 };
 
 type SyncResult = {
@@ -20,28 +32,49 @@ type SyncResult = {
 
 type ApiEnvelope<T> = { success: boolean; data: T | null; error: string | null };
 
-const STATUS_LABELS: Record<WebhookEvent["status"], string> = {
-  processed: "Processado",
-  failed: "Falhou",
-  skipped: "Ignorado",
+const PAYMENT_METHOD_LABELS: Record<
+  NonNullable<TransactionItem["paymentMethodNormalized"]>,
+  string
+> = {
+  credit_card: "Cartão de crédito",
+  pix: "Pix",
+  boleto: "Boleto",
+  bank_transfer: "Transferência",
+  wallet: "Carteira digital",
+  cash: "Dinheiro",
+  other: "Outro",
 };
 
-const STATUS_CLASSES: Record<WebhookEvent["status"], string> = {
-  processed: "bg-green-100 text-green-800",
-  failed: "bg-red-100 text-red-800",
-  skipped: "bg-gray-100 text-gray-600",
-};
-
-function formatDate(iso: string | null): string {
-  if (!iso) return "—";
+function formatDate(iso: string): string {
   return new Intl.DateTimeFormat("pt-BR", {
     dateStyle: "short",
-    timeStyle: "short",
   }).format(new Date(iso));
 }
 
+function formatCurrency(cents: number): string {
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  }).format(cents / 100);
+}
+
+function parseOrderNumber(item: TransactionItem): string {
+  if (item.orderNumber) return item.orderNumber;
+  if (!item.description) return "—";
+  const match = item.description.match(/Pedido\s*#\s*([\w-]+)/i);
+  return match ? match[1] : "—";
+}
+
+function formatPaymentMethod(item: TransactionItem): string {
+  if (item.paymentMethodNormalized) {
+    return PAYMENT_METHOD_LABELS[item.paymentMethodNormalized];
+  }
+  if (item.paymentMethodRaw) return item.paymentMethodRaw;
+  return "Não informado";
+}
+
 export default function IntegracoesPage() {
-  const [items, setItems] = useState<WebhookEvent[]>([]);
+  const [items, setItems] = useState<TransactionItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loadingList, setLoadingList] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
@@ -55,8 +88,13 @@ export default function IntegracoesPage() {
     setLoadingList(true);
     setListError(null);
     try {
-      const res = await fetch("/api/financial/transactions?source=webhook&source=integration&limit=50");
-      const json = (await res.json()) as ApiEnvelope<{ items: WebhookEvent[]; total: number; pagination: { total: number } }>;
+      const res = await fetch(
+        "/api/financial/transactions?sources=integration,webhook&type=income&limit=50"
+      );
+      const json = (await res.json()) as ApiEnvelope<{
+        items: TransactionItem[];
+        pagination: { total: number };
+      }>;
       if (json.success && json.data) {
         setItems(json.data.items ?? []);
         setTotal(json.data.pagination?.total ?? 0);
@@ -93,7 +131,11 @@ export default function IntegracoesPage() {
   }
 
   useEffect(() => {
-    void loadEvents();
+    const timer = setTimeout(() => {
+      void loadEvents();
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, []);
 
   return (
@@ -184,22 +226,30 @@ export default function IntegracoesPage() {
               <table className="min-w-full divide-y divide-gray-200 text-sm">
                 <thead className="bg-gray-50 text-xs font-medium uppercase tracking-wide text-gray-500">
                   <tr>
+                    <th className="px-4 py-3 text-left">Marketplace</th>
+                    <th className="px-4 py-3 text-left">Número do pedido</th>
                     <th className="px-4 py-3 text-left">Data</th>
-                    <th className="px-4 py-3 text-left">Descrição</th>
-                    <th className="px-4 py-3 text-left">Origem</th>
+                    <th className="px-4 py-3 text-left">Forma de pagamento</th>
                     <th className="px-4 py-3 text-right">Valor</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {items.map((item: any) => (
+                  {items.map((item) => (
                     <tr key={item.id} className="hover:bg-gray-50">
-                      <td className="whitespace-nowrap px-4 py-3 text-gray-600">
-                        {new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" }).format(new Date(item.occurredAt))}
+                      <td className="whitespace-nowrap px-4 py-3 text-gray-600 capitalize">
+                        {item.marketplace ?? item.externalSource ?? "—"}
                       </td>
-                      <td className="px-4 py-3 text-gray-900">{item.description ?? "—"}</td>
-                      <td className="whitespace-nowrap px-4 py-3 text-gray-500 capitalize">{item.source}</td>
+                      <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
+                        {parseOrderNumber(item)}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-gray-600">
+                        {formatDate(item.occurredAt)}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-gray-600">
+                        {formatPaymentMethod(item)}
+                      </td>
                       <td className="whitespace-nowrap px-4 py-3 text-right font-medium text-green-700">
-                        {new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(item.amountCents / 100)}
+                        {formatCurrency(item.amountCents)}
                       </td>
                     </tr>
                   ))}

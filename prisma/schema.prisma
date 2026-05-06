@@ -12,6 +12,10 @@ model FinancialTransaction {
   id            String   @id @default(cuid())
   externalSource String?
   externalId    String?
+  marketplace   String?
+  orderNumber   String?
+  paymentMethodRaw String?
+  paymentMethodNormalized String?
   type          String
   categoryId    String?
   amountCents   Int
@@ -32,6 +36,9 @@ model FinancialTransaction {
   @@index([type])
   @@index([status])
   @@index([deletedAt])
+  @@index([marketplace])
+  @@index([paymentMethodNormalized])
+  @@index([orderNumber])
   @@unique([externalSource, externalId])
 }
 

@@ -1,15 +1,29 @@
 export const TRANSACTION_TYPES = ["income", "expense", "transfer"] as const;
 export const TRANSACTION_STATUSES = ["pending", "approved", "rejected", "applied"] as const;
 export const TRANSACTION_SOURCES = ["manual", "import", "integration", "webhook"] as const;
+export const PAYMENT_METHODS = [
+  "credit_card",
+  "pix",
+  "boleto",
+  "bank_transfer",
+  "wallet",
+  "cash",
+  "other",
+] as const;
 
 export type TransactionType = (typeof TRANSACTION_TYPES)[number];
 export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number];
 export type TransactionSource = (typeof TRANSACTION_SOURCES)[number];
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
 export type FinancialTransaction = {
   id: string;
   externalSource: string | null;
   externalId: string | null;
+  marketplace: string | null;
+  orderNumber: string | null;
+  paymentMethodRaw: string | null;
+  paymentMethodNormalized: PaymentMethod | null;
   type: TransactionType;
   categoryId: string | null;
   amountCents: number;
@@ -29,6 +43,10 @@ export type FinancialTransaction = {
 export type CreateTransactionInput = {
   externalSource?: string;
   externalId?: string;
+  marketplace?: string;
+  orderNumber?: string;
+  paymentMethodRaw?: string;
+  paymentMethodNormalized?: PaymentMethod;
   type: TransactionType;
   categoryId?: string;
   amountCents: number;
@@ -55,7 +73,10 @@ export type ListTransactionsFilters = {
   limit: number;
   type?: TransactionType;
   source?: TransactionSource;
+  sources?: TransactionSource[];
   status?: TransactionStatus;
+  marketplace?: string;
+  paymentMethod?: PaymentMethod;
   startDate?: string;
   endDate?: string;
   search?: string;

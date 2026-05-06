@@ -1,15 +1,22 @@
 import { z } from "zod";
 
 import { computeCashFlow } from "@/features/cash-flow/service";
+import { PAYMENT_METHODS } from "@/features/transactions/types";
 import type { CashFlowSummary } from "@/features/cash-flow/types";
 import type { ActionResult } from "@/types/api";
 
+const dateFilterSchema = z.union([
+  z.string().datetime(),
+  z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+]);
+
 const cashFlowFiltersSchema = z.object({
   days: z.coerce.number().int().min(1).max(365).optional(),
-  startDate: z.string().datetime().optional(),
-  endDate: z.string().datetime().optional(),
+  startDate: dateFilterSchema.optional(),
+  endDate: dateFilterSchema.optional(),
   source: z.string().optional(),
   categoryId: z.string().optional(),
+  paymentMethod: z.enum(PAYMENT_METHODS).optional(),
 });
 
 export async function getCashFlowAction(

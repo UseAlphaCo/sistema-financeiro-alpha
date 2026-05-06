@@ -89,7 +89,11 @@ export default function LancamentosPage() {
   }
 
   useEffect(() => {
-    void loadManualTransactions();
+    const timer = setTimeout(() => {
+      void loadManualTransactions();
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, []);
 
   function startEditing(item: TransactionItem) {

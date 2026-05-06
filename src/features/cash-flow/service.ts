@@ -17,7 +17,7 @@ type AggregateRow = {
 async function aggregateTransactions(
   start: Date,
   end: Date,
-  extraFilters: { source?: string; categoryId?: string }
+  extraFilters: { source?: string; categoryId?: string; paymentMethod?: string }
 ): Promise<AggregateRow[]> {
   const db = getPrismaClient();
 
@@ -38,6 +38,11 @@ async function aggregateTransactions(
   if (extraFilters.categoryId) {
     values.push(extraFilters.categoryId);
     conditions.push(`"categoryId" = $${values.length}`);
+  }
+
+  if (extraFilters.paymentMethod) {
+    values.push(extraFilters.paymentMethod);
+    conditions.push(`"paymentMethodNormalized" = $${values.length}`);
   }
 
   const sql = `
@@ -123,6 +128,7 @@ export async function computeCashFlow(
   const extraFilters = {
     source: filters.source,
     categoryId: filters.categoryId,
+    paymentMethod: filters.paymentMethod,
   };
 
   const [currentRows, prevRange] = await Promise.all([

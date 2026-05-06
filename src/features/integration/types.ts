@@ -33,4 +33,6 @@ export type ShopifyOrderPayload = {
   currency: string;
   processed_at: string;
   created_at: string;
+  gateway?: string | null;
+  payment_gateway_names?: string[] | null;
 };
