@@ -15,6 +15,44 @@ type ShopifyOrdersResponse = {
   orders: ShopifyOrderPayload[];
 };
 
+function stripWrappingQuotes(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.replace(/^['"]+|['"]+$/g, "").replace(/\r?\n/g, "").trim();
+}
+
+function normalizeShopifyStoreDomain(storeUrl: string): string {
+  const input = stripWrappingQuotes(storeUrl);
+  if (!input) return "";
+
+  try {
+    const url = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`);
+    return url.hostname;
+  } catch {
+    return input.replace(/^https?:\/\//i, "").replace(/\/.*/, "");
+  }
+}
+
+function formatFetchError(err: unknown): string {
+  if (!(err instanceof Error)) {
+    return String(err);
+  }
+
+  const cause = (err as Error & { cause?: unknown }).cause;
+  if (cause && typeof cause === "object") {
+    const causeObj = cause as { code?: string; message?: string };
+    const parts = [err.message];
+    if (causeObj.code) {
+      parts.push(`code=${causeObj.code}`);
+    }
+    if (causeObj.message) {
+      parts.push(`cause=${causeObj.message}`);
+    }
+    return parts.join(" | ");
+  }
+
+  return err.message;
+}
+
 function mapOrderToPrismaData(order: ShopifyOrderPayload) {
   const rawPrice = parseFloat(order.total_price);
   const amountCents = Math.round((isNaN(rawPrice) ? 0 : rawPrice) * 100);
@@ -36,6 +74,29 @@ export async function syncShopifyOrders(
   accessToken: string,
   days = 30
 ): Promise<ActionResult<SyncResult>> {
+  const storeDomain = normalizeShopifyStoreDomain(storeUrl);
+  const safeToken = stripWrappingQuotes(accessToken);
+
+  logInfo("shopify_sync_started", {
+    storeDomain,
+    tokenLength: safeToken.length,
+    days,
+  });
+
+  if (!storeDomain) {
+    return {
+      success: false,
+      error: "SHOPIFY_STORE_URL invalida.",
+    };
+  }
+
+  if (!safeToken) {
+    return {
+      success: false,
+      error: "SHOPIFY_ACCESS_TOKEN invalido ou vazio.",
+    };
+  }
+
   const since = new Date();
   since.setDate(since.getDate() - days);
   const sinceIso = since.toISOString();
@@ -44,7 +105,7 @@ export async function syncShopifyOrders(
 
   // Busca pedidos paginados (250 por página, limite da API REST)
   let pageUrl: string | null =
-    `https://${storeUrl}/admin/api/2024-10/orders.json` +
+    `https://${storeDomain}/admin/api/2024-10/orders.json` +
     `?status=any&limit=250&created_at_min=${sinceIso}&financial_status=paid`;
 
   while (pageUrl) {
@@ -52,14 +113,19 @@ export async function syncShopifyOrders(
     try {
       res = await fetch(pageUrl, {
         headers: {
-          "X-Shopify-Access-Token": accessToken,
+          "X-Shopify-Access-Token": safeToken,
           "Content-Type": "application/json",
         },
       });
     } catch (err) {
+      logError("shopify_sync_fetch_failed", {
+        storeDomain,
+        pageUrl,
+        error: formatFetchError(err),
+      });
       return {
         success: false,
-        error: `Falha ao conectar na API Shopify: ${err instanceof Error ? err.message : String(err)}`,
+        error: `Falha ao conectar na API Shopify: ${formatFetchError(err)}`,
       };
     }
 

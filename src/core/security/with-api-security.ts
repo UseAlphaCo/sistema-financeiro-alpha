@@ -86,11 +86,17 @@ export async function withApiSecurity(
     trackEndpointCall(request.nextUrl.pathname, Date.now() - startedAt, false);
 
     if (options.sensitive) {
-      logInfo("api_request_success", {
+      const logPayload = {
         requestId,
         endpoint: request.nextUrl.pathname,
         role: session?.role ?? null,
-      });
+        status: response.status,
+      };
+      if (response.status >= 400) {
+        logError("api_request_failed", logPayload);
+      } else {
+        logInfo("api_request_success", logPayload);
+      }
     }
 
     return response;
