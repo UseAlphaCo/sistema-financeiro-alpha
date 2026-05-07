@@ -16,6 +16,10 @@ model FinancialTransaction {
   orderNumber   String?
   paymentMethodRaw String?
   paymentMethodNormalized String?
+  shippingCents Int? @default(0)
+  discountCents Int? @default(0)
+  taxCents Int? @default(0)
+  feeCents Int? @default(0)
   type          String
   categoryId    String?
   amountCents   Int

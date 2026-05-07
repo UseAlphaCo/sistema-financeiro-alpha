@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { computeCashFlow } from "@/features/cash-flow/service";
 import { PAYMENT_METHODS } from "@/features/transactions/types";
+import { PERIOD_PRESETS } from "@/lib/date-utils";
 import type { CashFlowSummary } from "@/features/cash-flow/types";
 import type { ActionResult } from "@/types/api";
 
@@ -11,6 +12,7 @@ const dateFilterSchema = z.union([
 ]);
 
 const cashFlowFiltersSchema = z.object({
+  preset: z.enum(PERIOD_PRESETS).optional(),
   days: z.coerce.number().int().min(1).max(365).optional(),
   startDate: dateFilterSchema.optional(),
   endDate: dateFilterSchema.optional(),

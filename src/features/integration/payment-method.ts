@@ -39,10 +39,43 @@ export function normalizePaymentMethod(rawValue: string | null | undefined): Pay
 export function resolveShopifyPaymentMethod(order: {
   gateway?: string | null;
   payment_gateway_names?: string[] | null;
+  note?: string | null;
+  note_attributes?: Array<{ name?: string; value?: string }> | null;
+  transactions?: Array<{
+    gateway?: string;
+    payment_details?: {
+      credit_card?: { brand?: string };
+      wallet?: { type?: string };
+    };
+  }> | null;
 }): PaymentMethodInfo {
+  const rawFromPaymentGateway = getFirstNonEmpty([order.payment_gateway_names?.[0] ?? null]);
+
+  const firstTransaction = order.transactions?.[0];
+  const rawFromTransaction = getFirstNonEmpty([
+    firstTransaction?.payment_details?.credit_card?.brand,
+    firstTransaction?.payment_details?.wallet?.type,
+    firstTransaction?.gateway,
+  ]);
+
+  const rawFromNoteAttribute =
+    order.note_attributes
+      ?.find((attr) => /payment|metodo|forma|gateway/i.test(attr.name ?? ""))
+      ?.value ?? null;
+
+  const rawFromNote = (() => {
+    const note = (order.note ?? "").trim();
+    if (!note) return null;
+    const match = note.match(/(pix|boleto|ted|doc|transfer|visa|master|elo|amex|card|paypal)/i);
+    return match?.[1] ?? null;
+  })();
+
   const raw = getFirstNonEmpty([
-    order.payment_gateway_names?.[0] ?? null,
+    rawFromPaymentGateway,
+    rawFromTransaction,
     order.gateway ?? null,
+    rawFromNoteAttribute,
+    rawFromNote,
   ]);
 
   return {

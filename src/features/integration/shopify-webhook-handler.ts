@@ -8,6 +8,12 @@ import { webhookEventsRepository } from "./webhook-events-repository";
 
 const SUPPORTED_TOPICS = ["orders/paid", "orders/create"] as const;
 
+function parseMoneyToCents(value: string | undefined | null): number {
+  const parsed = parseFloat(value ?? "0");
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.round(parsed * 100);
+}
+
 function isShopifyOrderPayload(value: unknown): value is ShopifyOrderPayload {
   if (!value || typeof value !== "object") return false;
   const p = value as Record<string, unknown>;
@@ -22,8 +28,11 @@ function isShopifyOrderPayload(value: unknown): value is ShopifyOrderPayload {
 function mapOrderToTransaction(
   order: ShopifyOrderPayload
 ): CreateTransactionInput {
-  const rawPrice = parseFloat(order.total_price);
-  const amountCents = Math.round((isNaN(rawPrice) ? 0 : rawPrice) * 100);
+  const amountCents = parseMoneyToCents(order.total_price);
+  const shippingCents = parseMoneyToCents(order.total_shipping_price);
+  const discountCents = parseMoneyToCents(order.total_discounts);
+  const taxCents = parseMoneyToCents(order.total_tax);
+  const feeCents = parseMoneyToCents(order.current_total_additional_fees_set?.shop_money?.amount);
   const paymentMethod = resolveShopifyPaymentMethod(order);
 
   return {
@@ -33,6 +42,10 @@ function mapOrderToTransaction(
     orderNumber: String(order.order_number),
     paymentMethodRaw: paymentMethod.raw ?? undefined,
     paymentMethodNormalized: paymentMethod.normalized,
+    shippingCents,
+    discountCents,
+    taxCents,
+    feeCents,
     type: "income",
     source: "webhook",
     status: "approved",
@@ -103,6 +116,10 @@ export async function handleShopifyWebhook(
           orderNumber: transactionInput.orderNumber ?? null,
           paymentMethodRaw: transactionInput.paymentMethodRaw ?? null,
           paymentMethodNormalized: transactionInput.paymentMethodNormalized ?? null,
+          shippingCents: transactionInput.shippingCents ?? 0,
+          discountCents: transactionInput.discountCents ?? 0,
+          taxCents: transactionInput.taxCents ?? 0,
+          feeCents: transactionInput.feeCents ?? 0,
           type: transactionInput.type,
           source: transactionInput.source,
           status: transactionInput.status ?? "pending",

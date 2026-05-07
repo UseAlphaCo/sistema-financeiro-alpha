@@ -79,6 +79,10 @@ class InMemoryTransactionsRepository implements TransactionsRepository {
       orderNumber: input.orderNumber ?? null,
       paymentMethodRaw: input.paymentMethodRaw ?? null,
       paymentMethodNormalized: input.paymentMethodNormalized ?? null,
+      shippingCents: input.shippingCents ?? 0,
+      discountCents: input.discountCents ?? 0,
+      taxCents: input.taxCents ?? 0,
+      feeCents: input.feeCents ?? 0,
       type: input.type,
       categoryId: input.categoryId ?? null,
       amountCents: input.amountCents,
@@ -143,6 +147,10 @@ function mapDbTransaction(item: {
   orderNumber?: string | null;
   paymentMethodRaw?: string | null;
   paymentMethodNormalized?: string | null;
+  shippingCents?: number | null;
+  discountCents?: number | null;
+  taxCents?: number | null;
+  feeCents?: number | null;
   type: string;
   categoryId: string | null;
   amountCents: number;
@@ -167,6 +175,10 @@ function mapDbTransaction(item: {
     paymentMethodRaw: item.paymentMethodRaw ?? null,
     paymentMethodNormalized:
       (item.paymentMethodNormalized as FinancialTransaction["paymentMethodNormalized"]) ?? null,
+    shippingCents: item.shippingCents ?? 0,
+    discountCents: item.discountCents ?? 0,
+    taxCents: item.taxCents ?? 0,
+    feeCents: item.feeCents ?? 0,
     type: item.type as FinancialTransaction["type"],
     categoryId: item.categoryId,
     amountCents: item.amountCents,
@@ -246,6 +258,10 @@ class PrismaTransactionsRepository implements TransactionsRepository {
         orderNumber: input.orderNumber ?? null,
         paymentMethodRaw: input.paymentMethodRaw ?? null,
         paymentMethodNormalized: input.paymentMethodNormalized ?? null,
+        shippingCents: input.shippingCents ?? 0,
+        discountCents: input.discountCents ?? 0,
+        taxCents: input.taxCents ?? 0,
+        feeCents: input.feeCents ?? 0,
         type: input.type,
         categoryId: input.categoryId ?? null,
         amountCents: input.amountCents,

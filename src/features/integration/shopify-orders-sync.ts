@@ -10,6 +10,7 @@ type SyncResult = {
   imported: number;
   skipped: number;
   failed: number;
+  failureReasons: Record<string, number>;
 };
 
 type ShopifyOrdersResponse = {
@@ -54,9 +55,36 @@ function formatFetchError(err: unknown): string {
   return err.message;
 }
 
+function parseMoneyToCents(value: string | undefined | null): number {
+  const parsed = parseFloat(value ?? "0");
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.round(parsed * 100);
+}
+
+function extractFailureReason(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/timeout|timed out/i.test(message)) return "timeout";
+  if (/date|invalid.*occurredAt/i.test(message)) return "invalid_date";
+  if (/connection|database|socket|prisma/i.test(message)) return "database_error";
+  if (/unique|constraint/i.test(message)) return "constraint_error";
+  return "unknown_error";
+}
+
+function resolveOccurredAt(order: ShopifyOrderPayload): Date {
+  const raw = order.processed_at ?? order.created_at;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("invalid occurredAt in Shopify order payload");
+  }
+  return date;
+}
+
 function mapOrderToPrismaData(order: ShopifyOrderPayload) {
-  const rawPrice = parseFloat(order.total_price);
-  const amountCents = Math.round((isNaN(rawPrice) ? 0 : rawPrice) * 100);
+  const amountCents = parseMoneyToCents(order.total_price);
+  const shippingCents = parseMoneyToCents(order.total_shipping_price);
+  const discountCents = parseMoneyToCents(order.total_discounts);
+  const taxCents = parseMoneyToCents(order.total_tax);
+  const feeCents = parseMoneyToCents(order.current_total_additional_fees_set?.shop_money?.amount);
   const paymentMethod = resolveShopifyPaymentMethod(order);
   return {
     externalSource: "shopify" as const,
@@ -65,12 +93,16 @@ function mapOrderToPrismaData(order: ShopifyOrderPayload) {
     orderNumber: String(order.order_number),
     paymentMethodRaw: paymentMethod.raw,
     paymentMethodNormalized: paymentMethod.normalized,
+    shippingCents,
+    discountCents,
+    taxCents,
+    feeCents,
     type: "income" as const,
     source: "integration" as const,
     status: "approved" as const,
     amountCents,
     currency: order.currency ?? "BRL",
-    occurredAt: new Date(order.processed_at ?? order.created_at),
+    occurredAt: resolveOccurredAt(order),
     description: `Pedido #${order.order_number}`,
   };
 }
@@ -158,6 +190,7 @@ export async function syncShopifyOrders(
   let imported = 0;
   let skipped = 0;
   let failed = 0;
+  const failureReasons: Record<string, number> = {};
 
   for (const order of allOrders) {
     const externalId = String(order.id);
@@ -182,14 +215,23 @@ export async function syncShopifyOrders(
       }
     } catch (err) {
       failed++;
+      const reason = extractFailureReason(err);
+      failureReasons[reason] = (failureReasons[reason] ?? 0) + 1;
       logError("shopify_sync_order_failed", {
         externalId,
+        reason,
         error: err instanceof Error ? err.message : String(err),
       });
     }
   }
 
-  logInfo("shopify_sync_complete", { fetched: allOrders.length, imported, skipped, failed });
+  logInfo("shopify_sync_complete", {
+    fetched: allOrders.length,
+    imported,
+    skipped,
+    failed,
+    failureReasons,
+  });
 
   return {
     success: true,
@@ -198,6 +240,7 @@ export async function syncShopifyOrders(
       imported,
       skipped,
       failed,
+      failureReasons,
     },
   };
 }

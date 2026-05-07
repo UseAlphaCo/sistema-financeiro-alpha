@@ -1,4 +1,5 @@
 import { computeCashFlow } from "@/features/cash-flow/service";
+import { PERIOD_PRESETS, type PeriodPreset } from "@/lib/date-utils";
 
 export const dynamic = "force-dynamic";
 
@@ -44,30 +45,58 @@ const SOURCE_COLORS: Record<string, string> = {
   webhook: "bg-indigo-500",
 };
 
-type DayOption = { label: string; value: number };
+type PresetOption = { label: string; value: PeriodPreset };
 
-const DAY_OPTIONS: DayOption[] = [
-  { label: "7 dias", value: 7 },
-  { label: "30 dias", value: 30 },
-  { label: "90 dias", value: 90 },
+const PRESET_OPTIONS: PresetOption[] = [
+  { label: "Ontem", value: "yesterday" },
+  { label: "Hoje", value: "today" },
+  { label: "7 dias", value: "d7" },
+  { label: "30 dias", value: "d30" },
+  { label: "60 dias", value: "d60" },
+  { label: "90 dias", value: "d90" },
 ];
 
+const PRESET_TO_DAYS: Record<PeriodPreset, number> = {
+  yesterday: 1,
+  today: 1,
+  d7: 7,
+  d30: 30,
+  d60: 60,
+  d90: 90,
+};
+
+function isPreset(value: string | undefined): value is PeriodPreset {
+  if (!value) return false;
+  return PERIOD_PRESETS.includes(value as PeriodPreset);
+}
+
 type Props = {
-  searchParams: Promise<{ days?: string }>;
+  searchParams: Promise<{ days?: string; preset?: string }>;
 };
 
 export default async function DashboardPage({ searchParams }: Props) {
   const params = await searchParams;
-  const days = parseInt(params.days ?? "30", 10) || 30;
+  const preset: PeriodPreset = isPreset(params.preset) ? params.preset : "yesterday";
+  const days = parseInt(params.days ?? String(PRESET_TO_DAYS[preset]), 10) || PRESET_TO_DAYS[preset];
 
-  const summary = await computeCashFlow({ days });
+  const summary = await computeCashFlow({ preset, days });
 
-  const { period, totalIncomeCents, totalExpenseCents, totalFeesCents, netCents, bySource, previousPeriod } = summary;
+  const {
+    period,
+    totalIncomeCents,
+    totalExpenseCents,
+    totalFeesCents,
+    totalDiscountCents,
+    totalShippingCents,
+    netCents,
+    bySource,
+    previousPeriod,
+  } = summary;
 
   const totalNetMarketplace = bySource.reduce((acc, s) => acc + s.netCents, 0);
 
   return (
-    <div className="max-w-5xl space-y-8">
+    <div className="w-full space-y-8">
       {/* Cabeçalho + seletor de período */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -77,12 +106,12 @@ export default async function DashboardPage({ searchParams }: Props) {
           </p>
         </div>
         <div className="flex gap-1">
-          {DAY_OPTIONS.map((opt) => (
+          {PRESET_OPTIONS.map((opt) => (
             <a
               key={opt.value}
-              href={`/financeiro/dashboard?days=${opt.value}`}
+              href={`/financeiro/dashboard?preset=${opt.value}`}
               className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
-                days === opt.value
+                preset === opt.value
                   ? "border-gray-900 bg-gray-900 text-white"
                   : "border-gray-200 text-gray-500 hover:bg-gray-50"
               }`}
@@ -94,7 +123,7 @@ export default async function DashboardPage({ searchParams }: Props) {
       </div>
 
       {/* Cards de resumo */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
         <SummaryCard
           label="Receita bruta"
           value={formatBRL(totalIncomeCents)}
@@ -111,6 +140,20 @@ export default async function DashboardPage({ searchParams }: Props) {
           label="Taxas totais"
           value={formatBRL(totalFeesCents)}
           sublabel="descontadas da receita"
+          delta={previousPeriod ? deltaPercent(totalFeesCents, previousPeriod.totalTaxCents) : null}
+          deltaClass={previousPeriod ? deltaClass(totalFeesCents, previousPeriod.totalTaxCents, true) : "text-gray-400"}
+        />
+        <SummaryCard
+          label="Descontos"
+          value={formatBRL(totalDiscountCents)}
+          delta={previousPeriod ? deltaPercent(totalDiscountCents, previousPeriod.totalDiscountCents) : null}
+          deltaClass={previousPeriod ? deltaClass(totalDiscountCents, previousPeriod.totalDiscountCents, true) : "text-gray-400"}
+        />
+        <SummaryCard
+          label="Entrega"
+          value={formatBRL(totalShippingCents)}
+          delta={previousPeriod ? deltaPercent(totalShippingCents, previousPeriod.totalShippingCents) : null}
+          deltaClass={previousPeriod ? deltaClass(totalShippingCents, previousPeriod.totalShippingCents, true) : "text-gray-400"}
         />
         <SummaryCard
           label="Líquido"

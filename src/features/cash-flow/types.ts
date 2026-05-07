@@ -1,7 +1,10 @@
+import type { PeriodPreset } from "@/lib/date-utils";
+
 export type CashFlowPeriod = {
   startDate: string;
   endDate: string;
   days: number;
+  preset?: PeriodPreset;
 };
 
 export type CashFlowBySource = {
@@ -17,16 +20,23 @@ export type CashFlowSummary = {
   totalIncomeCents: number;
   totalExpenseCents: number;
   totalFeesCents: number;
+  totalDiscountCents: number;
+  totalShippingCents: number;
+  totalTaxCents: number;
   netCents: number;
   bySource: CashFlowBySource[];
   previousPeriod: {
     totalIncomeCents: number;
     totalExpenseCents: number;
+    totalDiscountCents: number;
+    totalShippingCents: number;
+    totalTaxCents: number;
     netCents: number;
   } | null;
 };
 
 export type CashFlowFilters = {
+  preset?: PeriodPreset;
   days?: number;
   startDate?: string;
   endDate?: string;

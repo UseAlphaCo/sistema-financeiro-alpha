@@ -1,5 +1,9 @@
 import { getPrismaClient } from "@/core/db/prisma-client";
-import { getDateRangeForPeriod, getPreviousPeriodRange } from "@/lib/date-utils";
+import {
+  getDateRangeForPeriod,
+  getDateRangeForPreset,
+  getPreviousPeriodRange,
+} from "@/lib/date-utils";
 import type {
   CashFlowBySource,
   CashFlowFilters,
@@ -12,6 +16,12 @@ type AggregateRow = {
   type: string;
   total_cents: bigint | number;
   tx_count: bigint | number;
+};
+
+type BreakdownRow = {
+  total_discount_cents: bigint | number;
+  total_shipping_cents: bigint | number;
+  total_tax_cents: bigint | number;
 };
 
 async function aggregateTransactions(
@@ -53,6 +63,56 @@ async function aggregateTransactions(
   `;
 
   return db.$queryRawUnsafe<AggregateRow[]>(sql, ...values);
+}
+
+async function aggregateBreakdown(
+  start: Date,
+  end: Date,
+  extraFilters: { source?: string; categoryId?: string; paymentMethod?: string }
+): Promise<BreakdownRow> {
+  const db = getPrismaClient();
+
+  const conditions: string[] = [
+    `"deletedAt" IS NULL`,
+    `"status" IN ('approved', 'applied')`,
+    `"occurredAt" >= $1`,
+    `"occurredAt" <= $2`,
+  ];
+
+  const values: unknown[] = [start, end];
+
+  if (extraFilters.source) {
+    values.push(extraFilters.source);
+    conditions.push(`"source" = $${values.length}`);
+  }
+
+  if (extraFilters.categoryId) {
+    values.push(extraFilters.categoryId);
+    conditions.push(`"categoryId" = $${values.length}`);
+  }
+
+  if (extraFilters.paymentMethod) {
+    values.push(extraFilters.paymentMethod);
+    conditions.push(`"paymentMethodNormalized" = $${values.length}`);
+  }
+
+  const sql = `
+    SELECT
+      COALESCE(SUM("discountCents"), 0) AS total_discount_cents,
+      COALESCE(SUM("shippingCents"), 0) AS total_shipping_cents,
+      COALESCE(SUM("taxCents") + SUM("feeCents"), 0) AS total_tax_cents
+    FROM "FinancialTransaction"
+    WHERE ${conditions.join(" AND ")}
+  `;
+
+  const rows = await db.$queryRawUnsafe<BreakdownRow[]>(sql, ...values);
+  return (
+    rows[0] ?? {
+      total_discount_cents: 0,
+      total_shipping_cents: 0,
+      total_tax_cents: 0,
+    }
+  );
 }
 
 function toNumber(v: bigint | number): number {
@@ -103,6 +163,23 @@ function sumTotals(rows: AggregateRow[]) {
   return { income, expense };
 }
 
+function parseLocalIsoDate(date: string, endOfDay = false): Date {
+  const [year, month, day] = date.split("-").map(Number);
+  const parsed = new Date(year, (month ?? 1) - 1, day ?? 1);
+
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`invalid local date filter: ${date}`);
+  }
+
+  if (endOfDay) {
+    parsed.setHours(23, 59, 59, 999);
+  } else {
+    parsed.setHours(0, 0, 0, 0);
+  }
+
+  return parsed;
+}
+
 export async function computeCashFlow(
   filters: CashFlowFilters
 ): Promise<CashFlowSummary> {
@@ -113,17 +190,19 @@ export async function computeCashFlow(
   let end: Date;
 
   if (filters.startDate && filters.endDate) {
-    start = new Date(filters.startDate);
-    start.setHours(0, 0, 0, 0);
-    end = new Date(filters.endDate);
-    end.setHours(23, 59, 59, 999);
+    start = parseLocalIsoDate(filters.startDate);
+    end = parseLocalIsoDate(filters.endDate, true);
+  } else if (filters.preset) {
+    const presetRange = getDateRangeForPreset(filters.preset, now);
+    start = presetRange.start;
+    end = presetRange.end;
   } else {
     const range = getDateRangeForPeriod(days, now);
     start = range.start;
     end = range.end;
   }
 
-  const periodDays = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;
+  const periodDays = Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1;
 
   const extraFilters = {
     source: filters.source,
@@ -131,12 +210,16 @@ export async function computeCashFlow(
     paymentMethod: filters.paymentMethod,
   };
 
-  const [currentRows, prevRange] = await Promise.all([
+  const [currentRows, currentBreakdown, prevRange] = await Promise.all([
     aggregateTransactions(start, end, extraFilters),
+    aggregateBreakdown(start, end, extraFilters),
     Promise.resolve(getPreviousPeriodRange(start, periodDays)),
   ]);
 
-  const prevRows = await aggregateTransactions(prevRange.start, prevRange.end, extraFilters);
+  const [prevRows, prevBreakdown] = await Promise.all([
+    aggregateTransactions(prevRange.start, prevRange.end, extraFilters),
+    aggregateBreakdown(prevRange.start, prevRange.end, extraFilters),
+  ]);
 
   const sourceMap = buildSourceMap(currentRows);
   const { income: totalIncome, expense: totalExpense } = sumTotals(currentRows);
@@ -146,18 +229,25 @@ export async function computeCashFlow(
     startDate: start.toISOString(),
     endDate: end.toISOString(),
     days: periodDays,
+    preset: filters.preset,
   };
 
   return {
     period,
     totalIncomeCents: totalIncome,
     totalExpenseCents: totalExpense,
-    totalFeesCents: 0,
+    totalFeesCents: toNumber(currentBreakdown.total_tax_cents),
+    totalDiscountCents: toNumber(currentBreakdown.total_discount_cents),
+    totalShippingCents: toNumber(currentBreakdown.total_shipping_cents),
+    totalTaxCents: toNumber(currentBreakdown.total_tax_cents),
     netCents: totalIncome - totalExpense,
     bySource: Array.from(sourceMap.values()),
     previousPeriod: {
       totalIncomeCents: prevIncome,
       totalExpenseCents: prevExpense,
+      totalDiscountCents: toNumber(prevBreakdown.total_discount_cents),
+      totalShippingCents: toNumber(prevBreakdown.total_shipping_cents),
+      totalTaxCents: toNumber(prevBreakdown.total_tax_cents),
       netCents: prevIncome - prevExpense,
     },
   };

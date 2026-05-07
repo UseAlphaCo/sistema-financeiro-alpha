@@ -24,6 +24,10 @@ export type FinancialTransaction = {
   orderNumber: string | null;
   paymentMethodRaw: string | null;
   paymentMethodNormalized: PaymentMethod | null;
+  shippingCents: number;
+  discountCents: number;
+  taxCents: number;
+  feeCents: number;
   type: TransactionType;
   categoryId: string | null;
   amountCents: number;
@@ -47,6 +51,10 @@ export type CreateTransactionInput = {
   orderNumber?: string;
   paymentMethodRaw?: string;
   paymentMethodNormalized?: PaymentMethod;
+  shippingCents?: number;
+  discountCents?: number;
+  taxCents?: number;
+  feeCents?: number;
   type: TransactionType;
   categoryId?: string;
   amountCents: number;
