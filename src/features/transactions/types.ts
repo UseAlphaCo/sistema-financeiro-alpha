@@ -85,6 +85,7 @@ export type ListTransactionsFilters = {
   status?: TransactionStatus;
   marketplace?: string;
   paymentMethod?: PaymentMethod;
+  categoryId?: string;
   startDate?: string;
   endDate?: string;
   search?: string;

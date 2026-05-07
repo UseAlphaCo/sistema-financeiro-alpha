@@ -1,4 +1,5 @@
 import { AppError } from "@/core/errors/app-error";
+import * as categoriesRepository from "@/features/categories/repository";
 import { getTransactionsRepository } from "@/features/transactions/repository";
 import {
   createTransactionSchema,
@@ -7,6 +8,33 @@ import {
   updateTransactionSchema,
 } from "@/features/transactions/validations";
 import type { ActionResult } from "@/types/api";
+
+function requiredDirectionByType(type: "income" | "expense" | "transfer") {
+  if (type === "income") return "entrada" as const;
+  if (type === "expense") return "saida" as const;
+  return null;
+}
+
+async function ensureCategoryMatchesType(params: { categoryId: string; type: "income" | "expense" }) {
+  const category = await categoriesRepository.getCategoryById(params.categoryId);
+
+  if (!category) {
+    return {
+      success: false as const,
+      error: "Categoria informada nao existe.",
+    };
+  }
+
+  const expectedDirection = requiredDirectionByType(params.type);
+  if (expectedDirection && category.direction !== expectedDirection) {
+    return {
+      success: false as const,
+      error: "Categoria incompatível com o tipo do lancamento.",
+    };
+  }
+
+  return { success: true as const };
+}
 
 export async function listTransactionsAction(input: unknown) {
   const parsed = listTransactionsFiltersSchema.safeParse(input);
@@ -28,6 +56,31 @@ export async function createTransactionAction(
       success: false,
       error: "Payload invalido para criacao de transacao.",
     };
+  }
+
+  if (parsed.data.type === "transfer" && parsed.data.categoryId) {
+    return {
+      success: false,
+      error: "Lancamentos do tipo transferencia nao aceitam categoria.",
+    };
+  }
+
+  if (parsed.data.type !== "transfer") {
+    if (!parsed.data.categoryId) {
+      return {
+        success: false,
+        error: "Categoria e obrigatoria para entradas e saidas.",
+      };
+    }
+
+    const categoryValidation = await ensureCategoryMatchesType({
+      categoryId: parsed.data.categoryId,
+      type: parsed.data.type,
+    });
+
+    if (!categoryValidation.success) {
+      return categoryValidation;
+    }
   }
 
   const repository = getTransactionsRepository();
@@ -52,6 +105,42 @@ export async function updateTransactionAction(
   }
 
   const repository = getTransactionsRepository();
+  const existing = await repository.findById(parsed.data.id);
+
+  if (!existing) {
+    return {
+      success: false,
+      error: "Transacao nao encontrada.",
+    };
+  }
+
+  if (existing.type === "transfer" && parsed.data.categoryId) {
+    return {
+      success: false,
+      error: "Lancamentos do tipo transferencia nao aceitam categoria.",
+    };
+  }
+
+  if (existing.type !== "transfer") {
+    if (parsed.data.categoryId === null) {
+      return {
+        success: false,
+        error: "Categoria e obrigatoria para entradas e saidas.",
+      };
+    }
+
+    if (parsed.data.categoryId) {
+      const categoryValidation = await ensureCategoryMatchesType({
+        categoryId: parsed.data.categoryId,
+        type: existing.type,
+      });
+
+      if (!categoryValidation.success) {
+        return categoryValidation;
+      }
+    }
+  }
+
   const updated = await repository.update(parsed.data, actorId);
   if (!updated) {
     return {

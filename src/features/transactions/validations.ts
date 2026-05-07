@@ -30,6 +30,7 @@ export const listTransactionsFiltersSchema = z.object({
   status: z.enum(TRANSACTION_STATUSES).optional(),
   marketplace: z.string().trim().min(1).max(50).optional(),
   paymentMethod: z.enum(PAYMENT_METHODS).optional(),
+  categoryId: z.string().trim().min(1).max(120).optional(),
   startDate: dateStringSchema.optional(),
   endDate: dateStringSchema.optional(),
   search: z.string().trim().min(1).max(200).optional(),

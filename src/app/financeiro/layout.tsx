@@ -1,4 +1,5 @@
 import { createSupabaseServerClient } from "@/core/auth/supabase-server";
+import { LancamentosMenu } from "./LancamentosMenu";
 
 export default async function FinanceiroLayout({
   children,
@@ -23,9 +24,7 @@ export default async function FinanceiroLayout({
           <a href="/financeiro/fluxo-de-caixa" className="hover:text-gray-900">
             Fluxo de Caixa
           </a>
-          <a href="/financeiro/lancamentos" className="hover:text-gray-900">
-            Lançamentos
-          </a>
+          <LancamentosMenu />
           <a href="/financeiro/importacoes" className="hover:text-gray-900">
             Importações
           </a>

@@ -15,6 +15,7 @@ type DeleteInput = {
 
 export interface TransactionsRepository {
   list(filters: ListTransactionsFilters): Promise<PaginatedTransactions>;
+  findById(id: string): Promise<FinancialTransaction | null>;
   create(input: CreateTransactionInput, actorId: string): Promise<FinancialTransaction>;
   update(input: UpdateTransactionInput, actorId: string): Promise<FinancialTransaction | null>;
   remove(input: DeleteInput, actorId: string): Promise<boolean>;
@@ -35,6 +36,9 @@ class InMemoryTransactionsRepository implements TransactionsRepository {
         if (filters.status && item.status !== filters.status) return false;
         if (filters.marketplace && item.marketplace !== filters.marketplace) return false;
         if (filters.paymentMethod && item.paymentMethodNormalized !== filters.paymentMethod) {
+          return false;
+        }
+        if (filters.categoryId && item.categoryId !== filters.categoryId) {
           return false;
         }
 
@@ -67,6 +71,11 @@ class InMemoryTransactionsRepository implements TransactionsRepository {
         hasNext: offset + filters.limit < filtered.length,
       },
     };
+  }
+
+  async findById(id: string): Promise<FinancialTransaction | null> {
+    const item = this.items.find((entry) => entry.id === id && entry.deletedAt === null);
+    return item ?? null;
   }
 
   async create(input: CreateTransactionInput, actorId: string): Promise<FinancialTransaction> {
@@ -212,6 +221,7 @@ class PrismaTransactionsRepository implements TransactionsRepository {
     if (filters.status) where.status = filters.status;
     if (filters.marketplace) where.marketplace = filters.marketplace;
     if (filters.paymentMethod) where.paymentMethodNormalized = filters.paymentMethod;
+    if (filters.categoryId) where.categoryId = filters.categoryId;
 
     if (filters.startDate || filters.endDate) {
       where.occurredAt = {};
@@ -246,6 +256,16 @@ class PrismaTransactionsRepository implements TransactionsRepository {
         hasNext: skip + filters.limit < total,
       },
     };
+  }
+
+  async findById(id: string): Promise<FinancialTransaction | null> {
+    const prisma = getPrismaClient();
+    const row = await prisma.financialTransaction.findUnique({ where: { id } });
+    if (!row || row.deletedAt) {
+      return null;
+    }
+
+    return mapDbTransaction(row);
   }
 
   async create(input: CreateTransactionInput, actorId: string): Promise<FinancialTransaction> {
