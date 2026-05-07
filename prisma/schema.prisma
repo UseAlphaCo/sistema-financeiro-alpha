@@ -48,7 +48,7 @@ model FinancialTransaction {
 
 model TransactionCategory {
   id        String   @id @default(cuid())
-  name      String
+  name      String @unique
   direction String
   color     String?
   createdAt DateTime @default(now())
