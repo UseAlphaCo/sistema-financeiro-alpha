@@ -25,6 +25,21 @@ function isShopifyOrderPayload(value: unknown): value is ShopifyOrderPayload {
   );
 }
 
+function normalizeShopifyDisplayOrderNumber(order: ShopifyOrderPayload): string {
+  const fromName = typeof order.name === "string" ? order.name.trim() : "";
+  if (fromName) {
+    return fromName.startsWith("#") ? fromName : `#${fromName}`;
+  }
+
+  const fromOrderNumber = String(order.order_number ?? "").trim();
+  if (fromOrderNumber) {
+    const clean = fromOrderNumber.replace(/^#/, "");
+    return `#${clean}`;
+  }
+
+  return `#${String(order.id)}`;
+}
+
 function mapOrderToTransaction(
   order: ShopifyOrderPayload
 ): CreateTransactionInput {
@@ -34,12 +49,13 @@ function mapOrderToTransaction(
   const taxCents = parseMoneyToCents(order.total_tax);
   const feeCents = parseMoneyToCents(order.current_total_additional_fees_set?.shop_money?.amount);
   const paymentMethod = resolveShopifyPaymentMethod(order);
+  const displayOrderNumber = normalizeShopifyDisplayOrderNumber(order);
 
   return {
     externalSource: "shopify",
     externalId: String(order.id),
     marketplace: "shopify",
-    orderNumber: String(order.order_number),
+    orderNumber: displayOrderNumber,
     paymentMethodRaw: paymentMethod.raw ?? undefined,
     paymentMethodNormalized: paymentMethod.normalized,
     shippingCents,
@@ -52,7 +68,7 @@ function mapOrderToTransaction(
     amountCents,
     currency: order.currency ?? "BRL",
     occurredAt: order.processed_at ?? order.created_at,
-    description: `Pedido #${order.order_number}`,
+    description: `Pedido ${displayOrderNumber}`,
   };
 }
 
@@ -108,7 +124,21 @@ export async function handleShopifyWebhook(
             externalId: transactionInput.externalId!,
           },
         },
-        update: {},
+        update: {
+          marketplace: transactionInput.marketplace ?? null,
+          orderNumber: transactionInput.orderNumber ?? null,
+          paymentMethodRaw: transactionInput.paymentMethodRaw ?? null,
+          paymentMethodNormalized: transactionInput.paymentMethodNormalized ?? null,
+          shippingCents: transactionInput.shippingCents ?? 0,
+          discountCents: transactionInput.discountCents ?? 0,
+          taxCents: transactionInput.taxCents ?? 0,
+          feeCents: transactionInput.feeCents ?? 0,
+          status: transactionInput.status ?? "pending",
+          amountCents: transactionInput.amountCents,
+          currency: transactionInput.currency ?? "BRL",
+          occurredAt: new Date(transactionInput.occurredAt),
+          description: transactionInput.description ?? null,
+        },
         create: {
           externalSource: transactionInput.externalSource!,
           externalId: transactionInput.externalId!,

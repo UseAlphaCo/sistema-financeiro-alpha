@@ -55,6 +55,13 @@ model TransactionCategory {
   updatedAt DateTime @updatedAt
 }
 
+model DailySnapshot {
+  date         DateTime  @id
+  data         Json
+  generatedAt  DateTime  @default(now())
+  meta         Json?
+}
+
 model ImportBatch {
   id         String            @id @default(cuid())
   source     String

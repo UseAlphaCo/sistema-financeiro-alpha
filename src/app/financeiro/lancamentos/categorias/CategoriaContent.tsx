@@ -30,7 +30,10 @@ export function CategoriaContent() {
     if (json.success && json.data) setCategories(json.data);
   }
 
-  useEffect(() => { loadCategories(); }, []);
+  useEffect(() => {
+    // Evita chamada direta de setState dentro do corpo do effect
+    (async () => { await loadCategories(); })();
+  }, []);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();

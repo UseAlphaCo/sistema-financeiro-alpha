@@ -39,12 +39,6 @@ type EditingState = {
   description: string;
 };
 
-type CategoryDraft = {
-  name: string;
-  direction: CategoryDirection;
-  color: string;
-};
-
 const FALLBACK_COLORS = ["#0f766e", "#1d4ed8", "#b45309", "#7c3aed", "#be123c", "#0369a1"];
 
 function formatBRL(cents: number) {
@@ -85,18 +79,12 @@ export function LancamentosContent() {
   const [description, setDescription] = useState("");
   const [items, setItems] = useState<TransactionItem[]>([]);
   const [categories, setCategories] = useState<CategoryItem[]>([]);
-  const [drafts, setDrafts] = useState<Record<string, CategoryDraft>>({});
   const [categoryFilterId, setCategoryFilterId] = useState("");
   const [editing, setEditing] = useState<EditingState | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [savingCategoryId, setSavingCategoryId] = useState<string | null>(null);
-  const [deletingCategoryId, setDeletingCategoryId] = useState<string | null>(null);
-  const [newCategoryName, setNewCategoryName] = useState("");
-  const [newCategoryDirection, setNewCategoryDirection] = useState<CategoryDirection>("entrada");
-  const [newCategoryColor, setNewCategoryColor] = useState("#0f766e");
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   const amountCents = useMemo(() => parseCurrencyToCents(amount), [amount]);
@@ -170,14 +158,6 @@ export function LancamentosContent() {
     }
 
     setCategories(json.data);
-    setDrafts(
-      Object.fromEntries(
-        json.data.map((item) => [
-          item.id,
-          { name: item.name, direction: item.direction, color: normalizeColor(item.color) },
-        ])
-      )
-    );
   }
 
   const loadTransactions = useCallback(async () => {
@@ -252,55 +232,11 @@ export function LancamentosContent() {
     await loadTransactions();
   }
 
-  async function handleCreateCategory(event: FormEvent) {
-    event.preventDefault();
-    const res = await fetch("/api/financial/categories", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: newCategoryName, direction: newCategoryDirection, color: newCategoryColor }),
-    });
-    const json = (await res.json()) as ApiEnvelope<CategoryItem>;
-    if (!json.success) return setFeedback({ type: "error", message: json.error ?? "Falha ao criar categoria." });
-
-    setNewCategoryName("");
-    setFeedback({ type: "success", message: "Categoria criada com sucesso." });
-    await loadCategories();
-  }
-
-  async function handleUpdateCategory(id: string) {
-    const draft = drafts[id];
-    if (!draft) return;
-    setSavingCategoryId(id);
-    const res = await fetch(`/api/financial/categories/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(draft),
-    });
-    const json = (await res.json()) as ApiEnvelope<CategoryItem>;
-    setSavingCategoryId(null);
-    if (!json.success) return setFeedback({ type: "error", message: json.error ?? "Falha ao atualizar categoria." });
-
-    await loadCategories();
-  }
-
-  async function handleDeleteCategory(id: string) {
-    if (!window.confirm("Deseja excluir esta categoria?")) return;
-    setDeletingCategoryId(id);
-    const res = await fetch(`/api/financial/categories/${id}`, { method: "DELETE" });
-    const json = (await res.json()) as ApiEnvelope<{ id: string }>;
-    setDeletingCategoryId(null);
-    if (!json.success) return setFeedback({ type: "error", message: json.error ?? "Falha ao excluir categoria." });
-
-    await loadCategories();
-    await loadTransactions();
-  }
-
   return (
     <div className="space-y-8">
       {feedback && <div className={`rounded-md px-4 py-3 text-sm ${feedback.type === "success" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>{feedback.message}</div>}
 
       {/* CRUD de categorias removido. A gestão de categorias agora é feita em sub-menu próprio. */}
-
 
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Coluna 1: Novo lançamento */}
@@ -336,7 +272,6 @@ export function LancamentosContent() {
           <h2 className="text-sm font-medium text-gray-700">Lançamentos manuais</h2>
           <div className="flex items-center gap-2"><select value={categoryFilterId} onChange={(event) => setCategoryFilterId(event.target.value)} className="rounded-md border border-gray-300 px-2 py-1 text-xs"><option value="">Todas categorias</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button onClick={() => void loadTransactions()} disabled={loadingList} className="text-xs text-gray-500">{loadingList ? "Carregando..." : "Atualizar"}</button></div>
         </div>
-
         {displayedItems.length === 0 ? <p className="text-sm text-gray-500">Nenhum lançamento.</p> : <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-gray-200 text-left text-xs uppercase text-gray-500"><th className="px-2 py-2">Data</th><th className="px-2 py-2">Tipo</th><th className="px-2 py-2">Categoria</th><th className="px-2 py-2">Descrição</th><th className="px-2 py-2 text-right">Valor</th><th className="px-2 py-2 text-right">Ações</th></tr></thead><tbody>{displayedItems.map((item) => {const category = item.categoryId ? categoriesMap.get(item.categoryId) : null; const rowCategories = categories.filter((entry) => entry.direction === typeToDirection(item.type)); return <tr key={item.id} className="border-b border-gray-100"><td className="px-2 py-2">{editing?.id === item.id ? <input type="date" value={editing.date} onChange={(event) => setEditing({ ...editing, date: event.target.value })} className="rounded-md border border-gray-300 px-2 py-1 text-xs" /> : formatDate(item.occurredAt)}</td><td className="px-2 py-2">{item.type === "income" ? "Entrada" : "Saída"}</td><td className="px-2 py-2">{editing?.id === item.id ? <select value={editing.categoryId} onChange={(event) => setEditing({ ...editing, categoryId: event.target.value })} className="rounded-md border border-gray-300 px-2 py-1 text-xs"><option value="">Selecione</option>{rowCategories.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select> : category?.name ?? "—"}</td><td className="px-2 py-2">{editing?.id === item.id ? <input value={editing.description} onChange={(event) => setEditing({ ...editing, description: event.target.value })} className="rounded-md border border-gray-300 px-2 py-1 text-xs" /> : item.description ?? "—"}</td><td className="px-2 py-2 text-right">{editing?.id === item.id ? <input value={editing.amount} onChange={(event) => setEditing({ ...editing, amount: event.target.value })} className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-xs" /> : formatBRL(item.amountCents)}</td><td className="px-2 py-2 text-right">{editing?.id === item.id ? <div className="flex justify-end gap-2"><button onClick={async () => {if (!editing.categoryId) return; setSavingEdit(true); const occurredAt = new Date(`${editing.date}T12:00:00`).toISOString(); const nextAmount = parseCurrencyToCents(editing.amount); const res = await fetch("/api/financial/transactions", {method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id: editing.id, categoryId: editing.categoryId, amountCents: nextAmount, occurredAt, description: editing.description || null, changeReason: "edicao manual via painel"})}); const json = (await res.json()) as ApiEnvelope<{id: string}>; setSavingEdit(false); if (!json.success) return setFeedback({type: "error", message: json.error ?? "Falha ao editar."}); setEditing(null); await loadTransactions();}} className="rounded-md bg-gray-900 px-2 py-1 text-xs text-white">{savingEdit ? "..." : "Salvar"}</button><button onClick={() => setEditing(null)} className="rounded-md border border-gray-300 px-2 py-1 text-xs">Cancelar</button></div> : <div className="flex justify-end gap-2"><button onClick={() => setEditing({id: item.id, date: item.occurredAt.slice(0, 10), categoryId: item.categoryId ?? "", amount: centsToInputValue(item.amountCents), description: item.description ?? ""})} className="rounded-md border border-gray-300 px-2 py-1 text-xs">Editar</button><button onClick={() => void handleDelete(item.id)} disabled={deletingId === item.id} className="rounded-md border border-red-200 px-2 py-1 text-xs text-red-700">{deletingId === item.id ? "..." : "Excluir"}</button></div>}</td></tr>;})}</tbody></table></div>}
       </section>
     </div>

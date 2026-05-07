@@ -43,6 +43,9 @@ export async function listTransactionsAction(input: unknown) {
   }
 
   const repository = getTransactionsRepository();
+  if (repository.listWithCache) {
+    return repository.listWithCache(parsed.data);
+  }
   return repository.list(parsed.data);
 }
 

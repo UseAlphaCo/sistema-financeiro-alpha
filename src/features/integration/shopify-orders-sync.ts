@@ -79,6 +79,21 @@ function resolveOccurredAt(order: ShopifyOrderPayload): Date {
   return date;
 }
 
+function normalizeShopifyDisplayOrderNumber(order: ShopifyOrderPayload): string {
+  const fromName = typeof order.name === "string" ? order.name.trim() : "";
+  if (fromName) {
+    return fromName.startsWith("#") ? fromName : `#${fromName}`;
+  }
+
+  const fromOrderNumber = String(order.order_number ?? "").trim();
+  if (fromOrderNumber) {
+    const clean = fromOrderNumber.replace(/^#/, "");
+    return `#${clean}`;
+  }
+
+  return `#${String(order.id)}`;
+}
+
 function mapOrderToPrismaData(order: ShopifyOrderPayload) {
   const amountCents = parseMoneyToCents(order.total_price);
   const shippingCents = parseMoneyToCents(order.total_shipping_price);
@@ -86,11 +101,12 @@ function mapOrderToPrismaData(order: ShopifyOrderPayload) {
   const taxCents = parseMoneyToCents(order.total_tax);
   const feeCents = parseMoneyToCents(order.current_total_additional_fees_set?.shop_money?.amount);
   const paymentMethod = resolveShopifyPaymentMethod(order);
+  const displayOrderNumber = normalizeShopifyDisplayOrderNumber(order);
   return {
     externalSource: "shopify" as const,
     externalId: String(order.id),
     marketplace: "shopify",
-    orderNumber: String(order.name).replace(/^#/, ""),
+    orderNumber: displayOrderNumber,
     paymentMethodRaw: paymentMethod.raw,
     paymentMethodNormalized: paymentMethod.normalized,
     shippingCents,
@@ -103,7 +119,7 @@ function mapOrderToPrismaData(order: ShopifyOrderPayload) {
     amountCents,
     currency: order.currency ?? "BRL",
     occurredAt: resolveOccurredAt(order),
-    description: `Pedido ${order.name}`,
+    description: `Pedido ${displayOrderNumber}`,
   };
 }
 
@@ -203,7 +219,7 @@ export async function syncShopifyOrders(
             externalId,
           },
         },
-        update: {},
+        update: mapOrderToPrismaData(order),
         create: mapOrderToPrismaData(order),
       });
 

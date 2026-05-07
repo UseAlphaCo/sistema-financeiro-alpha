@@ -8,6 +8,7 @@ import {
   type PaginatedTransactions,
   type UpdateTransactionInput,
 } from "@/features/transactions/types";
+import { getDailySnapshot } from "@/core/cache/dailySnapshot";
 
 type DeleteInput = {
   id: string;
@@ -19,6 +20,27 @@ export interface TransactionsRepository {
   create(input: CreateTransactionInput, actorId: string): Promise<FinancialTransaction>;
   update(input: UpdateTransactionInput, actorId: string): Promise<FinancialTransaction | null>;
   remove(input: DeleteInput, actorId: string): Promise<boolean>;
+  listWithCache?(filters: ListTransactionsFilters): Promise<PaginatedTransactions>;
+}
+
+function toUtcDateKey(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+function isYesterdayRange(startDate?: string, endDate?: string): Date | null {
+  if (!startDate || !endDate) return null;
+
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+
+  const now = new Date();
+  const yesterdayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
+  const yesterdayKey = toUtcDateKey(yesterdayUtc);
+
+  const isStartYesterday = toUtcDateKey(start) === yesterdayKey;
+  const isEndYesterday = toUtcDateKey(end) === yesterdayKey;
+  return isStartYesterday && isEndYesterday ? yesterdayUtc : null;
 }
 
 class InMemoryTransactionsRepository implements TransactionsRepository {
@@ -146,6 +168,27 @@ class InMemoryTransactionsRepository implements TransactionsRepository {
 
     return true;
   }
+
+  async listWithCache(filters: ListTransactionsFilters): Promise<PaginatedTransactions> {
+    const yesterday = isYesterdayRange(filters.startDate, filters.endDate);
+
+    if (yesterday) {
+      const snapshot = await getDailySnapshot(yesterday);
+      if (snapshot && Array.isArray(snapshot.data)) {
+        return {
+          items: snapshot.data as FinancialTransaction[],
+          pagination: {
+            page: 1,
+            limit: snapshot.data.length,
+            total: snapshot.data.length,
+            hasNext: false,
+          },
+        };
+      }
+    }
+    // Fallback para consulta normal
+    return this.list(filters);
+  }
 }
 
 function mapDbTransaction(item: {
@@ -206,6 +249,27 @@ function mapDbTransaction(item: {
 }
 
 class PrismaTransactionsRepository implements TransactionsRepository {
+  async listWithCache(filters: ListTransactionsFilters): Promise<PaginatedTransactions> {
+    const yesterday = isYesterdayRange(filters.startDate, filters.endDate);
+
+    if (yesterday) {
+      const snapshot = await getDailySnapshot(yesterday);
+      if (snapshot && Array.isArray(snapshot.data)) {
+        return {
+          items: snapshot.data as FinancialTransaction[],
+          pagination: {
+            page: 1,
+            limit: snapshot.data.length,
+            total: snapshot.data.length,
+            hasNext: false,
+          },
+        };
+      }
+    }
+
+    return this.list(filters);
+  }
+
   async list(filters: ListTransactionsFilters): Promise<PaginatedTransactions> {
     const prisma = getPrismaClient();
 
@@ -219,8 +283,14 @@ class PrismaTransactionsRepository implements TransactionsRepository {
       where.source = { in: filters.sources };
     }
     if (filters.status) where.status = filters.status;
-    if (filters.marketplace) where.marketplace = filters.marketplace;
-    if (filters.paymentMethod) where.paymentMethodNormalized = filters.paymentMethod;
+    if (filters.marketplace) {
+      (where as Prisma.FinancialTransactionWhereInput & { marketplace?: string }).marketplace =
+        filters.marketplace;
+    }
+    if (filters.paymentMethod) {
+      (where as Prisma.FinancialTransactionWhereInput & { paymentMethodNormalized?: string }).paymentMethodNormalized =
+        filters.paymentMethod;
+    }
     if (filters.categoryId) where.categoryId = filters.categoryId;
 
     if (filters.startDate || filters.endDate) {
@@ -350,4 +420,23 @@ export function getTransactionsRepository(): TransactionsRepository {
   }
 
   return globalStore.__transactionsRepository;
+}
+
+// Retorna todas as transações de ontem (para snapshot)
+export async function listTransactionsForYesterday() {
+  const prisma = getPrismaClient();
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 23, 59, 59, 999));
+  const rows = await prisma.financialTransaction.findMany({
+    where: {
+      deletedAt: null,
+      occurredAt: {
+        gte: start,
+        lte: end,
+      },
+    },
+    orderBy: { occurredAt: "desc" },
+  });
+  return rows.map(mapDbTransaction);
 }
