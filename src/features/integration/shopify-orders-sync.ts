@@ -90,7 +90,7 @@ function mapOrderToPrismaData(order: ShopifyOrderPayload) {
     externalSource: "shopify" as const,
     externalId: String(order.id),
     marketplace: "shopify",
-    orderNumber: String(order.order_number),
+    orderNumber: String(order.name).replace(/^#/, ""),
     paymentMethodRaw: paymentMethod.raw,
     paymentMethodNormalized: paymentMethod.normalized,
     shippingCents,
@@ -103,7 +103,7 @@ function mapOrderToPrismaData(order: ShopifyOrderPayload) {
     amountCents,
     currency: order.currency ?? "BRL",
     occurredAt: resolveOccurredAt(order),
-    description: `Pedido #${order.order_number}`,
+    description: `Pedido ${order.name}`,
   };
 }
 

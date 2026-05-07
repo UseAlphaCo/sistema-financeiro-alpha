@@ -79,10 +79,14 @@ function normalizeDateInput(value: string | undefined): string | undefined {
 }
 
 function parseOrderNumber(item: FinancialTransaction): string {
-  if (item.orderNumber) return item.orderNumber;
+  if (item.orderNumber) {
+    // Garante prefixo # e exibe todos os dígitos
+    const clean = item.orderNumber.replace(/^#/, "");
+    return `#${clean}`;
+  }
   if (!item.description) return "—";
   const match = item.description.match(/Pedido\s*#\s*([\w-]+)/i);
-  return match ? match[1] : "—";
+  return match ? `#${match[1].replace(/^#/, "")}` : "—";
 }
 
 function formatPaymentMethod(item: FinancialTransaction): string {

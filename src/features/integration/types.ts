@@ -29,6 +29,7 @@ export type CreateWebhookEventInput = {
 export type ShopifyOrderPayload = {
   id: string | number;
   order_number: string | number;
+  name: string; // Número completo do pedido, ex: #1439377643455
   total_price: string;
   total_shipping_price?: string;
   total_discounts?: string;
