@@ -70,10 +70,10 @@ function parseOrderNumber(item: TransactionItem): string {
 }
 
 function formatPaymentMethod(item: TransactionItem): string {
+  if (item.paymentMethodRaw) return item.paymentMethodRaw;
   if (item.paymentMethodNormalized) {
     return PAYMENT_METHOD_LABELS[item.paymentMethodNormalized];
   }
-  if (item.paymentMethodRaw) return item.paymentMethodRaw;
   return "Não informado";
 }
 

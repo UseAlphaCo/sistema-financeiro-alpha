@@ -2,7 +2,7 @@ import { getPrismaClient } from "@/core/db/prisma-client";
 import { logError, logInfo } from "@/core/observability/logger";
 import type { ActionResult } from "@/types/api";
 
-import { resolveShopifyPaymentMethod } from "./payment-method";
+import { mapShopifyOrderFinancials } from "./shopify-order-mapper";
 import type { ShopifyOrderPayload } from "./types";
 
 type SyncResult = {
@@ -55,12 +55,6 @@ function formatFetchError(err: unknown): string {
   return err.message;
 }
 
-function parseMoneyToCents(value: string | undefined | null): number {
-  const parsed = parseFloat(value ?? "0");
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.round(parsed * 100);
-}
-
 function extractFailureReason(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   if (/timeout|timed out/i.test(message)) return "timeout";
@@ -70,56 +64,26 @@ function extractFailureReason(err: unknown): string {
   return "unknown_error";
 }
 
-function resolveOccurredAt(order: ShopifyOrderPayload): Date {
-  const raw = order.processed_at ?? order.created_at;
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) {
-    throw new Error("invalid occurredAt in Shopify order payload");
-  }
-  return date;
-}
-
-function normalizeShopifyDisplayOrderNumber(order: ShopifyOrderPayload): string {
-  const fromName = typeof order.name === "string" ? order.name.trim() : "";
-  if (fromName) {
-    return fromName.startsWith("#") ? fromName : `#${fromName}`;
-  }
-
-  const fromOrderNumber = String(order.order_number ?? "").trim();
-  if (fromOrderNumber) {
-    const clean = fromOrderNumber.replace(/^#/, "");
-    return `#${clean}`;
-  }
-
-  return `#${String(order.id)}`;
-}
-
 function mapOrderToPrismaData(order: ShopifyOrderPayload) {
-  const amountCents = parseMoneyToCents(order.total_price);
-  const shippingCents = parseMoneyToCents(order.total_shipping_price);
-  const discountCents = parseMoneyToCents(order.total_discounts);
-  const taxCents = parseMoneyToCents(order.total_tax);
-  const feeCents = parseMoneyToCents(order.current_total_additional_fees_set?.shop_money?.amount);
-  const paymentMethod = resolveShopifyPaymentMethod(order);
-  const displayOrderNumber = normalizeShopifyDisplayOrderNumber(order);
+  const mapped = mapShopifyOrderFinancials(order);
   return {
     externalSource: "shopify" as const,
-    externalId: String(order.id),
+    externalId: mapped.externalId,
     marketplace: "shopify",
-    orderNumber: displayOrderNumber,
-    paymentMethodRaw: paymentMethod.raw,
-    paymentMethodNormalized: paymentMethod.normalized,
-    shippingCents,
-    discountCents,
-    taxCents,
-    feeCents,
+    orderNumber: mapped.orderNumber,
+    paymentMethodRaw: mapped.paymentMethodRaw,
+    paymentMethodNormalized: mapped.paymentMethodNormalized,
+    shippingCents: mapped.shippingCents,
+    discountCents: mapped.discountCents,
+    taxCents: mapped.taxCents,
+    feeCents: mapped.feeCents,
     type: "income" as const,
     source: "integration" as const,
     status: "approved" as const,
-    amountCents,
-    currency: order.currency ?? "BRL",
-    occurredAt: resolveOccurredAt(order),
-    description: `Pedido ${displayOrderNumber}`,
+    amountCents: mapped.amountCents,
+    currency: mapped.currency,
+    occurredAt: mapped.occurredAt,
+    description: mapped.description,
   };
 }
 

@@ -29,10 +29,23 @@ export type CreateWebhookEventInput = {
 export type ShopifyOrderPayload = {
   id: string | number;
   order_number: string | number;
-  name: string; // Número completo do pedido, ex: #1439377643455
+  name?: string; // Número completo do pedido, ex: #1439377643455
   total_price: string;
   total_shipping_price?: string;
+  total_shipping_price_set?: {
+    shop_money?: { amount?: string };
+    presentment_money?: { amount?: string };
+  } | null;
+  current_total_shipping_price_set?: {
+    shop_money?: { amount?: string };
+    presentment_money?: { amount?: string };
+  } | null;
   total_discounts?: string;
+  current_total_discounts?: string;
+  current_total_discounts_set?: {
+    shop_money?: { amount?: string };
+    presentment_money?: { amount?: string };
+  } | null;
   total_tax?: string;
   current_total_additional_fees_set?: {
     shop_money?: { amount?: string };
@@ -47,6 +60,25 @@ export type ShopifyOrderPayload = {
   note_attributes?: Array<{
     name?: string;
     value?: string;
+  }> | null;
+  shipping_lines?: Array<{
+    price?: string;
+    discounted_price?: string;
+    price_set?: {
+      shop_money?: { amount?: string };
+      presentment_money?: { amount?: string };
+    };
+    discounted_price_set?: {
+      shop_money?: { amount?: string };
+      presentment_money?: { amount?: string };
+    };
+  }> | null;
+  line_items?: Array<{
+    total_discount?: string;
+    total_discount_set?: {
+      shop_money?: { amount?: string };
+      presentment_money?: { amount?: string };
+    };
   }> | null;
   transactions?: Array<{
     id?: string | number;

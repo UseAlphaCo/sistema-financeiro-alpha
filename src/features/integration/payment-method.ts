@@ -22,6 +22,16 @@ function getFirstNonEmpty(values: Array<string | null | undefined>): string | nu
   return null;
 }
 
+function joinNonEmpty(values: Array<string | null | undefined>, separator = " | "): string | null {
+  const cleaned = values
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (cleaned.length === 0) return null;
+  return cleaned.join(separator);
+}
+
 export function normalizePaymentMethod(rawValue: string | null | undefined): PaymentMethod {
   const raw = (rawValue ?? "").trim();
   if (!raw) return "other";
@@ -49,13 +59,14 @@ export function resolveShopifyPaymentMethod(order: {
     };
   }> | null;
 }): PaymentMethodInfo {
-  const rawFromPaymentGateway = getFirstNonEmpty([order.payment_gateway_names?.[0] ?? null]);
+  const rawFromPaymentGateway = joinNonEmpty(order.payment_gateway_names ?? []);
 
   const firstTransaction = order.transactions?.[0];
   const rawFromTransaction = getFirstNonEmpty([
     firstTransaction?.payment_details?.credit_card?.brand,
     firstTransaction?.payment_details?.wallet?.type,
     firstTransaction?.gateway,
+    ...(order.transactions ?? []).map((tx) => tx.gateway),
   ]);
 
   const rawFromNoteAttribute =

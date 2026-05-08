@@ -2,17 +2,11 @@ import { getPrismaClient } from "@/core/db/prisma-client";
 import type { CreateTransactionInput } from "@/features/transactions/types";
 import type { ActionResult } from "@/types/api";
 
-import { resolveShopifyPaymentMethod } from "./payment-method";
+import { mapShopifyOrderFinancials } from "./shopify-order-mapper";
 import type { ShopifyOrderPayload, WebhookStatus } from "./types";
 import { webhookEventsRepository } from "./webhook-events-repository";
 
 const SUPPORTED_TOPICS = ["orders/paid", "orders/create"] as const;
-
-function parseMoneyToCents(value: string | undefined | null): number {
-  const parsed = parseFloat(value ?? "0");
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.round(parsed * 100);
-}
 
 function isShopifyOrderPayload(value: unknown): value is ShopifyOrderPayload {
   if (!value || typeof value !== "object") return false;
@@ -25,50 +19,29 @@ function isShopifyOrderPayload(value: unknown): value is ShopifyOrderPayload {
   );
 }
 
-function normalizeShopifyDisplayOrderNumber(order: ShopifyOrderPayload): string {
-  const fromName = typeof order.name === "string" ? order.name.trim() : "";
-  if (fromName) {
-    return fromName.startsWith("#") ? fromName : `#${fromName}`;
-  }
-
-  const fromOrderNumber = String(order.order_number ?? "").trim();
-  if (fromOrderNumber) {
-    const clean = fromOrderNumber.replace(/^#/, "");
-    return `#${clean}`;
-  }
-
-  return `#${String(order.id)}`;
-}
-
 function mapOrderToTransaction(
   order: ShopifyOrderPayload
 ): CreateTransactionInput {
-  const amountCents = parseMoneyToCents(order.total_price);
-  const shippingCents = parseMoneyToCents(order.total_shipping_price);
-  const discountCents = parseMoneyToCents(order.total_discounts);
-  const taxCents = parseMoneyToCents(order.total_tax);
-  const feeCents = parseMoneyToCents(order.current_total_additional_fees_set?.shop_money?.amount);
-  const paymentMethod = resolveShopifyPaymentMethod(order);
-  const displayOrderNumber = normalizeShopifyDisplayOrderNumber(order);
+  const mapped = mapShopifyOrderFinancials(order);
 
   return {
     externalSource: "shopify",
-    externalId: String(order.id),
+    externalId: mapped.externalId,
     marketplace: "shopify",
-    orderNumber: displayOrderNumber,
-    paymentMethodRaw: paymentMethod.raw ?? undefined,
-    paymentMethodNormalized: paymentMethod.normalized,
-    shippingCents,
-    discountCents,
-    taxCents,
-    feeCents,
+    orderNumber: mapped.orderNumber,
+    paymentMethodRaw: mapped.paymentMethodRaw ?? undefined,
+    paymentMethodNormalized: mapped.paymentMethodNormalized,
+    shippingCents: mapped.shippingCents,
+    discountCents: mapped.discountCents,
+    taxCents: mapped.taxCents,
+    feeCents: mapped.feeCents,
     type: "income",
     source: "webhook",
     status: "approved",
-    amountCents,
-    currency: order.currency ?? "BRL",
-    occurredAt: order.processed_at ?? order.created_at,
-    description: `Pedido ${displayOrderNumber}`,
+    amountCents: mapped.amountCents,
+    currency: mapped.currency,
+    occurredAt: mapped.occurredAt.toISOString(),
+    description: mapped.description,
   };
 }
 
