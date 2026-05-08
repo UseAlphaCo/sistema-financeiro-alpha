@@ -4,6 +4,7 @@ export const TRANSACTION_SOURCES = ["manual", "import", "integration", "webhook"
 export const PAYMENT_METHODS = [
   "credit_card",
   "pix",
+  "store_credit",
   "boleto",
   "bank_transfer",
   "wallet",

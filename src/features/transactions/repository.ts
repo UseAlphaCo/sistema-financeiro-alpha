@@ -8,6 +8,10 @@ import {
   type PaginatedTransactions,
   type UpdateTransactionInput,
 } from "@/features/transactions/types";
+import {
+  getPaymentMethodSearchTokens,
+  transactionMatchesPaymentMethod,
+} from "@/features/transactions/payment-method-filter";
 import { getDailySnapshot } from "@/core/cache/dailySnapshot";
 
 type DeleteInput = {
@@ -57,7 +61,16 @@ class InMemoryTransactionsRepository implements TransactionsRepository {
         }
         if (filters.status && item.status !== filters.status) return false;
         if (filters.marketplace && item.marketplace !== filters.marketplace) return false;
-        if (filters.paymentMethod && item.paymentMethodNormalized !== filters.paymentMethod) {
+        if (
+          filters.paymentMethod &&
+          !transactionMatchesPaymentMethod(
+            {
+              paymentMethodNormalized: item.paymentMethodNormalized,
+              paymentMethodRaw: item.paymentMethodRaw,
+            },
+            filters.paymentMethod
+          )
+        ) {
           return false;
         }
         if (filters.categoryId && item.categoryId !== filters.categoryId) {
@@ -276,6 +289,7 @@ class PrismaTransactionsRepository implements TransactionsRepository {
     const where: Prisma.FinancialTransactionWhereInput = {
       deletedAt: null,
     };
+    const andConditions: Prisma.FinancialTransactionWhereInput[] = [];
 
     if (filters.type) where.type = filters.type;
     if (filters.source) where.source = filters.source;
@@ -288,8 +302,18 @@ class PrismaTransactionsRepository implements TransactionsRepository {
         filters.marketplace;
     }
     if (filters.paymentMethod) {
-      (where as Prisma.FinancialTransactionWhereInput & { paymentMethodNormalized?: string }).paymentMethodNormalized =
-        filters.paymentMethod;
+      const tokenMatches: Prisma.FinancialTransactionWhereInput[] = getPaymentMethodSearchTokens(
+        filters.paymentMethod
+      ).map((token) => ({
+        paymentMethodRaw: { contains: token, mode: "insensitive" },
+      }));
+
+      andConditions.push({
+        OR: [
+          { paymentMethodNormalized: filters.paymentMethod },
+          ...tokenMatches,
+        ],
+      });
     }
     if (filters.categoryId) where.categoryId = filters.categoryId;
 
@@ -300,10 +324,16 @@ class PrismaTransactionsRepository implements TransactionsRepository {
     }
 
     if (filters.search) {
-      where.OR = [
+      andConditions.push({
+        OR: [
         { description: { contains: filters.search, mode: "insensitive" } },
         { externalId: { contains: filters.search, mode: "insensitive" } },
-      ];
+        ],
+      });
+    }
+
+    if (andConditions.length > 0) {
+      where.AND = andConditions;
     }
 
     const skip = (filters.page - 1) * filters.limit;

@@ -59,6 +59,7 @@ export type ShopifyOrderPayload = {
   gateway?: string | null;
   payment_gateway_names?: string[] | null;
   note?: string | null;
+  tags?: string | string[] | null;
   note_attributes?: Array<{
     name?: string;
     value?: string;

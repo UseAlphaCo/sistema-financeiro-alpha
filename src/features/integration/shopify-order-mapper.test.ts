@@ -39,6 +39,17 @@ describe("shopify-order-mapper", () => {
     expect(mapped.paymentMethodRaw).toBe("Pix | Starkbank");
   });
 
+  it("compõe forma com crédito em loja e tags secundárias", () => {
+    const order = buildOrder({
+      payment_gateway_names: ["shopify_store_credit"],
+      tags: ["Pix | Starkbank", "webhook.rastreio.v2"],
+    });
+
+    const mapped = mapShopifyOrderFinancials(order);
+    expect(mapped.paymentMethodRaw).toBe("Crédito em loja | Pix | Starkbank");
+    expect(mapped.paymentMethodNormalized).toBe("store_credit");
+  });
+
   it("prioriza frete de total_shipping_price_set", () => {
     const order = buildOrder({
       total_shipping_price: "0.00",

@@ -53,6 +53,7 @@ const PERIOD_OPTIONS: Array<{ label: string; value: PeriodPreset }> = [
 const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   credit_card: "Cartão de crédito",
   pix: "Pix",
+  store_credit: "Crédito em loja",
   boleto: "Boleto",
   bank_transfer: "Transferência",
   wallet: "Carteira digital",

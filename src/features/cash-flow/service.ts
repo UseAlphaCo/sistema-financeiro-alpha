@@ -1,4 +1,6 @@
 import { getPrismaClient } from "@/core/db/prisma-client";
+import { getPaymentMethodSearchTokens } from "@/features/transactions/payment-method-filter";
+import type { PaymentMethod } from "@/features/transactions/types";
 import {
   getDateRangeForPeriod,
   getDateRangeForPreset,
@@ -27,7 +29,7 @@ type BreakdownRow = {
 async function aggregateTransactions(
   start: Date,
   end: Date,
-  extraFilters: { source?: string; categoryId?: string; paymentMethod?: string }
+  extraFilters: { source?: string; categoryId?: string; paymentMethod?: PaymentMethod }
 ): Promise<AggregateRow[]> {
   const db = getPrismaClient();
 
@@ -52,7 +54,13 @@ async function aggregateTransactions(
 
   if (extraFilters.paymentMethod) {
     values.push(extraFilters.paymentMethod);
-    conditions.push(`"paymentMethodNormalized" = $${values.length}`);
+    const normalizedParam = `$${values.length}`;
+    const tokenParams = getPaymentMethodSearchTokens(extraFilters.paymentMethod).map((token) => {
+      values.push(`%${token}%`);
+      return `"paymentMethodRaw" ILIKE $${values.length}`;
+    });
+    const rawCondition = tokenParams.length > 0 ? ` OR ${tokenParams.join(" OR ")}` : "";
+    conditions.push(`("paymentMethodNormalized" = ${normalizedParam}${rawCondition})`);
   }
 
   const sql = `
@@ -68,7 +76,7 @@ async function aggregateTransactions(
 async function aggregateBreakdown(
   start: Date,
   end: Date,
-  extraFilters: { source?: string; categoryId?: string; paymentMethod?: string }
+  extraFilters: { source?: string; categoryId?: string; paymentMethod?: PaymentMethod }
 ): Promise<BreakdownRow> {
   const db = getPrismaClient();
 
@@ -93,7 +101,13 @@ async function aggregateBreakdown(
 
   if (extraFilters.paymentMethod) {
     values.push(extraFilters.paymentMethod);
-    conditions.push(`"paymentMethodNormalized" = $${values.length}`);
+    const normalizedParam = `$${values.length}`;
+    const tokenParams = getPaymentMethodSearchTokens(extraFilters.paymentMethod).map((token) => {
+      values.push(`%${token}%`);
+      return `"paymentMethodRaw" ILIKE $${values.length}`;
+    });
+    const rawCondition = tokenParams.length > 0 ? ` OR ${tokenParams.join(" OR ")}` : "";
+    conditions.push(`("paymentMethodNormalized" = ${normalizedParam}${rawCondition})`);
   }
 
   const sql = `

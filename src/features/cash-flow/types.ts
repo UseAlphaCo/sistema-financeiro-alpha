@@ -1,4 +1,5 @@
 import type { PeriodPreset } from "@/lib/date-utils";
+import type { PaymentMethod } from "@/features/transactions/types";
 
 export type CashFlowPeriod = {
   startDate: string;
@@ -42,5 +43,5 @@ export type CashFlowFilters = {
   endDate?: string;
   source?: string;
   categoryId?: string;
-  paymentMethod?: string;
+  paymentMethod?: PaymentMethod;
 };

@@ -11,6 +11,7 @@ type TransactionItem = {
   paymentMethodNormalized:
     | "credit_card"
     | "pix"
+    | "store_credit"
     | "boleto"
     | "bank_transfer"
     | "wallet"
@@ -38,6 +39,7 @@ const PAYMENT_METHOD_LABELS: Record<
 > = {
   credit_card: "Cartão de crédito",
   pix: "Pix",
+  store_credit: "Crédito em loja",
   boleto: "Boleto",
   bank_transfer: "Transferência",
   wallet: "Carteira digital",
