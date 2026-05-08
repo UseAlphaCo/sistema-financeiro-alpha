@@ -31,6 +31,8 @@ export type ShopifyOrderPayload = {
   order_number: string | number;
   name?: string; // Número completo do pedido, ex: #1439377643455
   total_price: string;
+  subtotal_price?: string; // Para cálculo de frete derivado (fallback)
+  current_subtotal_price?: string; // Alternativa de subtotal
   total_shipping_price?: string;
   total_shipping_price_set?: {
     shop_money?: { amount?: string };

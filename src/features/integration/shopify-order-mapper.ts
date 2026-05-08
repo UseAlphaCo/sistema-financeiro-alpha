@@ -3,7 +3,9 @@ import type { ShopifyOrderPayload } from "./types";
 
 function parseMoney(value: string | undefined | null): number | null {
   if (typeof value !== "string") return null;
-  const parsed = parseFloat(value);
+  // Normaliza formato de moeda: suporta vírgula como separador decimal (formato BR)
+  const normalized = value.replace(/,/, ".").trim();
+  const parsed = parseFloat(normalized);
   if (!Number.isFinite(parsed)) return null;
   return parsed;
 }
@@ -65,6 +67,7 @@ export function normalizeShopifyDisplayOrderNumber(order: ShopifyOrderPayload): 
 }
 
 export function resolveShopifyShippingCents(order: ShopifyOrderPayload): number {
+  // Tentativa 1: Valores de frete diretos (agregados na raiz do pedido)
   const directValue = firstMoneyToCents([
     order.total_shipping_price_set?.shop_money?.amount,
     order.current_total_shipping_price_set?.shop_money?.amount,
@@ -75,6 +78,7 @@ export function resolveShopifyShippingCents(order: ShopifyOrderPayload): number 
     return directValue;
   }
 
+  // Tentativa 2: Agregação via shipping_lines (com desconto)
   const fromDiscountedSet = sumMoneyToCents(
     (order.shipping_lines ?? []).map((line) => line.discounted_price_set?.shop_money?.amount)
   );
@@ -87,6 +91,30 @@ export function resolveShopifyShippingCents(order: ShopifyOrderPayload): number 
 
   const fromPrice = sumMoneyToCents((order.shipping_lines ?? []).map((line) => line.price));
   if (fromPrice !== null) return fromPrice;
+
+  // Tentativa 3: Cálculo derivado por balanço (fallback final)
+  // frete = total - subtotal + descontos + impostos + taxas
+  const totalCents = parseMoneyToCents(order.total_price);
+  const subtotalValue = firstMoneyToCents([
+    order.subtotal_price,
+    order.current_subtotal_price,
+  ]);
+
+  if (subtotalValue !== null && totalCents > 0) {
+    const discountCents = resolveShopifyDiscountCents(order);
+    const taxCents = parseMoneyToCents(order.total_tax);
+    const feeCents = parseMoneyToCents(order.current_total_additional_fees_set?.shop_money?.amount);
+
+    // Fórmula: frete derivado = total - subtotal + desconto + imposto + taxa
+    // (O desconto já é subtraído na API, então somamos; taxas e fees são adicionadas ao total)
+    const derived = totalCents - subtotalValue + discountCents + taxCents + feeCents;
+
+    // Se resultado é plausível (entre -500 e +10000 BRL = -50000 a +1000000 centavos),
+    // retorna valor derivado; caso contrário, não confia e retorna 0
+    if (derived >= -50000 && derived <= 1000000) {
+      return Math.max(0, derived); // Garante que não seja negativo
+    }
+  }
 
   return 0;
 }

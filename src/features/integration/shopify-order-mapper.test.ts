@@ -82,4 +82,44 @@ describe("shopify-order-mapper", () => {
 
     expect(resolveShopifyDiscountCents(order)).toBe(798);
   });
+
+  it("suporta formato de moeda com vírgula decimal (formato BR)", () => {
+    const order = buildOrder({
+      total_shipping_price: "10,50",
+      total_discounts: "5,99",
+    });
+
+    expect(resolveShopifyShippingCents(order)).toBe(1050);
+    expect(resolveShopifyDiscountCents(order)).toBe(599);
+  });
+
+  it("calcula frete derivado quando todos os campos diretos estão vazios", () => {
+    const order = buildOrder({
+      total_price: "102.91",
+      subtotal_price: "90.00", // 90.00
+      total_shipping_price: undefined,
+      total_shipping_price_set: undefined,
+      current_total_shipping_price_set: undefined,
+      shipping_lines: [],
+      total_tax: "0.00",
+      total_discounts: "0.00",
+      current_total_additional_fees_set: undefined,
+    });
+
+    const shippingCents = resolveShopifyShippingCents(order);
+    // Derivado = total (10291) - subtotal (9000) + desconto (0) + imposto (0) + taxa (0) = 1291
+    expect(shippingCents).toBe(1291);
+  });
+
+  it("retorna 0 quando frete derivado resulta em valor implausível (negativo)", () => {
+    const order = buildOrder({
+      total_price: "50.00",
+      subtotal_price: "100.00", // subtotal > total é impossível, deve retornar 0
+      total_shipping_price: undefined,
+      shipping_lines: [],
+    });
+
+    // Derivado seria negativo, logo retorna 0
+    expect(resolveShopifyShippingCents(order)).toBe(0);
+  });
 });
