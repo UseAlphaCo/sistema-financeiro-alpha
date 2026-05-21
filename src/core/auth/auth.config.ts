@@ -53,26 +53,17 @@ export const authConfig: NextAuthConfig = {
   callbacks: {
     jwt({ token, user }) {
       if (user) {
+        token.sub = String(user.id);
         token.role = String(user.role);
         token.forcePasswordChange = Boolean(user.forcePasswordChange);
       }
       return token;
     },
-    async session({ session, token }) {
+    session({ session, token }) {
       if (session.user) {
         session.user.id = String(token.sub ?? "");
-
-        const prisma = getPrismaClient();
-        const dbUser = token.sub
-          ? await prisma.user.findUnique({
-              where: { id: String(token.sub) },
-            })
-          : null;
-
-        session.user.role = String(dbUser?.role ?? token.role ?? "financeiro") as "admin" | "financeiro";
-        session.user.forcePasswordChange = Boolean(
-          dbUser?.forcePasswordChange ?? token.forcePasswordChange
-        );
+        session.user.role = String(token.role ?? "financeiro") as "admin" | "financeiro";
+        session.user.forcePasswordChange = Boolean(token.forcePasswordChange);
       }
       return session;
     },

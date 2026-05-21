@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
         return createApiError(requestId, "Senha atual invalida.", 400);
       }
 
-      return createApiSuccess(requestId, { changed: true });
+      return createApiSuccess(requestId, { changed: true, email: session!.email });
     }
   );
 }

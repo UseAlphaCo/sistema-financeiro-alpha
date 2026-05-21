@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { signIn } from "next-auth/react";
 
 export default function AlterarSenhaPage() {
   const router = useRouter();
@@ -30,7 +31,14 @@ export default function AlterarSenhaPage() {
       body: JSON.stringify({ currentPassword, newPassword }),
     });
 
-    const body = (await response.json()) as { success: boolean; error: string | null };
+    const body = (await response.json()) as {
+      success: boolean;
+      error: string | null;
+      data: {
+        changed: boolean;
+        email: string;
+      } | null;
+    };
 
     setLoading(false);
 
@@ -40,9 +48,24 @@ export default function AlterarSenhaPage() {
     }
 
     setSuccess("Senha atualizada com sucesso.");
+    const nextPassword = newPassword;
     setCurrentPassword("");
     setNewPassword("");
     setConfirmPassword("");
+
+    const relogin = await signIn("credentials", {
+      email: body.data?.email ?? "",
+      password: nextPassword,
+      redirect: false,
+      callbackUrl: "/financeiro/fluxo-de-caixa",
+    });
+
+    if (relogin?.error) {
+      setError("Senha alterada, mas falha ao atualizar sessao. Faca login novamente.");
+      router.push("/login");
+      router.refresh();
+      return;
+    }
 
     router.push("/financeiro/fluxo-de-caixa");
     router.refresh();
