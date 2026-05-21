@@ -44,7 +44,7 @@ export default function AlterarSenhaPage() {
     setNewPassword("");
     setConfirmPassword("");
 
-    router.push("/financeiro");
+    router.push("/financeiro/fluxo-de-caixa");
     router.refresh();
   }
 

@@ -7,7 +7,7 @@ export function assertAuthenticated(session: UserSession | null): asserts sessio
   }
 }
 
-export function assertRole(session: UserSession | null, allowedRoles: UserRole[]) {
+export function assertRole(session: UserSession | null, allowedRoles: UserRole[]): asserts session is UserSession {
   assertAuthenticated(session);
   if (!allowedRoles.includes(session.role)) {
     throw new AppError("Sem permissao para acessar este recurso.", 403, "FORBIDDEN");

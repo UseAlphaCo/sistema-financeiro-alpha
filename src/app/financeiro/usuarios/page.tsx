@@ -5,6 +5,7 @@ import UsuariosClient from "./usuarios-client";
 
 export default async function UsuariosPage() {
   const session = await auth();
+  const currentUserId = session?.user?.id ?? "";
 
   const users = await listUsersAction(
     session?.user
@@ -16,5 +17,5 @@ export default async function UsuariosPage() {
       : null
   );
 
-  return <UsuariosClient initialUsers={users} />;
+  return <UsuariosClient initialUsers={users} currentUserId={currentUserId} />;
 }

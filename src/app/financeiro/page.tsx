@@ -11,7 +11,9 @@ export default async function FinanceiroPage() {
     { href: "/financeiro/fluxo-de-caixa", label: "Fluxo de Caixa", description: "Entradas, saídas e saldo líquido por período" },
     { href: "/financeiro/lancamentos", label: "Lançamentos", description: "Cadastro manual de entradas e saídas" },
     { href: "/financeiro/importacoes", label: "Importações", description: "Upload e confirmação de lançamentos via CSV" },
-    { href: "/financeiro/reconciliacao", label: "Reconciliação", description: "Detecta duplicatas, itens sem categoria e saldo negativo" },
+    ...(user?.role === "admin"
+      ? [{ href: "/financeiro/reconciliacao", label: "Reconciliação", description: "Detecta duplicatas, itens sem categoria e saldo negativo" }]
+      : []),
     { href: "/financeiro/integracoes", label: "Integrações", description: "Eventos recebidos via webhook Shopify" },
   ];
 

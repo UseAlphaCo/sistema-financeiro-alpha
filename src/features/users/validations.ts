@@ -13,6 +13,22 @@ export const updateUserSchema = z.object({
   status: z.enum(USER_STATUSES).optional(),
 });
 
+export const deleteUserSchema = z.object({
+  id: z.string().min(1),
+});
+
+export const resetUserPasswordSchema = z.discriminatedUnion("mode", [
+  z.object({
+    id: z.string().min(1),
+    mode: z.literal("generated"),
+  }),
+  z.object({
+    id: z.string().min(1),
+    mode: z.literal("manual"),
+    newPassword: z.string().min(6),
+  }),
+]);
+
 export const changePasswordSchema = z.object({
   currentPassword: z.string().min(1),
   newPassword: z.string().min(6),

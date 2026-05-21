@@ -58,11 +58,21 @@ export const authConfig: NextAuthConfig = {
       }
       return token;
     },
-    session({ session, token }) {
+    async session({ session, token }) {
       if (session.user) {
         session.user.id = String(token.sub ?? "");
-        session.user.role = String(token.role ?? "financeiro") as "admin" | "financeiro";
-        session.user.forcePasswordChange = Boolean(token.forcePasswordChange);
+
+        const prisma = getPrismaClient();
+        const dbUser = token.sub
+          ? await prisma.user.findUnique({
+              where: { id: String(token.sub) },
+            })
+          : null;
+
+        session.user.role = String(dbUser?.role ?? token.role ?? "financeiro") as "admin" | "financeiro";
+        session.user.forcePasswordChange = Boolean(
+          dbUser?.forcePasswordChange ?? token.forcePasswordChange
+        );
       }
       return session;
     },

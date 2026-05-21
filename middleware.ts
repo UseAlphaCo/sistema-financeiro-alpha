@@ -20,10 +20,11 @@ function isAllowedRole(role: UserRole | null): boolean {
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  const isRootPath = pathname === "/";
   const isProtectedPage = PROTECTED_PAGE_PREFIXES.some((p) => pathname.startsWith(p));
   const isProtectedApi = pathname.startsWith(PROTECTED_API_PREFIX);
 
-  if (!isProtectedPage && !isProtectedApi) {
+  if (!isRootPath && !isProtectedPage && !isProtectedApi) {
     return NextResponse.next();
   }
 
@@ -66,6 +67,12 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
+  if (pathname.startsWith("/financeiro/reconciliacao") && role !== "admin") {
+    const loginUrl = new URL("/login", request.url);
+    loginUrl.searchParams.set("error", "forbidden");
+    return NextResponse.redirect(loginUrl);
+  }
+
   const isPasswordPage = pathname.startsWith("/financeiro/alterar-senha");
   if (user.forcePasswordChange && !isPasswordPage && !isProtectedApi) {
     return NextResponse.redirect(new URL("/financeiro/alterar-senha", request.url));
@@ -84,6 +91,6 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/financeiro/:path*", "/api/financial/:path*"],
+  matcher: ["/", "/financeiro/:path*", "/api/financial/:path*"],
 };
 

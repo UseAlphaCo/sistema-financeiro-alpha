@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 
+import { auth } from "@/core/auth/auth";
 import { assertAuthenticated, assertRole } from "@/core/auth/guards";
 import { getSessionFromRequest } from "@/core/auth/session";
 import { AppError } from "@/core/errors/app-error";
@@ -27,6 +28,51 @@ type RateEntry = {
 
 const ONE_MINUTE_MS = 60_000;
 const rateBucket = new Map<string, RateEntry>();
+
+function normalizeRole(value: string | null | undefined): UserRole | null {
+  if (!value) return null;
+
+  const lowered = value.toLowerCase();
+  switch (lowered) {
+    case "admin":
+      return "admin";
+    case "financeiro":
+      return "financeiro";
+    case "operador":
+      return "operador";
+    case "parceiro":
+      return "parceiro";
+    case "influenciador":
+      return "influenciador";
+    default:
+      return null;
+  }
+}
+
+async function resolveSession(request: NextRequest): Promise<UserSession | null> {
+  const sessionFromHeaders = getSessionFromRequest(request);
+  if (sessionFromHeaders) {
+    return sessionFromHeaders;
+  }
+
+  try {
+    const nextAuthSession = await auth();
+    const user = nextAuthSession?.user;
+    const role = normalizeRole(user?.role);
+
+    if (!user?.id || !user?.email || !role) {
+      return null;
+    }
+
+    return {
+      id: user.id,
+      email: user.email,
+      role,
+    };
+  } catch {
+    return null;
+  }
+}
 
 function getClientIp(request: NextRequest): string {
   const forwarded = request.headers.get("x-forwarded-for");
@@ -65,7 +111,7 @@ export async function withApiSecurity(
   const requestId = request.headers.get("x-request-id") ?? crypto.randomUUID();
 
   try {
-    const session = getSessionFromRequest(request);
+    const session = await resolveSession(request);
 
     if (options.requireAuth) {
       assertAuthenticated(session);

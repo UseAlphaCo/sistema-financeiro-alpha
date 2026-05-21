@@ -37,6 +37,22 @@ export async function listUsers(): Promise<UserRecord[]> {
   return users.map(mapUser);
 }
 
+export async function findUserById(id: string): Promise<UserRecord | null> {
+  const prisma = getPrismaClient();
+  const user = await prisma.user.findUnique({ where: { id } });
+  return user ? mapUser(user) : null;
+}
+
+export async function countActiveAdmins(): Promise<number> {
+  const prisma = getPrismaClient();
+  return prisma.user.count({
+    where: {
+      role: "admin",
+      status: "active",
+    },
+  });
+}
+
 export async function createUser(input: CreateUserInput, tempPassword: string): Promise<UserRecord> {
   const prisma = getPrismaClient();
   const passwordHash = await hash(tempPassword, 12);
@@ -105,4 +121,36 @@ export async function verifyAndChangePassword(params: {
   });
 
   return true;
+}
+
+export async function updateUserPassword(params: {
+  userId: string;
+  newPassword: string;
+  forcePasswordChange?: boolean;
+}): Promise<UserRecord | null> {
+  const prisma = getPrismaClient();
+  const found = await prisma.user.findUnique({ where: { id: params.userId } });
+
+  if (!found) return null;
+
+  const nextHash = await hash(params.newPassword, 12);
+  const user = await prisma.user.update({
+    where: { id: params.userId },
+    data: {
+      passwordHash: nextHash,
+      forcePasswordChange: params.forcePasswordChange ?? true,
+    },
+  });
+
+  return mapUser(user);
+}
+
+export async function deleteUserById(id: string): Promise<UserRecord | null> {
+  const prisma = getPrismaClient();
+
+  const found = await prisma.user.findUnique({ where: { id } });
+  if (!found) return null;
+
+  const deleted = await prisma.user.delete({ where: { id } });
+  return mapUser(deleted);
 }

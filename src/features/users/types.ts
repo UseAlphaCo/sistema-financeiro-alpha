@@ -24,3 +24,27 @@ export type UpdateUserInput = {
   role?: ManagedUserRole;
   status?: UserStatus;
 };
+
+export type ResetPasswordMode = "generated" | "manual";
+
+export type ResetUserPasswordInput =
+  | {
+      id: string;
+      mode: "generated";
+    }
+  | {
+      id: string;
+      mode: "manual";
+      newPassword: string;
+    };
+
+export type ResetUserPasswordResult =
+  | {
+      user: UserRecord;
+      mode: "generated";
+      tempPassword: string;
+    }
+  | {
+      user: UserRecord;
+      mode: "manual";
+    };
