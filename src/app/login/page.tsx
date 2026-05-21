@@ -1,9 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
-
-import { createSupabaseBrowserClient } from "@/core/auth/supabase-client";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -17,20 +16,23 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
 
-    const supabase = createSupabaseBrowserClient();
-    const { error: authError } = await supabase.auth.signInWithPassword({
+    const nextPath = new URLSearchParams(window.location.search).get("next");
+    const callbackUrl = nextPath && nextPath.startsWith("/") ? nextPath : "/financeiro";
+
+    const result = await signIn("credentials", {
       email,
       password,
+      redirect: false,
+      callbackUrl,
     });
 
-    setLoading(false);
-
-    if (authError) {
+    if (result?.error) {
+      setLoading(false);
       setError("E-mail ou senha inválidos.");
       return;
     }
 
-    router.push("/financeiro");
+    router.push(result?.url ?? callbackUrl);
     router.refresh();
   }
 

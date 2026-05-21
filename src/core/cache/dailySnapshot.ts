@@ -1,6 +1,5 @@
 import { Prisma } from '@prisma/client';
 import { getPrismaClient } from '@/core/db/prisma-client';
-import type { FinancialTransaction } from '@/features/transactions/types';
 
 const prisma = getPrismaClient();
 
@@ -11,7 +10,7 @@ function normalizeSnapshotDate(date: Date): Date {
 
 export async function saveDailySnapshot(
   date: Date,
-  data: FinancialTransaction[],
+  data: Prisma.InputJsonValue,
   meta: Prisma.InputJsonValue | null = null
 ) {
   const normalizedDate = normalizeSnapshotDate(date);

@@ -1,12 +1,10 @@
-import { createSupabaseServerClient } from "@/core/auth/supabase-server";
+import { auth } from "@/core/auth/auth";
 
 export default async function FinanceiroPage() {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const session = await auth();
+  const user = session?.user;
 
-  const role = (user?.user_metadata?.role as string) ?? "—";
+  const role = user?.role ?? "—";
 
   const links = [
     { href: "/financeiro/dashboard", label: "Dashboard", description: "Visão consolidada com breakdown por marketplace" },

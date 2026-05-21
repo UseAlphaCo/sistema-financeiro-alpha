@@ -1,4 +1,5 @@
-import { createSupabaseServerClient } from "@/core/auth/supabase-server";
+import { signOut } from "@/core/auth/auth";
+import { auth } from "@/core/auth/auth";
 import { LancamentosMenu } from "./LancamentosMenu";
 
 export default async function FinanceiroLayout({
@@ -6,10 +7,8 @@ export default async function FinanceiroLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const session = await auth();
+  const user = session?.user;
 
   return (
     <div className="flex min-h-full flex-col">
@@ -34,12 +33,22 @@ export default async function FinanceiroLayout({
           <a href="/financeiro/integracoes" className="hover:text-gray-900">
             Integrações
           </a>
+          {user?.role === "admin" && (
+            <a href="/financeiro/usuarios" className="hover:text-gray-900">
+              Usuários
+            </a>
+          )}
 
           <div className="ml-auto flex items-center gap-4">
             {user && (
               <span className="text-xs text-gray-400">{user.email}</span>
             )}
-            <form action="/api/auth/logout" method="POST">
+            <form
+              action={async () => {
+                "use server";
+                await signOut({ redirectTo: "/login" });
+              }}
+            >
               <button
                 type="submit"
                 className="rounded-md border border-gray-200 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"

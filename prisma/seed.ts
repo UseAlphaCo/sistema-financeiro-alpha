@@ -1,7 +1,9 @@
 import { getPrismaClient } from "../src/core/db/prisma-client";
+import { hash } from "bcryptjs";
 
 async function main() {
   const prisma = getPrismaClient();
+  const defaultPasswordHash = await hash("noob00", 12);
 
   const categories = [
     { name: "Aluguel", direction: "saida" },
@@ -28,7 +30,30 @@ async function main() {
     });
   }
 
-  console.log("Categorias iniciais cadastradas.");
+  const admins = [
+    "sendylago@usealphaco.com.br",
+    "matheus@usealphaco.com.br",
+  ];
+
+  for (const email of admins) {
+    await prisma.user.upsert({
+      where: { email },
+      update: {
+        role: "admin",
+        status: "active",
+        forcePasswordChange: false,
+      },
+      create: {
+        email,
+        passwordHash: defaultPasswordHash,
+        role: "admin",
+        status: "active",
+        forcePasswordChange: false,
+      },
+    });
+  }
+
+  console.log("Categorias e admins iniciais cadastrados.");
 }
 
 main().catch((e) => {

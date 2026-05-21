@@ -8,6 +8,30 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+enum UserAccountRole {
+  admin
+  financeiro
+}
+
+enum UserAccountStatus {
+  active
+  disabled
+}
+
+model User {
+  id                  String            @id @default(cuid())
+  email               String            @unique
+  passwordHash        String
+  role                UserAccountRole   @default(financeiro)
+  status              UserAccountStatus @default(active)
+  forcePasswordChange Boolean           @default(true)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  @@index([role])
+  @@index([status])
+}
+
 model FinancialTransaction {
   id            String   @id @default(cuid())
   externalSource String?
