@@ -13,6 +13,7 @@ import {
   transactionMatchesPaymentMethod,
 } from "@/features/transactions/payment-method-filter";
 import { getDailySnapshot } from "@/core/cache/dailySnapshot";
+import { listFinancialReadModelPaginated } from "@/features/transactions/read-model";
 
 type DeleteInput = {
   id: string;
@@ -186,17 +187,21 @@ class InMemoryTransactionsRepository implements TransactionsRepository {
     const yesterday = isYesterdayRange(filters.startDate, filters.endDate);
 
     if (yesterday) {
-      const snapshot = await getDailySnapshot(yesterday);
-      if (snapshot && Array.isArray(snapshot.data)) {
-        return {
-          items: snapshot.data as FinancialTransaction[],
-          pagination: {
-            page: 1,
-            limit: snapshot.data.length,
-            total: snapshot.data.length,
-            hasNext: false,
-          },
-        };
+      try {
+        const snapshot = await getDailySnapshot(yesterday);
+        if (snapshot && Array.isArray(snapshot.data)) {
+          return {
+            items: snapshot.data as FinancialTransaction[],
+            pagination: {
+              page: 1,
+              limit: snapshot.data.length,
+              total: snapshot.data.length,
+              hasNext: false,
+            },
+          };
+        }
+      } catch {
+        // Em cutover, tabela de snapshot pode não existir no banco corrente.
       }
     }
     // Fallback para consulta normal
@@ -266,17 +271,21 @@ class PrismaTransactionsRepository implements TransactionsRepository {
     const yesterday = isYesterdayRange(filters.startDate, filters.endDate);
 
     if (yesterday) {
-      const snapshot = await getDailySnapshot(yesterday);
-      if (snapshot && Array.isArray(snapshot.data)) {
-        return {
-          items: snapshot.data as FinancialTransaction[],
-          pagination: {
-            page: 1,
-            limit: snapshot.data.length,
-            total: snapshot.data.length,
-            hasNext: false,
-          },
-        };
+      try {
+        const snapshot = await getDailySnapshot(yesterday);
+        if (snapshot && Array.isArray(snapshot.data)) {
+          return {
+            items: snapshot.data as FinancialTransaction[],
+            pagination: {
+              page: 1,
+              limit: snapshot.data.length,
+              total: snapshot.data.length,
+              hasNext: false,
+            },
+          };
+        }
+      } catch {
+        // Em cutover, tabela de snapshot pode não existir no banco corrente.
       }
     }
 
@@ -284,6 +293,25 @@ class PrismaTransactionsRepository implements TransactionsRepository {
   }
 
   async list(filters: ListTransactionsFilters): Promise<PaginatedTransactions> {
+    const useMirrorReadModel =
+      Boolean(process.env.CORE_DB_URL) && process.env.FINANCIAL_READ_MODEL_MIRROR !== "false";
+
+    if (useMirrorReadModel) {
+      try {
+        return listFinancialReadModelPaginated(filters);
+      } catch {
+        return {
+          items: [],
+          pagination: {
+            page: filters.page,
+            limit: filters.limit,
+            total: 0,
+            hasNext: false,
+          },
+        };
+      }
+    }
+
     const prisma = getPrismaClient();
 
     const where: Prisma.FinancialTransactionWhereInput = {
