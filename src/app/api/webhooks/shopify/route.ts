@@ -21,6 +21,16 @@ export async function POST(request: NextRequest) {
     return createApiError(requestId, "SHOPIFY_WEBHOOK_SECRET nao configurado", 503);
   }
 
+  // Mirror-first mode: disable direct webhooks if configured to avoid dual-writes.
+  if (process.env.DISABLE_SHOPIFY_WEBHOOKS === "true" || process.env.FINANCIAL_READ_MODEL_MIRROR === "true") {
+    logInfo("shopify_webhook_disabled", { requestId, topic });
+    return createApiError(
+      requestId,
+      "Webhook temporariamente desativado: envie eventos via Worker/mirror-first",
+      410
+    );
+  }
+
   if (!verifyShopifyHmac(rawBody, hmacHeader, safeSecret)) {
     logInfo("shopify_webhook_hmac_invalid", {
       requestId,

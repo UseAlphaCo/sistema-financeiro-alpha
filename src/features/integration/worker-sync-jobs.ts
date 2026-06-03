@@ -1,0 +1,209 @@
+import { randomUUID } from "node:crypto";
+
+import { runSyncOnce } from "@/workers/sync/service";
+import {
+  ensureJobsTable,
+  insertJob,
+  updateJob,
+  getJob as getPersistedJob,
+  getLatestRunningJob,
+  PersistedJob,
+} from "./worker-job-repository";
+import type { WorkerSummary } from "@/workers/sync/types";
+
+type WorkerSyncJobStatus = "queued" | "running" | "completed" | "failed";
+
+type WorkerSyncJob = {
+  id: string;
+  mode: "retroactive";
+  estimatedScopeDays: 30 | 60 | 90;
+  status: WorkerSyncJobStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  requestedBy: string | null;
+  requestId: string;
+  maxRuns: number;
+  runs: number;
+  lastError: string | null;
+  summary: WorkerSummary;
+};
+
+type StartWorkerSyncJobInput = {
+  estimatedScopeDays: 30 | 60 | 90;
+  requestedBy: string | null;
+  requestId: string;
+  maxRuns?: number;
+};
+
+function createInitialSummary(): WorkerSummary {
+  return {
+    fetched: 0,
+    processed: 0,
+    failed: 0,
+    skipped: 0,
+    retried: 0,
+    deadLettered: 0,
+    lockSkipped: false,
+  };
+}
+
+
+
+function mergeSummary(target: WorkerSummary, step: WorkerSummary): WorkerSummary {
+  return {
+    fetched: target.fetched + step.fetched,
+    processed: target.processed + step.processed,
+    failed: target.failed + step.failed,
+    skipped: target.skipped + step.skipped,
+    retried: target.retried + step.retried,
+    deadLettered: target.deadLettered + step.deadLettered,
+    lockSkipped: target.lockSkipped || step.lockSkipped,
+  };
+}
+
+async function executeWorkerJob(jobId: string): Promise<void> {
+  const persisted = await getPersistedJob(jobId);
+  if (!persisted) return;
+
+  await updateJob(jobId, { status: "running" } as Partial<PersistedJob>);
+
+  for (let run = 1; run <= (persisted.max_runs ?? 1); run += 1) {
+    const latest = await getPersistedJob(jobId);
+    if (!latest) return;
+
+    try {
+      const cycle = await runSyncOnce(
+        run === 1
+          ? {
+              backfillDays: (latest.estimated_scope_days as unknown as 30 | 60 | 90) || undefined,
+            }
+          : {}
+      );
+
+      const currentSummary = (latest.summary as WorkerSummary) ?? createInitialSummary();
+      const newSummary = mergeSummary(currentSummary, cycle);
+
+      await updateJob(jobId, {
+        runs: run,
+        summary: newSummary,
+      } as Partial<PersistedJob>);
+
+      if (cycle.lockSkipped || cycle.fetched === 0) {
+        break;
+      }
+    } catch (error) {
+      await updateJob(jobId, {
+        status: "failed",
+        last_error: error instanceof Error ? error.message : String(error),
+        finished_at: new Date().toISOString(),
+      } as Partial<PersistedJob>);
+      return;
+    }
+  }
+
+  await updateJob(jobId, {
+    status: "completed",
+    finished_at: new Date().toISOString(),
+  } as Partial<PersistedJob>);
+}
+
+export async function startWorkerSyncJob(input: StartWorkerSyncJobInput): Promise<WorkerSyncJob> {
+  await ensureJobsTable();
+
+  const running = await getLatestRunningJob();
+  if (running && (running.status === "queued" || running.status === "running")) {
+    return {
+      id: running.id,
+      mode: (running.mode as any) ?? "retroactive",
+      estimatedScopeDays: (running.estimated_scope_days as number) as 30 | 60 | 90,
+      status: running.status as WorkerSyncJobStatus,
+      startedAt: running.started_at,
+      finishedAt: running.finished_at ?? null,
+      requestedBy: running.requested_by ?? null,
+      requestId: running.request_id ?? "",
+      maxRuns: running.max_runs ?? 20,
+      runs: running.runs ?? 0,
+      lastError: running.last_error ?? null,
+      summary: (running.summary as WorkerSummary) ?? createInitialSummary(),
+    } as WorkerSyncJob;
+  }
+
+  const id = randomUUID();
+  const maxRuns = Math.min(Math.max(input.maxRuns ?? 20, 1), 200);
+
+  const persisted: PersistedJob = {
+    id,
+    mode: "retroactive",
+    estimated_scope_days: input.estimatedScopeDays,
+    status: "queued",
+    started_at: new Date().toISOString(),
+    finished_at: null,
+    requested_by: input.requestedBy,
+    request_id: input.requestId,
+    max_runs: maxRuns,
+    runs: 0,
+    last_error: null,
+    summary: createInitialSummary(),
+  } as unknown as PersistedJob;
+
+  await insertJob(persisted).catch(() => undefined);
+
+  void executeWorkerJob(id);
+
+  return {
+    id,
+    mode: "retroactive",
+    estimatedScopeDays: input.estimatedScopeDays,
+    status: "queued",
+    startedAt: persisted.started_at,
+    finishedAt: null,
+    requestedBy: input.requestedBy,
+    requestId: input.requestId,
+    maxRuns,
+    runs: 0,
+    lastError: null,
+    summary: createInitialSummary(),
+  } as WorkerSyncJob;
+}
+
+export async function getWorkerSyncJob(jobId: string): Promise<WorkerSyncJob | null> {
+  const persisted = await getPersistedJob(jobId);
+  if (!persisted) return null;
+
+  return {
+    id: persisted.id,
+    mode: (persisted.mode as any) ?? "retroactive",
+    estimatedScopeDays: (persisted.estimated_scope_days as number) as 30 | 60 | 90,
+    status: persisted.status as WorkerSyncJobStatus,
+    startedAt: persisted.started_at,
+    finishedAt: persisted.finished_at ?? null,
+    requestedBy: persisted.requested_by ?? null,
+    requestId: persisted.request_id ?? "",
+    maxRuns: persisted.max_runs ?? 20,
+    runs: persisted.runs ?? 0,
+    lastError: persisted.last_error ?? null,
+    summary: (persisted.summary as WorkerSummary) ?? createInitialSummary(),
+  } as WorkerSyncJob;
+}
+
+export async function getCurrentWorkerSyncJob(): Promise<WorkerSyncJob | null> {
+  const running = await getLatestRunningJob();
+  if (!running) return null;
+
+  return {
+    id: running.id,
+    mode: (running.mode as any) ?? "retroactive",
+    estimatedScopeDays: (running.estimated_scope_days as number) as 30 | 60 | 90,
+    status: running.status as WorkerSyncJobStatus,
+    startedAt: running.started_at,
+    finishedAt: running.finished_at ?? null,
+    requestedBy: running.requested_by ?? null,
+    requestId: running.request_id ?? "",
+    maxRuns: running.max_runs ?? 20,
+    runs: running.runs ?? 0,
+    lastError: running.last_error ?? null,
+    summary: (running.summary as WorkerSummary) ?? createInitialSummary(),
+  } as WorkerSyncJob;
+}
+
+export type { WorkerSyncJob, WorkerSyncJobStatus };

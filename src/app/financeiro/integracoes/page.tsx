@@ -25,6 +25,37 @@ type TransactionItem = {
 };
 
 type SyncResult = {
+  jobId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  mode: "retroactive";
+  estimatedScopeDays: number;
+  startedAt: string;
+  maxRuns: number;
+};
+
+type WorkerSyncStatus = {
+  jobId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  mode: "retroactive";
+  estimatedScopeDays: number;
+  startedAt: string;
+  finishedAt: string | null;
+  requestedBy: string | null;
+  maxRuns: number;
+  runs: number;
+  lastError: string | null;
+  summary: {
+    fetched: number;
+    processed: number;
+    failed: number;
+    skipped: number;
+    retried: number;
+    deadLettered: number;
+    lockSkipped: boolean;
+  };
+};
+
+type LegacySyncResult = {
   fetched: number;
   imported: number;
   skipped: number;
@@ -85,9 +116,10 @@ export default function IntegracoesPage() {
   const [loadingList, setLoadingList] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
 
-  const [syncDays, setSyncDays] = useState(30);
+  const [syncDays, setSyncDays] = useState<30 | 60 | 90>(90);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [syncStatus, setSyncStatus] = useState<WorkerSyncStatus | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
 
   async function loadEvents() {
@@ -113,20 +145,50 @@ export default function IntegracoesPage() {
     setLoadingList(false);
   }
 
+  async function loadSyncStatus(jobId: string) {
+    try {
+      const res = await fetch(
+        `/api/financial/integrations/worker/status?jobId=${encodeURIComponent(jobId)}`
+      );
+      const json = (await res.json()) as ApiEnvelope<WorkerSyncStatus>;
+      if (!json.success || !json.data) {
+        setSyncError(json.error ?? "Falha ao consultar status do job.");
+        return;
+      }
+
+      setSyncStatus(json.data);
+
+      if (json.data.status === "completed") {
+        void loadEvents();
+      }
+    } catch {
+      setSyncError("Falha ao consultar status do job.");
+    }
+  }
+
   async function handleSync() {
     setSyncing(true);
     setSyncResult(null);
+    setSyncStatus(null);
     setSyncError(null);
     try {
-      const res = await fetch("/api/financial/integrations/shopify/sync", {
+      const res = await fetch("/api/financial/integrations/worker/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ days: syncDays }),
+        body: JSON.stringify({
+          mode: "retroactive",
+          days: syncDays,
+        }),
       });
-      const json = (await res.json()) as ApiEnvelope<SyncResult>;
+      const json = (await res.json()) as ApiEnvelope<SyncResult | LegacySyncResult>;
       if (json.success && json.data) {
-        setSyncResult(json.data);
-        void loadEvents();
+        const started = json.data as SyncResult;
+        if (!started.jobId) {
+          setSyncError("Resposta invalida ao iniciar sincronizacao do worker.");
+        } else {
+          setSyncResult(started);
+          void loadSyncStatus(started.jobId);
+        }
       } else {
         setSyncError(json.error ?? "Falha na sincronização.");
       }
@@ -135,6 +197,20 @@ export default function IntegracoesPage() {
     }
     setSyncing(false);
   }
+
+  useEffect(() => {
+    if (!syncResult?.jobId) return;
+
+    if (syncStatus?.status === "completed" || syncStatus?.status === "failed") {
+      return;
+    }
+
+    const intervalId = setInterval(() => {
+      void loadSyncStatus(syncResult.jobId);
+    }, 1500);
+
+    return () => clearInterval(intervalId);
+  }, [syncResult?.jobId, syncStatus?.status]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -149,17 +225,16 @@ export default function IntegracoesPage() {
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-gray-900">Integrações</h1>
         <p className="mt-1 text-sm text-gray-500">
-          Sincronize pedidos da Shopify e veja os eventos recebidos via webhook.
+          Dispare o Worker ALP-OMS para carregar retroativo e acompanhe o progresso da sincronizacao.
         </p>
       </div>
 
       {/* Painel de sincronização manual */}
       <section className="mb-8 rounded-lg border border-gray-200 bg-white p-5">
-        <h2 className="mb-1 text-sm font-medium text-gray-700">Sincronizar pedidos da Shopify</h2>
+        <h2 className="mb-1 text-sm font-medium text-gray-700">Sincronizar retroativo ALP-OMS (Worker)</h2>
         <p className="mb-4 text-xs text-gray-500">
-          Busca pedidos pagos retroativamente via API REST da Shopify. Requer{" "}
-          <code className="rounded bg-gray-100 px-1">SHOPIFY_STORE_URL</code> e{" "}
-          <code className="rounded bg-gray-100 px-1">SHOPIFY_ACCESS_TOKEN</code> configurados no ambiente.
+          Executa o pipeline oficial OMS {'->'} sync_events {'->'} Worker {'->'} mirror.raw_payloads.
+          Escopo inicial desta rodada: 90 dias retroativos.
         </p>
 
         <div className="flex items-end gap-3">
@@ -167,10 +242,9 @@ export default function IntegracoesPage() {
             <label className="mb-1 block text-xs text-gray-600">Período</label>
             <select
               value={syncDays}
-              onChange={(e) => setSyncDays(Number(e.target.value))}
+              onChange={(e) => setSyncDays(Number(e.target.value) as 30 | 60 | 90)}
               className="rounded-md border border-gray-300 px-3 py-2 text-sm"
             >
-              <option value={7}>Últimos 7 dias</option>
               <option value={30}>Últimos 30 dias</option>
               <option value={60}>Últimos 60 dias</option>
               <option value={90}>Últimos 90 dias</option>
@@ -188,11 +262,22 @@ export default function IntegracoesPage() {
 
         {syncResult && (
           <div className="mt-4 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
-            Sincronização concluída — {syncResult.fetched} pedidos encontrados,{" "}
-            <strong>{syncResult.imported} importados</strong>, {syncResult.skipped} já existentes
-            {syncResult.failed > 0 && (
-              <span className="text-red-600">, {syncResult.failed} com erro</span>
-            )}.
+            Job iniciado — ID <strong>{syncResult.jobId}</strong>, status inicial {syncResult.status},
+            escopo estimado de {syncResult.estimatedScopeDays} dias.
+          </div>
+        )}
+
+        {syncStatus && (
+          <div className="mt-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+            <div>
+              Status: <strong>{syncStatus.status}</strong> | Ciclos: {syncStatus.runs}/{syncStatus.maxRuns}
+            </div>
+            <div className="mt-1 text-xs text-blue-800">
+              fetched={syncStatus.summary.fetched} processed={syncStatus.summary.processed} failed={syncStatus.summary.failed} skipped={syncStatus.summary.skipped} retried={syncStatus.summary.retried} deadLettered={syncStatus.summary.deadLettered}
+            </div>
+            {syncStatus.lastError && (
+              <div className="mt-1 text-xs text-red-700">Ultimo erro: {syncStatus.lastError}</div>
+            )}
           </div>
         )}
 
@@ -224,7 +309,7 @@ export default function IntegracoesPage() {
 
         {items.length === 0 && !loadingList ? (
           <div className="rounded-md border border-dashed border-gray-300 py-16 text-center text-sm text-gray-500">
-            Nenhum registro encontrado. Clique em &quot;Sincronizar agora&quot; para importar pedidos existentes.
+            Nenhum registro encontrado. Clique em &quot;Sincronizar agora&quot; para executar o retroativo via Worker.
           </div>
         ) : (
           <>

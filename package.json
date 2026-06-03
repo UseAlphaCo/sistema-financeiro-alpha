@@ -14,13 +14,17 @@
     "prisma:generate": "prisma generate",
     "prisma:seed": "tsx prisma/seed.ts",
     "postinstall": "prisma generate",
-    "check": "npm run lint && npm run typecheck && npm run check:boundaries && npm run check:contracts && npm run test && npm run build"
+    "check": "npm run lint && npm run typecheck && npm run check:boundaries && npm run check:contracts && npm run test && npm run build",
+    "worker:sync:once": "tsx src/workers/sync/run-once.ts",
+    "gate:b:baseline": "tsx scripts/gate-b-baseline.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^3.0.3",
+    "dotenv": "^17.2.3",
     "next": "16.2.4",
     "next-auth": "^5.0.0-beta.31",
+    "pg": "^8.16.3",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "zod": "^3.24.1"
@@ -29,6 +33,7 @@
     "@tailwindcss/postcss": "^4",
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
