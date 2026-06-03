@@ -6,6 +6,7 @@ import {
   getDateRangeForPreset,
   getPreviousPeriodRange,
 } from "@/lib/date-utils";
+import { listFinancialReadModelTransactions } from "@/features/transactions/read-model";
 import type {
   CashFlowBySource,
   CashFlowFilters,
@@ -64,10 +65,14 @@ async function aggregateTransactions(
   }
 
   const sql = `
-    SELECT source, type, SUM("amountCents") AS total_cents, COUNT(id) AS tx_count
+    SELECT
+      COALESCE(NULLIF("marketplace", ''), "source") AS source,
+      type,
+      SUM("amountCents") AS total_cents,
+      COUNT(id) AS tx_count
     FROM "FinancialTransaction"
     WHERE ${conditions.join(" AND ")}
-    GROUP BY source, type
+    GROUP BY COALESCE(NULLIF("marketplace", ''), "source"), type
   `;
 
   return db.$queryRawUnsafe<AggregateRow[]>(sql, ...values);
@@ -194,6 +199,79 @@ function parseLocalIsoDate(date: string, endOfDay = false): Date {
   return parsed;
 }
 
+function shouldUseMirrorReadModel(): boolean {
+  return Boolean(process.env.CORE_DB_URL) && process.env.FINANCIAL_READ_MODEL_MIRROR !== "false";
+}
+
+function summarizeTransactions(items: Array<{
+  marketplace: string | null;
+  externalSource: string | null;
+  source: string;
+  type: string;
+  amountCents: number;
+  discountCents: number;
+  shippingCents: number;
+  taxCents: number;
+  feeCents: number;
+}>): {
+  totalIncomeCents: number;
+  totalExpenseCents: number;
+  totalDiscountCents: number;
+  totalShippingCents: number;
+  totalTaxCents: number;
+  bySource: CashFlowBySource[];
+} {
+  let totalIncomeCents = 0;
+  let totalExpenseCents = 0;
+  let totalDiscountCents = 0;
+  let totalShippingCents = 0;
+  let totalTaxCents = 0;
+
+  const bySourceMap = new Map<string, CashFlowBySource>();
+
+  for (const item of items) {
+    totalDiscountCents += item.discountCents;
+    totalShippingCents += item.shippingCents;
+    totalTaxCents += item.taxCents + item.feeCents;
+
+    const sourceKey = item.marketplace ?? item.externalSource ?? item.source;
+    if (!bySourceMap.has(sourceKey)) {
+      bySourceMap.set(sourceKey, {
+        source: sourceKey,
+        grossCents: 0,
+        feesCents: 0,
+        netCents: 0,
+        transactionCount: 0,
+      });
+    }
+
+    const bucket = bySourceMap.get(sourceKey)!;
+    bucket.transactionCount += 1;
+
+    if (item.type === "income") {
+      totalIncomeCents += item.amountCents;
+      bucket.grossCents += item.amountCents;
+    } else if (item.type === "expense") {
+      totalExpenseCents += item.amountCents;
+      bucket.feesCents += item.amountCents;
+    }
+  }
+
+  const bySource = Array.from(bySourceMap.values()).map((item) => ({
+    ...item,
+    netCents: item.grossCents - item.feesCents,
+  }));
+
+  return {
+    totalIncomeCents,
+    totalExpenseCents,
+    totalDiscountCents,
+    totalShippingCents,
+    totalTaxCents,
+    bySource,
+  };
+}
+
 export async function computeCashFlow(
   filters: CashFlowFilters
 ): Promise<CashFlowSummary> {
@@ -217,6 +295,7 @@ export async function computeCashFlow(
   }
 
   const periodDays = Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1;
+  const prevRange = getPreviousPeriodRange(start, periodDays);
 
   const extraFilters = {
     source: filters.source,
@@ -224,10 +303,60 @@ export async function computeCashFlow(
     paymentMethod: filters.paymentMethod,
   };
 
-  const [currentRows, currentBreakdown, prevRange] = await Promise.all([
+  if (shouldUseMirrorReadModel()) {
+    const mirrorSourceFilters = filters.source
+      ? { source: filters.source }
+      : { sources: ["integration", "webhook"] };
+
+    const [currentItems, previousItems] = await Promise.all([
+      listFinancialReadModelTransactions({
+        ...extraFilters,
+        ...mirrorSourceFilters,
+        startDate: start.toISOString(),
+        endDate: end.toISOString(),
+      }),
+      listFinancialReadModelTransactions({
+        ...extraFilters,
+        ...mirrorSourceFilters,
+        startDate: prevRange.start.toISOString(),
+        endDate: prevRange.end.toISOString(),
+      }),
+    ]);
+
+    const current = summarizeTransactions(currentItems);
+    const previous = summarizeTransactions(previousItems);
+
+    const period: CashFlowPeriod = {
+      startDate: start.toISOString(),
+      endDate: end.toISOString(),
+      days: periodDays,
+      preset: filters.preset,
+    };
+
+    return {
+      period,
+      totalIncomeCents: current.totalIncomeCents,
+      totalExpenseCents: current.totalExpenseCents,
+      totalFeesCents: current.totalTaxCents,
+      totalDiscountCents: current.totalDiscountCents,
+      totalShippingCents: current.totalShippingCents,
+      totalTaxCents: current.totalTaxCents,
+      netCents: current.totalIncomeCents - current.totalExpenseCents,
+      bySource: current.bySource,
+      previousPeriod: {
+        totalIncomeCents: previous.totalIncomeCents,
+        totalExpenseCents: previous.totalExpenseCents,
+        totalDiscountCents: previous.totalDiscountCents,
+        totalShippingCents: previous.totalShippingCents,
+        totalTaxCents: previous.totalTaxCents,
+        netCents: previous.totalIncomeCents - previous.totalExpenseCents,
+      },
+    };
+  }
+
+  const [currentRows, currentBreakdown] = await Promise.all([
     aggregateTransactions(start, end, extraFilters),
     aggregateBreakdown(start, end, extraFilters),
-    Promise.resolve(getPreviousPeriodRange(start, periodDays)),
   ]);
 
   const [prevRows, prevBreakdown] = await Promise.all([
