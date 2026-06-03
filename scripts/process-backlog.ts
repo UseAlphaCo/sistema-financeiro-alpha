@@ -12,7 +12,7 @@ async function getPendingOmsCount() {
     const r = await pool.query("SELECT COUNT(*)::int AS cnt FROM integration.sync_events WHERE processed = FALSE");
     return r.rows[0].cnt as number;
   } catch (e) {
-    console.error('error counting pending', e.message ?? e);
+    console.error('error counting pending', e instanceof Error ? e.message : String(e));
     return Infinity;
   } finally {
     await pool.end();

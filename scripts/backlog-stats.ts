@@ -11,7 +11,7 @@ async function queryCore() {
     console.log('CORE integration.sync_events (pending):', r2.rows[0].cnt);
     console.log('CORE integration.sync_events (processed):', r3.rows[0].cnt);
   } catch (e) {
-    console.error('CORE query error', e.message ?? e);
+    console.error('CORE query error', e instanceof Error ? e.message : String(e));
   } finally {
     await pool.end();
   }
@@ -27,7 +27,7 @@ async function queryOms() {
     console.log('OMS integration.sync_events (pending):', r2.rows[0].cnt);
     console.log('OMS integration.sync_events (processed):', r3.rows[0].cnt);
   } catch (e) {
-    console.error('OMS query error', e.message ?? e);
+    console.error('OMS query error', e instanceof Error ? e.message : String(e));
   } finally {
     await pool.end();
   }
