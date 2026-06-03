@@ -100,3 +100,4 @@ Notas de segurança
 - Atualize variáveis de ambiente no painel do Vercel antes de promover o deploy.
 
 Se quiser, eu posso aplicar esses commits localmente (fazer os `git commit` e `push`) — autoriza que eu execute os comandos `git` no repositório? Caso sim, responda "autorizar git".
+PESSOAL_DIRECT_URL removed from local .env; update Vercel envs manually
