@@ -1,5 +1,5 @@
 import { computeCashFlow } from "@/features/cash-flow/service";
-import { getTransactionsRepository } from "@/features/transactions/repository";
+import { listFinancialReadModelTransactions } from "@/features/transactions/read-model";
 import {
   PAYMENT_METHODS,
   type FinancialTransaction,
@@ -37,9 +37,28 @@ function deltaClass(current: number, previous: number, inverseColors = false) {
 const SOURCE_LABELS: Record<string, string> = {
   manual: "Manual",
   import: "Importação",
-  integration: "Integração",
-  webhook: "Webhook",
+  shopify: "Shopify",
+  anymarket: "Anymarket",
+  mercado_livre: "Mercado Livre",
+  mercadoLivre: "Mercado Livre",
+  shopee: "Shopee",
+  amazon: "Amazon",
 };
+
+function formatOriginLabel(value: string): string {
+  const direct = SOURCE_LABELS[value];
+  if (direct) return direct;
+
+  if (/^[A-Z]/.test(value)) {
+    return value;
+  }
+
+  return value
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1).toLowerCase())
+    .join(" ");
+}
 
 const PERIOD_OPTIONS: Array<{ label: string; value: PeriodPreset }> = [
   { label: "Ontem", value: "yesterday" },
@@ -146,24 +165,11 @@ export default async function FluxoDeCaixaPage({
     total: 0,
     hasNext: false,
   };
+
+  let summaryResult;
   try {
-    const transactionsRepository = getTransactionsRepository();
-    const cashFlow = await computeCashFlow(cashFlowFilters);
-
-    summary = cashFlow;
-
-    const entriesRange = await transactionsRepository.list({
-      page,
-      limit,
-      type: "income",
-      sources: ["integration", "webhook"],
-      paymentMethod,
-      startDate: cashFlow.period.startDate,
-      endDate: cashFlow.period.endDate,
-    });
-
-    marketplaceEntries = entriesRange.items.filter((item) => Boolean(item.externalSource));
-    pagination = entriesRange.pagination;
+    summaryResult = await computeCashFlow(cashFlowFilters);
+    summary = summaryResult;
   } catch {
     return (
       <div>
@@ -176,6 +182,28 @@ export default async function FluxoDeCaixaPage({
         </div>
       </div>
     );
+  }
+
+  try {
+    const entries = await listFinancialReadModelTransactions({
+      type: "income",
+      sources: ["integration", "webhook"],
+      paymentMethod,
+      startDate: summaryResult.period.startDate,
+      endDate: summaryResult.period.endDate,
+    });
+
+    const filteredEntries = entries.filter((item) => Boolean(item.externalSource));
+    const offset = (page - 1) * limit;
+    marketplaceEntries = filteredEntries.slice(offset, offset + limit);
+    pagination = {
+      page,
+      limit,
+      total: filteredEntries.length,
+      hasNext: offset + limit < filteredEntries.length,
+    };
+  } catch {
+    // Mantém o resumo visível mesmo se a listagem detalhada falhar no cutover.
   }
 
   const {
@@ -429,7 +457,7 @@ export default async function FluxoDeCaixaPage({
                 {bySource.map((row) => (
                   <tr key={row.source} className="hover:bg-gray-50">
                     <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
-                      {SOURCE_LABELS[row.source] ?? row.source}
+                      {formatOriginLabel(row.source)}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
                       {formatBRL(row.grossCents)}
