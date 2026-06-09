@@ -5,6 +5,7 @@ import {
   insertJob,
   getJob,
   closePool,
+  PersistedJob,
 } from "./worker-job-repository";
 
 const conn = process.env.CORE_DB_URL ?? process.env.DATABASE_URL;
@@ -20,7 +21,7 @@ describe("worker-job-repository (integration)", () => {
   it("persists and retrieves a job", async () => {
     await ensureJobsTable();
     const id = randomUUID();
-    const job = {
+    const job: Omit<PersistedJob, "created_at"> = {
       id,
       mode: "retroactive",
       estimated_scope_days: 30,
@@ -33,7 +34,7 @@ describe("worker-job-repository (integration)", () => {
       runs: 0,
       last_error: null,
       summary: null,
-    } as any;
+    };
 
     await insertJob(job);
     const loaded = await getJob(id);

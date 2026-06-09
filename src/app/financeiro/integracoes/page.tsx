@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type TransactionItem = {
   id: string;
@@ -122,7 +122,7 @@ export default function IntegracoesPage() {
   const [syncStatus, setSyncStatus] = useState<WorkerSyncStatus | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
 
-  async function loadEvents() {
+  const loadEvents = useCallback(async () => {
     setLoadingList(true);
     setListError(null);
     try {
@@ -143,9 +143,9 @@ export default function IntegracoesPage() {
       setListError("Falha ao conectar ao servidor.");
     }
     setLoadingList(false);
-  }
+  }, []);
 
-  async function loadSyncStatus(jobId: string) {
+  const loadSyncStatus = useCallback(async (jobId: string) => {
     try {
       const res = await fetch(
         `/api/financial/integrations/worker/status?jobId=${encodeURIComponent(jobId)}`
@@ -164,7 +164,7 @@ export default function IntegracoesPage() {
     } catch {
       setSyncError("Falha ao consultar status do job.");
     }
-  }
+  }, [loadEvents]);
 
   async function handleSync() {
     setSyncing(true);
@@ -210,7 +210,7 @@ export default function IntegracoesPage() {
     }, 1500);
 
     return () => clearInterval(intervalId);
-  }, [syncResult?.jobId, syncStatus?.status]);
+  }, [loadSyncStatus, syncResult?.jobId, syncStatus?.status]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -218,7 +218,7 @@ export default function IntegracoesPage() {
     }, 0);
 
     return () => clearTimeout(timer);
-  }, []);
+  }, [loadEvents]);
 
   return (
     <div className="max-w-5xl">

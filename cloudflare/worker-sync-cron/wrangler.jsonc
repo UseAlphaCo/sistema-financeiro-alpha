@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sistema-financeiro-worker-sync-cron",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-09",
+  "triggers": {
+    "crons": ["*/30 * * * *"]
+  },
+  "vars": {
+    "APP_BASE_URL": "https://project-006s3.vercel.app",
+    "WORKER_CRON_DAYS": "30"
+  }
+}

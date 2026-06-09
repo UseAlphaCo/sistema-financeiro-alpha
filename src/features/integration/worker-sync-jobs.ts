@@ -35,6 +35,10 @@ type StartWorkerSyncJobInput = {
   maxRuns?: number;
 };
 
+function toRetroactiveMode(value: string | null | undefined): "retroactive" {
+  return value === "retroactive" ? "retroactive" : "retroactive";
+}
+
 function createInitialSummary(): WorkerSummary {
   return {
     fetched: 0,
@@ -114,7 +118,7 @@ export async function startWorkerSyncJob(input: StartWorkerSyncJobInput): Promis
   if (running && (running.status === "queued" || running.status === "running")) {
     return {
       id: running.id,
-      mode: (running.mode as any) ?? "retroactive",
+      mode: toRetroactiveMode(running.mode),
       estimatedScopeDays: (running.estimated_scope_days as number) as 30 | 60 | 90,
       status: running.status as WorkerSyncJobStatus,
       startedAt: running.started_at,
@@ -172,7 +176,7 @@ export async function getWorkerSyncJob(jobId: string): Promise<WorkerSyncJob | n
 
   return {
     id: persisted.id,
-    mode: (persisted.mode as any) ?? "retroactive",
+    mode: toRetroactiveMode(persisted.mode),
     estimatedScopeDays: (persisted.estimated_scope_days as number) as 30 | 60 | 90,
     status: persisted.status as WorkerSyncJobStatus,
     startedAt: persisted.started_at,
@@ -192,7 +196,7 @@ export async function getCurrentWorkerSyncJob(): Promise<WorkerSyncJob | null> {
 
   return {
     id: running.id,
-    mode: (running.mode as any) ?? "retroactive",
+    mode: toRetroactiveMode(running.mode),
     estimatedScopeDays: (running.estimated_scope_days as number) as 30 | 60 | 90,
     status: running.status as WorkerSyncJobStatus,
     startedAt: running.started_at,

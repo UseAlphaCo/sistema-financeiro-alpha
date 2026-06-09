@@ -129,6 +129,5 @@ export async function closePool(): Promise<void> {
   const pool = getPool();
   if (!pool) return;
   await pool.end();
-  // @ts-ignore
-  globalStore.__workerJobPool = undefined;
+  delete globalStore.__workerJobPool;
 }
