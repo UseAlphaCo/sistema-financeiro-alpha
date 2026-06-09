@@ -200,7 +200,12 @@ function parseLocalIsoDate(date: string, endOfDay = false): Date {
 }
 
 function shouldUseMirrorReadModel(): boolean {
-  return Boolean(process.env.CORE_DB_URL) && process.env.FINANCIAL_READ_MODEL_MIRROR !== "false";
+  const hasReadModelConnection = Boolean(process.env.CORE_DB_URL ?? process.env.DATABASE_URL);
+  const mirrorFlag = process.env.FINANCIAL_READ_MODEL_MIRROR;
+  const mirrorEnabled =
+    mirrorFlag === "true" || (process.env.NODE_ENV === "production" && mirrorFlag !== "false");
+
+  return hasReadModelConnection && mirrorEnabled;
 }
 
 function summarizeTransactions(items: Array<{

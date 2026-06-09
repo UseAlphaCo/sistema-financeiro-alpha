@@ -21,8 +21,13 @@ export async function POST(request: NextRequest) {
     return createApiError(requestId, "SHOPIFY_WEBHOOK_SECRET nao configurado", 503);
   }
 
-  // Mirror-first mode: disable direct webhooks if configured to avoid dual-writes.
-  if (process.env.DISABLE_SHOPIFY_WEBHOOKS === "true" || process.env.FINANCIAL_READ_MODEL_MIRROR === "true") {
+  // Mirror-first mode: in production, keep direct webhook path disabled unless explicitly re-enabled.
+  const mirrorFlag = process.env.FINANCIAL_READ_MODEL_MIRROR;
+  const mirrorEnabled =
+    mirrorFlag === "true" || (process.env.NODE_ENV === "production" && mirrorFlag !== "false");
+  const directWebhookDisabled = process.env.DISABLE_SHOPIFY_WEBHOOKS === "true" || mirrorEnabled;
+
+  if (directWebhookDisabled) {
     logInfo("shopify_webhook_disabled", { requestId, topic });
     return createApiError(
       requestId,

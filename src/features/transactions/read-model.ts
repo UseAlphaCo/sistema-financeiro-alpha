@@ -34,7 +34,7 @@ type ReadModelFilters = Omit<ListTransactionsFilters, "page" | "limit" | "source
 let corePool: Pool | null = null;
 
 function getCorePool(): Pool | null {
-  const connectionString = process.env.CORE_DB_URL;
+  const connectionString = process.env.CORE_DB_URL ?? process.env.DATABASE_URL;
   if (!connectionString) {
     return null;
   }

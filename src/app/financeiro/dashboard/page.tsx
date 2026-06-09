@@ -79,7 +79,22 @@ export default async function DashboardPage({ searchParams }: Props) {
   const preset: PeriodPreset = isPreset(params.preset) ? params.preset : "yesterday";
   const days = parseInt(params.days ?? String(PRESET_TO_DAYS[preset]), 10) || PRESET_TO_DAYS[preset];
 
-  const summary = await computeCashFlow({ preset, days });
+  let summary;
+  try {
+    summary = await computeCashFlow({ preset, days });
+  } catch {
+    return (
+      <div>
+        <div className="mb-6">
+          <h1 className="text-xl font-semibold text-gray-900">Dashboard Financeiro</h1>
+          <p className="mt-1 text-sm text-gray-500">Nao foi possivel carregar os dados no momento.</p>
+        </div>
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Falha ao conectar ao banco de dados. Verifique DATABASE_URL, CORE_DB_URL e OMS_DB_URL no ambiente atual.
+        </div>
+      </div>
+    );
+  }
 
   const {
     period,
