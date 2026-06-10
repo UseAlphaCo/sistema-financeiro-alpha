@@ -16,6 +16,27 @@ function normalizeDate(value: unknown): string | undefined {
   return value;
 }
 
+function normalizeMarketplace(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+
+  const normalized = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[\s-]+/g, "_");
+
+  if (!normalized || normalized === "todos" || normalized === "all") {
+    return undefined;
+  }
+
+  if (normalized === "mercadolivre") {
+    return "mercado_livre";
+  }
+
+  return normalized;
+}
+
 function parseBody(input: unknown): { format: CashFlowExportFormat; filters: CashFlowExportFilters } {
   const payload = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const format = payload.format === "xlsx" ? "xlsx" : "csv";
@@ -32,6 +53,7 @@ function parseBody(input: unknown): { format: CashFlowExportFormat; filters: Cas
     preset: PERIOD_PRESETS.includes(presetRaw as PeriodPreset)
       ? (presetRaw as PeriodPreset)
       : undefined,
+    marketplace: normalizeMarketplace(filtersInput.marketplace),
     paymentMethod: PAYMENT_METHODS.includes(paymentMethodRaw as PaymentMethod)
       ? (paymentMethodRaw as PaymentMethod)
       : undefined,

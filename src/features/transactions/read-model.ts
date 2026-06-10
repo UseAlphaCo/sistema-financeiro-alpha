@@ -316,13 +316,47 @@ function mapMirrorRow(row: MirrorRow): FinancialTransaction | null {
   };
 }
 
+function normalizeMarketplaceToken(value: string | null | undefined): string | null {
+  if (!value) return null;
+
+  const normalized = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[\s-]+/g, "_");
+
+  if (!normalized) return null;
+  if (normalized === "mercadolivre") return "mercado_livre";
+  if (normalized === "todos" || normalized === "all") return null;
+
+  return normalized;
+}
+
+function transactionMatchesMarketplaceFilter(
+  item: FinancialTransaction,
+  marketplace: string
+): boolean {
+  const target = normalizeMarketplaceToken(marketplace);
+  if (!target) return true;
+
+  const candidates = [
+    normalizeMarketplaceToken(item.marketplace),
+    normalizeMarketplaceToken(item.externalSource),
+  ].filter((value): value is string => Boolean(value));
+
+  return candidates.includes(target);
+}
+
 function filterTransactions(items: FinancialTransaction[], filters: ReadModelFilters): FinancialTransaction[] {
   return items.filter((item) => {
     if (filters.type && item.type !== filters.type) return false;
     if (filters.source && item.source !== filters.source) return false;
     if (filters.sources && filters.sources.length > 0 && !filters.sources.includes(item.source)) return false;
     if (filters.status && item.status !== filters.status) return false;
-    if (filters.marketplace && item.marketplace !== filters.marketplace) return false;
+    if (filters.marketplace && !transactionMatchesMarketplaceFilter(item, filters.marketplace)) {
+      return false;
+    }
     if (filters.categoryId && item.categoryId !== filters.categoryId) return false;
     if (filters.paymentMethod && !transactionMatchesPaymentMethod(item, filters.paymentMethod)) return false;
     if (filters.startDate && new Date(item.occurredAt) < new Date(filters.startDate)) return false;
@@ -373,7 +407,6 @@ async function listPrismaTransactions(filters: ReadModelFilters): Promise<Financ
   if (filters.source) where.source = filters.source;
   if (filters.sources && filters.sources.length > 0) where.source = { in: filters.sources.filter((source) => source === "manual" || source === "import") };
   if (filters.status) where.status = filters.status;
-  if (filters.marketplace) where.marketplace = filters.marketplace;
   if (filters.categoryId) where.categoryId = filters.categoryId;
 
   if (filters.startDate || filters.endDate) {
@@ -485,6 +518,7 @@ export async function listFinancialReadModelPaginated(
 type MarketplaceReadModelFilters = {
   page: number;
   limit: number;
+  marketplace?: string;
   paymentMethod?: PaymentMethod;
   startDate?: string;
   endDate?: string;
@@ -536,6 +570,7 @@ export async function listMarketplaceReadModelPaginated(
   const readModelFilters: ReadModelFilters = {
     type: "income",
     sources: ["integration", "webhook"],
+    marketplace: filters.marketplace,
     paymentMethod: filters.paymentMethod,
     startDate: filters.startDate,
     endDate: filters.endDate,

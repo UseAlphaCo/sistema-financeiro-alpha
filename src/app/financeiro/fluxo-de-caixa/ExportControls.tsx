@@ -9,6 +9,7 @@ type ExportFilters = {
   preset?: string;
   startDate?: string;
   endDate?: string;
+  marketplace?: string;
   paymentMethod?: string;
 };
 
@@ -81,9 +82,16 @@ export default function ExportControls({ filters }: Props) {
       preset: filters.preset,
       startDate: filters.startDate,
       endDate: filters.endDate,
+      marketplace: filters.marketplace,
       paymentMethod: filters.paymentMethod,
     }),
-    [filters.endDate, filters.paymentMethod, filters.preset, filters.startDate]
+    [
+      filters.endDate,
+      filters.marketplace,
+      filters.paymentMethod,
+      filters.preset,
+      filters.startDate,
+    ]
   );
 
   const loadStatus = useCallback(async (jobId?: string) => {

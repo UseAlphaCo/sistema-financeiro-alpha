@@ -17,6 +17,7 @@ const cashFlowFiltersSchema = z.object({
   startDate: dateFilterSchema.optional(),
   endDate: dateFilterSchema.optional(),
   source: z.string().optional(),
+  marketplace: z.string().optional(),
   categoryId: z.string().optional(),
   paymentMethod: z.enum(PAYMENT_METHODS).optional(),
 });

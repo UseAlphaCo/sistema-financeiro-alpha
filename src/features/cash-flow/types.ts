@@ -42,6 +42,7 @@ export type CashFlowFilters = {
   startDate?: string;
   endDate?: string;
   source?: string;
+  marketplace?: string;
   categoryId?: string;
   paymentMethod?: PaymentMethod;
 };

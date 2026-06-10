@@ -30,7 +30,12 @@ type BreakdownRow = {
 async function aggregateTransactions(
   start: Date,
   end: Date,
-  extraFilters: { source?: string; categoryId?: string; paymentMethod?: PaymentMethod }
+  extraFilters: {
+    source?: string;
+    marketplace?: string;
+    categoryId?: string;
+    paymentMethod?: PaymentMethod;
+  }
 ): Promise<AggregateRow[]> {
   const db = getPrismaClient();
 
@@ -46,6 +51,13 @@ async function aggregateTransactions(
   if (extraFilters.source) {
     values.push(extraFilters.source);
     conditions.push(`"source" = $${values.length}`);
+  }
+
+  if (extraFilters.marketplace) {
+    values.push(extraFilters.marketplace);
+    conditions.push(
+      `REPLACE(REPLACE(LOWER(COALESCE(NULLIF("marketplace", ''), "externalSource", '')), ' ', '_'), '-', '_') = $${values.length}`
+    );
   }
 
   if (extraFilters.categoryId) {
@@ -81,7 +93,12 @@ async function aggregateTransactions(
 async function aggregateBreakdown(
   start: Date,
   end: Date,
-  extraFilters: { source?: string; categoryId?: string; paymentMethod?: PaymentMethod }
+  extraFilters: {
+    source?: string;
+    marketplace?: string;
+    categoryId?: string;
+    paymentMethod?: PaymentMethod;
+  }
 ): Promise<BreakdownRow> {
   const db = getPrismaClient();
 
@@ -97,6 +114,13 @@ async function aggregateBreakdown(
   if (extraFilters.source) {
     values.push(extraFilters.source);
     conditions.push(`"source" = $${values.length}`);
+  }
+
+  if (extraFilters.marketplace) {
+    values.push(extraFilters.marketplace);
+    conditions.push(
+      `REPLACE(REPLACE(LOWER(COALESCE(NULLIF("marketplace", ''), "externalSource", '')), ' ', '_'), '-', '_') = $${values.length}`
+    );
   }
 
   if (extraFilters.categoryId) {
@@ -208,6 +232,27 @@ function shouldUseMirrorReadModel(): boolean {
   return hasReadModelConnection && mirrorEnabled;
 }
 
+function normalizeMarketplaceFilter(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+
+  const normalized = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[\s-]+/g, "_");
+
+  if (!normalized || normalized === "todos" || normalized === "all") {
+    return undefined;
+  }
+
+  if (normalized === "mercadolivre") {
+    return "mercado_livre";
+  }
+
+  return normalized;
+}
+
 function summarizeTransactions(items: Array<{
   marketplace: string | null;
   externalSource: string | null;
@@ -301,9 +346,11 @@ export async function computeCashFlow(
 
   const periodDays = Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1;
   const prevRange = getPreviousPeriodRange(start, periodDays);
+  const marketplace = normalizeMarketplaceFilter(filters.marketplace);
 
   const extraFilters = {
     source: filters.source,
+    marketplace,
     categoryId: filters.categoryId,
     paymentMethod: filters.paymentMethod,
   };
@@ -317,12 +364,14 @@ export async function computeCashFlow(
       listFinancialReadModelTransactions({
         ...extraFilters,
         ...mirrorSourceFilters,
+        marketplace,
         startDate: start.toISOString(),
         endDate: end.toISOString(),
       }),
       listFinancialReadModelTransactions({
         ...extraFilters,
         ...mirrorSourceFilters,
+        marketplace,
         startDate: prevRange.start.toISOString(),
         endDate: prevRange.end.toISOString(),
       }),

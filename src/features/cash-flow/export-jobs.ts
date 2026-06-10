@@ -26,6 +26,7 @@ type CashFlowExportFilters = {
   preset?: PeriodPreset;
   startDate?: string;
   endDate?: string;
+  marketplace?: string;
   paymentMethod?: PaymentMethod;
 };
 
@@ -80,6 +81,27 @@ const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
 const EXPORT_FILE_EXPIRES_DAYS = 7;
 const EXPORT_PAGE_SIZE = 200;
 
+function normalizeMarketplaceFilter(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+
+  const normalized = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[\s-]+/g, "_");
+
+  if (!normalized || normalized === "todos" || normalized === "all") {
+    return undefined;
+  }
+
+  if (normalized === "mercadolivre") {
+    return "mercado_livre";
+  }
+
+  return normalized;
+}
+
 function normalizeCashFlowExportFilters(raw: unknown): CashFlowExportFilters {
   const source = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
 
@@ -102,11 +124,13 @@ function normalizeCashFlowExportFilters(raw: unknown): CashFlowExportFilters {
     typeof source.endDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(source.endDate)
       ? source.endDate
       : undefined;
+  const marketplace = normalizeMarketplaceFilter(source.marketplace);
 
   return {
     preset,
     startDate,
     endDate,
+    marketplace,
     paymentMethod,
   };
 }
@@ -252,6 +276,7 @@ async function collectRows(
     const page = await listMarketplaceReadModelPaginated({
       page: currentPage,
       limit: EXPORT_PAGE_SIZE,
+      marketplace: filters.marketplace,
       paymentMethod: filters.paymentMethod,
       startDate: summary.period.startDate,
       endDate: summary.period.endDate,

@@ -83,6 +83,15 @@ const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 
+const MARKETPLACE_OPTIONS = [
+  { value: "shopify", label: "Shopify" },
+  { value: "anymarket", label: "Anymarket" },
+  { value: "mercado_livre", label: "Mercado Livre" },
+  { value: "shopee", label: "Shopee" },
+  { value: "amazon", label: "Amazon" },
+  { value: "todos", label: "Todos" },
+] as const;
+
 function isPaymentMethod(value: string | undefined): value is PaymentMethod {
   if (!value) return false;
   return PAYMENT_METHODS.includes(value as PaymentMethod);
@@ -91,6 +100,25 @@ function isPaymentMethod(value: string | undefined): value is PaymentMethod {
 function isPeriodPreset(value: string | undefined): value is PeriodPreset {
   if (!value) return false;
   return PERIOD_PRESETS.includes(value as PeriodPreset);
+}
+
+function normalizeMarketplaceInput(value: string | undefined): string {
+  if (!value) return "shopify";
+
+  const normalized = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[\s-]+/g, "_");
+
+  if (normalized === "mercadolivre") return "mercado_livre";
+
+  if (MARKETPLACE_OPTIONS.some((option) => option.value === normalized)) {
+    return normalized;
+  }
+
+  return "shopify";
 }
 
 function normalizeDateInput(value: string | undefined): string | undefined {
@@ -139,6 +167,7 @@ export default async function FluxoDeCaixaPage({
     preset?: string;
     startDate?: string;
     endDate?: string;
+    marketplace?: string;
     paymentMethod?: string;
     page?: string;
     limit?: string;
@@ -148,6 +177,7 @@ export default async function FluxoDeCaixaPage({
   const preset: PeriodPreset = isPeriodPreset(params.preset) ? params.preset : "yesterday";
   const startDate = normalizeDateInput(params.startDate);
   const endDate = normalizeDateInput(params.endDate);
+  const marketplace = normalizeMarketplaceInput(params.marketplace);
   const paymentMethod = isPaymentMethod(params.paymentMethod)
     ? params.paymentMethod
     : undefined;
@@ -159,6 +189,7 @@ export default async function FluxoDeCaixaPage({
 
   const cashFlowFilters = {
     preset,
+    marketplace: marketplace === "todos" ? undefined : marketplace,
     paymentMethod,
     startDate,
     endDate,
@@ -195,6 +226,7 @@ export default async function FluxoDeCaixaPage({
     const paginated = await listMarketplaceReadModelPaginated({
       page,
       limit,
+      marketplace: marketplace === "todos" ? undefined : marketplace,
       paymentMethod,
       startDate: summaryResult.period.startDate,
       endDate: summaryResult.period.endDate,
@@ -221,6 +253,7 @@ export default async function FluxoDeCaixaPage({
 
   const baseParams = {
     preset,
+    marketplace,
     paymentMethod,
     startDate,
     endDate,
@@ -258,6 +291,7 @@ export default async function FluxoDeCaixaPage({
               key={option.value}
               href={`/financeiro/fluxo-de-caixa${buildFlowQuery({
                 preset: option.value,
+                marketplace,
                 paymentMethod,
                 limit: String(limit),
               })}`}
@@ -273,7 +307,7 @@ export default async function FluxoDeCaixaPage({
         </div>
       </div>
 
-      <form method="GET" className="mb-6 grid grid-cols-1 gap-3 rounded-lg border border-gray-200 bg-white p-4 sm:grid-cols-5">
+      <form method="GET" className="mb-6 grid grid-cols-1 gap-3 rounded-lg border border-gray-200 bg-white p-4 sm:grid-cols-6">
         <input type="hidden" name="preset" value={preset} />
         <div>
           <label className="mb-1 block text-xs text-gray-600">Data inicial</label>
@@ -292,6 +326,20 @@ export default async function FluxoDeCaixaPage({
             defaultValue={endDate}
             className="w-full rounded-md border border-gray-300 px-2 py-2 text-sm"
           />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-gray-600">Marketplace</label>
+          <select
+            name="marketplace"
+            defaultValue={marketplace}
+            className="w-full rounded-md border border-gray-300 px-2 py-2 text-sm"
+          >
+            {MARKETPLACE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </div>
         <div>
           <label className="mb-1 block text-xs text-gray-600">Forma de pagamento</label>
@@ -343,6 +391,7 @@ export default async function FluxoDeCaixaPage({
           preset,
           startDate,
           endDate,
+          marketplace,
           paymentMethod,
         }}
       />
