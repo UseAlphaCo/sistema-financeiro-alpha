@@ -7,9 +7,12 @@ import {
   updateJob,
   getJob as getPersistedJob,
   getLatestRunningJob,
+  failStaleRunningJobs,
   PersistedJob,
 } from "./worker-job-repository";
 import type { WorkerSummary } from "@/workers/sync/types";
+
+const STALE_JOB_MAX_AGE_MINUTES = 120;
 
 type WorkerSyncJobStatus = "queued" | "running" | "completed" | "failed";
 
@@ -163,6 +166,7 @@ async function executeWorkerJob(jobId: string): Promise<void> {
 
 export async function startWorkerSyncJob(input: StartWorkerSyncJobInput): Promise<WorkerSyncJob> {
   await ensureJobsTable();
+  await failStaleRunningJobs(STALE_JOB_MAX_AGE_MINUTES);
 
   const running = await getLatestRunningJob();
   if (running && (running.status === "queued" || running.status === "running")) {
@@ -241,6 +245,9 @@ export async function getWorkerSyncJob(jobId: string): Promise<WorkerSyncJob | n
 }
 
 export async function getCurrentWorkerSyncJob(): Promise<WorkerSyncJob | null> {
+  await ensureJobsTable();
+  await failStaleRunningJobs(STALE_JOB_MAX_AGE_MINUTES);
+
   const running = await getLatestRunningJob();
   if (!running) return null;
 

@@ -125,6 +125,33 @@ export async function getLatestRunningJob(): Promise<PersistedJob | null> {
   return res.rows[0] ?? null;
 }
 
+export async function failStaleRunningJobs(maxAgeMinutes: number): Promise<number> {
+  const pool = getPool();
+  if (!pool) return 0;
+
+  const safeMaxAge = Math.max(1, Math.floor(maxAgeMinutes));
+  const staleError = `job marcado como stale apos ${safeMaxAge} minuto(s) sem conclusao`;
+
+  const res = await pool.query(
+    `UPDATE integration.worker_sync_jobs
+     SET status = 'failed',
+         finished_at = NOW(),
+         last_error = COALESCE(last_error, $2),
+         summary = jsonb_set(
+           COALESCE(summary, '{}'::jsonb),
+           '{phase}',
+           '"failed"'::jsonb,
+           true
+         )
+     WHERE (status = 'queued' OR status = 'running')
+       AND finished_at IS NULL
+       AND started_at < NOW() - ($1::int * INTERVAL '1 minute')`,
+    [safeMaxAge, staleError]
+  );
+
+  return res.rowCount ?? 0;
+}
+
 export async function closePool(): Promise<void> {
   const pool = getPool();
   if (!pool) return;
