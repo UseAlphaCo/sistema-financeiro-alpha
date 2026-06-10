@@ -481,3 +481,125 @@ export async function listFinancialReadModelPaginated(
     },
   };
 }
+
+type MarketplaceReadModelFilters = {
+  page: number;
+  limit: number;
+  paymentMethod?: PaymentMethod;
+  startDate?: string;
+  endDate?: string;
+};
+
+function parseFilterDate(value: string | undefined): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export async function listMarketplaceReadModelPaginated(
+  filters: MarketplaceReadModelFilters
+): Promise<PaginatedTransactions> {
+  const pool = getCorePool();
+  if (!pool) {
+    return {
+      items: [],
+      pagination: {
+        page: filters.page,
+        limit: filters.limit,
+        total: 0,
+        hasNext: false,
+      },
+    };
+  }
+
+  const targetSkip = (filters.page - 1) * filters.limit;
+  const chunkSize = Math.max(filters.limit * 3, 150);
+  const dateStart = parseFilterDate(filters.startDate);
+  const dateEnd = parseFilterDate(filters.endDate);
+
+  const whereClauses: string[] = [
+    "payload_json IS NOT NULL",
+    "source IN ('shopify', 'anymarket')",
+  ];
+  const baseValues: unknown[] = [];
+
+  if (dateStart) {
+    baseValues.push(dateStart);
+    whereClauses.push(`received_at >= $${baseValues.length}`);
+  }
+
+  if (dateEnd) {
+    baseValues.push(dateEnd);
+    whereClauses.push(`received_at <= $${baseValues.length}`);
+  }
+
+  const readModelFilters: ReadModelFilters = {
+    type: "income",
+    sources: ["integration", "webhook"],
+    paymentMethod: filters.paymentMethod,
+    startDate: filters.startDate,
+    endDate: filters.endDate,
+  };
+
+  let scanOffset = 0;
+  let skipped = 0;
+  const pageItems: FinancialTransaction[] = [];
+  let hasNext = false;
+
+  while (true) {
+    const queryValues = [...baseValues, chunkSize, scanOffset];
+    const rows = await pool.query<MirrorRow>(
+      `
+        SELECT id, source, event_type, external_order_id, payload_json, received_at, mirror_updated_at, processing_status
+        FROM mirror.raw_payloads
+        WHERE ${whereClauses.join(" AND ")}
+        ORDER BY COALESCE(mirror_updated_at, received_at) DESC NULLS LAST, id DESC
+        LIMIT $${baseValues.length + 1}
+        OFFSET $${baseValues.length + 2}
+      `,
+      queryValues
+    );
+
+    if (rows.rows.length === 0) {
+      break;
+    }
+
+    const filteredRows = filterTransactions(
+      rows.rows
+        .map(mapMirrorRow)
+        .filter((item): item is FinancialTransaction => Boolean(item)),
+      readModelFilters
+    );
+
+    for (const item of filteredRows) {
+      if (skipped < targetSkip) {
+        skipped += 1;
+        continue;
+      }
+
+      if (pageItems.length < filters.limit) {
+        pageItems.push(item);
+        continue;
+      }
+
+      hasNext = true;
+      break;
+    }
+
+    if (hasNext || rows.rows.length < chunkSize) {
+      break;
+    }
+
+    scanOffset += chunkSize;
+  }
+
+  return {
+    items: pageItems,
+    pagination: {
+      page: filters.page,
+      limit: filters.limit,
+      total: targetSkip + pageItems.length + (hasNext ? 1 : 0),
+      hasNext,
+    },
+  };
+}

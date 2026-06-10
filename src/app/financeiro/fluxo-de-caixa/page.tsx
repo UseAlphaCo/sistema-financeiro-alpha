@@ -1,5 +1,6 @@
 import { computeCashFlow } from "@/features/cash-flow/service";
-import { listFinancialReadModelTransactions } from "@/features/transactions/read-model";
+import { listMarketplaceReadModelPaginated } from "@/features/transactions/read-model";
+import ExportControls from "./ExportControls";
 import {
   PAYMENT_METHODS,
   type FinancialTransaction,
@@ -80,6 +81,8 @@ const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   other: "Outro",
 };
 
+const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
+
 function isPaymentMethod(value: string | undefined): value is PaymentMethod {
   if (!value) return false;
   return PAYMENT_METHODS.includes(value as PaymentMethod);
@@ -138,6 +141,7 @@ export default async function FluxoDeCaixaPage({
     endDate?: string;
     paymentMethod?: string;
     page?: string;
+    limit?: string;
   }>;
 }) {
   const params = await searchParams;
@@ -148,7 +152,10 @@ export default async function FluxoDeCaixaPage({
     ? params.paymentMethod
     : undefined;
   const page = Math.max(Number(params.page ?? "1") || 1, 1);
-  const limit = 50;
+  const requestedLimit = Number(params.limit ?? "50") || 50;
+  const limit = PAGE_SIZE_OPTIONS.includes(requestedLimit as (typeof PAGE_SIZE_OPTIONS)[number])
+    ? requestedLimit
+    : 50;
 
   const cashFlowFilters = {
     preset,
@@ -185,23 +192,16 @@ export default async function FluxoDeCaixaPage({
   }
 
   try {
-    const entries = await listFinancialReadModelTransactions({
-      type: "income",
-      sources: ["integration", "webhook"],
+    const paginated = await listMarketplaceReadModelPaginated({
+      page,
+      limit,
       paymentMethod,
       startDate: summaryResult.period.startDate,
       endDate: summaryResult.period.endDate,
     });
 
-    const filteredEntries = entries.filter((item) => Boolean(item.externalSource));
-    const offset = (page - 1) * limit;
-    marketplaceEntries = filteredEntries.slice(offset, offset + limit);
-    pagination = {
-      page,
-      limit,
-      total: filteredEntries.length,
-      hasNext: offset + limit < filteredEntries.length,
-    };
+    marketplaceEntries = paginated.items;
+    pagination = paginated.pagination;
   } catch {
     // Mantém o resumo visível mesmo se a listagem detalhada falhar no cutover.
   }
@@ -219,13 +219,29 @@ export default async function FluxoDeCaixaPage({
   } =
     summary;
 
-  const totalPages = Math.max(1, Math.ceil(pagination.total / pagination.limit));
   const baseParams = {
     preset,
     paymentMethod,
     startDate,
     endDate,
+    limit: String(limit),
   };
+
+  const marketplacePageTotals = marketplaceEntries.reduce(
+    (acc, item) => {
+      acc.shippingCents += item.shippingCents ?? 0;
+      acc.discountCents += item.discountCents ?? 0;
+      acc.feesAndTaxesCents += (item.taxCents ?? 0) + (item.feeCents ?? 0);
+      acc.amountCents += item.amountCents;
+      return acc;
+    },
+    {
+      shippingCents: 0,
+      discountCents: 0,
+      feesAndTaxesCents: 0,
+      amountCents: 0,
+    }
+  );
 
   return (
     <div>
@@ -243,6 +259,7 @@ export default async function FluxoDeCaixaPage({
               href={`/financeiro/fluxo-de-caixa${buildFlowQuery({
                 preset: option.value,
                 paymentMethod,
+                limit: String(limit),
               })}`}
               className={`rounded-md px-3 py-1.5 ${
                 preset === option.value
@@ -256,7 +273,7 @@ export default async function FluxoDeCaixaPage({
         </div>
       </div>
 
-      <form method="GET" className="mb-6 grid grid-cols-1 gap-3 rounded-lg border border-gray-200 bg-white p-4 sm:grid-cols-4">
+      <form method="GET" className="mb-6 grid grid-cols-1 gap-3 rounded-lg border border-gray-200 bg-white p-4 sm:grid-cols-5">
         <input type="hidden" name="preset" value={preset} />
         <div>
           <label className="mb-1 block text-xs text-gray-600">Data inicial</label>
@@ -291,6 +308,20 @@ export default async function FluxoDeCaixaPage({
             ))}
           </select>
         </div>
+        <div>
+          <label className="mb-1 block text-xs text-gray-600">Linhas por página</label>
+          <select
+            name="limit"
+            defaultValue={String(limit)}
+            className="w-full rounded-md border border-gray-300 px-2 py-2 text-sm"
+          >
+            {PAGE_SIZE_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="flex items-end gap-2">
           <button
             type="submit"
@@ -306,6 +337,15 @@ export default async function FluxoDeCaixaPage({
           </a>
         </div>
       </form>
+
+      <ExportControls
+        filters={{
+          preset,
+          startDate,
+          endDate,
+          paymentMethod,
+        }}
+      />
 
       {/* Cards de totais */}
       <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-6">
@@ -400,13 +440,32 @@ export default async function FluxoDeCaixaPage({
                   </tr>
                 ))}
               </tbody>
+              <tfoot className="bg-gray-50">
+                <tr>
+                  <td className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-600" colSpan={4}>
+                    Total da página
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-sm font-semibold text-gray-700">
+                    {formatBRL(marketplacePageTotals.shippingCents)}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-sm font-semibold text-gray-700">
+                    {formatBRL(marketplacePageTotals.discountCents)}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-sm font-semibold text-gray-700">
+                    {formatBRL(marketplacePageTotals.feesAndTaxesCents)}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-sm font-semibold text-green-700">
+                    {formatBRL(marketplacePageTotals.amountCents)}
+                  </td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         )}
 
         <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
           <span>
-            Exibindo página {pagination.page} de {totalPages} ({pagination.total} registros)
+            Exibindo {marketplaceEntries.length} registros na página {pagination.page}
           </span>
           <div className="flex gap-2">
             <a
