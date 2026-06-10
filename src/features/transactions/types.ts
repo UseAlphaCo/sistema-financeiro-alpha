@@ -29,6 +29,7 @@ export type FinancialTransaction = {
   discountCents: number;
   taxCents: number;
   feeCents: number;
+  liquidCents: number;
   type: TransactionType;
   categoryId: string | null;
   amountCents: number;
@@ -56,6 +57,7 @@ export type CreateTransactionInput = {
   discountCents?: number;
   taxCents?: number;
   feeCents?: number;
+  liquidCents?: number;
   type: TransactionType;
   categoryId?: string;
   amountCents: number;

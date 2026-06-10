@@ -128,6 +128,14 @@ class InMemoryTransactionsRepository implements TransactionsRepository {
       discountCents: input.discountCents ?? 0,
       taxCents: input.taxCents ?? 0,
       feeCents: input.feeCents ?? 0,
+      liquidCents: Math.max(
+        0,
+        input.amountCents -
+          (input.shippingCents ?? 0) -
+          (input.discountCents ?? 0) -
+          (input.taxCents ?? 0) -
+          (input.feeCents ?? 0)
+      ),
       type: input.type,
       categoryId: input.categoryId ?? null,
       amountCents: input.amountCents,
@@ -249,6 +257,14 @@ function mapDbTransaction(item: {
     discountCents: item.discountCents ?? 0,
     taxCents: item.taxCents ?? 0,
     feeCents: item.feeCents ?? 0,
+    liquidCents: Math.max(
+      0,
+      item.amountCents -
+        (item.shippingCents ?? 0) -
+        (item.discountCents ?? 0) -
+        (item.taxCents ?? 0) -
+        (item.feeCents ?? 0)
+    ),
     type: item.type as FinancialTransaction["type"],
     categoryId: item.categoryId,
     amountCents: item.amountCents,

@@ -16,6 +16,12 @@ export type CashFlowBySource = {
   transactionCount: number;
 };
 
+export type CashFlowByPaymentMethod = {
+  paymentMethod: PaymentMethod;
+  grossCents: number;
+  transactionCount: number;
+};
+
 export type CashFlowSummary = {
   period: CashFlowPeriod;
   totalIncomeCents: number;
@@ -26,6 +32,7 @@ export type CashFlowSummary = {
   totalTaxCents: number;
   netCents: number;
   bySource: CashFlowBySource[];
+  byPaymentMethod: CashFlowByPaymentMethod[];
   previousPeriod: {
     totalIncomeCents: number;
     totalExpenseCents: number;
@@ -33,6 +40,7 @@ export type CashFlowSummary = {
     totalShippingCents: number;
     totalTaxCents: number;
     netCents: number;
+    byPaymentMethod: CashFlowByPaymentMethod[];
   } | null;
 };
 

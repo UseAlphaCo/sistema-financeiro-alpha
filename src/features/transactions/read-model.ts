@@ -282,6 +282,11 @@ function mapMirrorRow(row: MirrorRow): FinancialTransaction | null {
       ? moneyToCents(payload.total)
       : moneyToCents(payload.total_price) || moneyToCents(payload.current_total_price);
 
+  const liquidCents = Math.max(
+    0,
+    amountCents - shippingCents - discountCents - taxCents - feeCents
+  );
+
   if (amountCents <= 0) return null;
 
   const createdAt = row.received_at?.toISOString() ?? occurredAt;
@@ -299,6 +304,7 @@ function mapMirrorRow(row: MirrorRow): FinancialTransaction | null {
     discountCents,
     taxCents,
     feeCents,
+    liquidCents,
     type: "income",
     categoryId: null,
     amountCents,
@@ -465,6 +471,14 @@ async function listPrismaTransactions(filters: ReadModelFilters): Promise<Financ
     discountCents: item.discountCents ?? 0,
     taxCents: item.taxCents ?? 0,
     feeCents: item.feeCents ?? 0,
+    liquidCents: Math.max(
+      0,
+      item.amountCents -
+        (item.shippingCents ?? 0) -
+        (item.discountCents ?? 0) -
+        (item.taxCents ?? 0) -
+        (item.feeCents ?? 0)
+    ),
     type: item.type as FinancialTransaction["type"],
     categoryId: item.categoryId,
     amountCents: item.amountCents,

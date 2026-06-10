@@ -1,6 +1,6 @@
 import { getPrismaClient } from "@/core/db/prisma-client";
 import { getPaymentMethodSearchTokens } from "@/features/transactions/payment-method-filter";
-import type { PaymentMethod } from "@/features/transactions/types";
+import { PAYMENT_METHODS, type PaymentMethod } from "@/features/transactions/types";
 import {
   getDateRangeForPeriod,
   getDateRangeForPreset,
@@ -8,6 +8,7 @@ import {
 } from "@/lib/date-utils";
 import { listFinancialReadModelTransactions } from "@/features/transactions/read-model";
 import type {
+  CashFlowByPaymentMethod,
   CashFlowBySource,
   CashFlowFilters,
   CashFlowPeriod,
@@ -16,6 +17,7 @@ import type {
 
 type AggregateRow = {
   source: string;
+  payment_method: string | null;
   type: string;
   total_cents: bigint | number;
   tx_count: bigint | number;
@@ -79,12 +81,13 @@ async function aggregateTransactions(
   const sql = `
     SELECT
       COALESCE(NULLIF("marketplace", ''), "source") AS source,
+      COALESCE(NULLIF(CAST("paymentMethodNormalized" AS text), ''), 'other') AS payment_method,
       type,
       SUM("amountCents") AS total_cents,
       COUNT(id) AS tx_count
     FROM "FinancialTransaction"
     WHERE ${conditions.join(" AND ")}
-    GROUP BY COALESCE(NULLIF("marketplace", ''), "source"), type
+    GROUP BY COALESCE(NULLIF(CAST("paymentMethodNormalized" AS text), ''), 'other'), COALESCE(NULLIF("marketplace", ''), "source"), type
   `;
 
   return db.$queryRawUnsafe<AggregateRow[]>(sql, ...values);
@@ -193,6 +196,37 @@ function buildSourceMap(rows: AggregateRow[]): Map<string, CashFlowBySource> {
   return map;
 }
 
+function normalizePaymentMethodBucket(value: string | null | undefined): PaymentMethod {
+  if (!value) return "other";
+
+  return PAYMENT_METHODS.includes(value as PaymentMethod) ? (value as PaymentMethod) : "other";
+}
+
+function buildPaymentMethodMap(rows: AggregateRow[]): Map<string, CashFlowByPaymentMethod> {
+  const map = new Map<string, CashFlowByPaymentMethod>();
+
+  for (const row of rows) {
+    if (row.type !== "income") {
+      continue;
+    }
+
+    const method = normalizePaymentMethodBucket(row.payment_method);
+    if (!map.has(method)) {
+      map.set(method, {
+        paymentMethod: method,
+        grossCents: 0,
+        transactionCount: 0,
+      });
+    }
+
+    const entry = map.get(method)!;
+    entry.grossCents += toNumber(row.total_cents);
+    entry.transactionCount += toNumber(row.tx_count);
+  }
+
+  return map;
+}
+
 function sumTotals(rows: AggregateRow[]) {
   let income = 0;
   let expense = 0;
@@ -258,6 +292,7 @@ function summarizeTransactions(items: Array<{
   externalSource: string | null;
   source: string;
   type: string;
+  paymentMethodNormalized: string | null;
   amountCents: number;
   discountCents: number;
   shippingCents: number;
@@ -270,6 +305,7 @@ function summarizeTransactions(items: Array<{
   totalShippingCents: number;
   totalTaxCents: number;
   bySource: CashFlowBySource[];
+  byPaymentMethod: CashFlowByPaymentMethod[];
 } {
   let totalIncomeCents = 0;
   let totalExpenseCents = 0;
@@ -278,11 +314,23 @@ function summarizeTransactions(items: Array<{
   let totalTaxCents = 0;
 
   const bySourceMap = new Map<string, CashFlowBySource>();
+  const byPaymentMethodMap = new Map<string, CashFlowByPaymentMethod>();
 
   for (const item of items) {
     totalDiscountCents += item.discountCents;
     totalShippingCents += item.shippingCents;
     totalTaxCents += item.taxCents + item.feeCents;
+
+    const paymentMethodKey = normalizePaymentMethodBucket(item.paymentMethodNormalized);
+    if (!byPaymentMethodMap.has(paymentMethodKey)) {
+      byPaymentMethodMap.set(paymentMethodKey, {
+        paymentMethod: paymentMethodKey,
+        grossCents: 0,
+        transactionCount: 0,
+      });
+    }
+
+    const paymentBucket = byPaymentMethodMap.get(paymentMethodKey)!;
 
     const sourceKey = item.marketplace ?? item.externalSource ?? item.source;
     if (!bySourceMap.has(sourceKey)) {
@@ -301,6 +349,8 @@ function summarizeTransactions(items: Array<{
     if (item.type === "income") {
       totalIncomeCents += item.amountCents;
       bucket.grossCents += item.amountCents;
+      paymentBucket.grossCents += item.amountCents;
+      paymentBucket.transactionCount += 1;
     } else if (item.type === "expense") {
       totalExpenseCents += item.amountCents;
       bucket.feesCents += item.amountCents;
@@ -319,6 +369,7 @@ function summarizeTransactions(items: Array<{
     totalShippingCents,
     totalTaxCents,
     bySource,
+    byPaymentMethod: Array.from(byPaymentMethodMap.values()),
   };
 }
 
@@ -395,15 +446,27 @@ export async function computeCashFlow(
       totalDiscountCents: current.totalDiscountCents,
       totalShippingCents: current.totalShippingCents,
       totalTaxCents: current.totalTaxCents,
-      netCents: current.totalIncomeCents - current.totalExpenseCents,
+      netCents:
+        current.totalIncomeCents -
+        current.totalExpenseCents -
+        current.totalDiscountCents -
+        current.totalShippingCents -
+        current.totalTaxCents,
       bySource: current.bySource,
+      byPaymentMethod: current.byPaymentMethod,
       previousPeriod: {
         totalIncomeCents: previous.totalIncomeCents,
         totalExpenseCents: previous.totalExpenseCents,
         totalDiscountCents: previous.totalDiscountCents,
         totalShippingCents: previous.totalShippingCents,
         totalTaxCents: previous.totalTaxCents,
-        netCents: previous.totalIncomeCents - previous.totalExpenseCents,
+        netCents:
+          previous.totalIncomeCents -
+          previous.totalExpenseCents -
+          previous.totalDiscountCents -
+          previous.totalShippingCents -
+          previous.totalTaxCents,
+        byPaymentMethod: previous.byPaymentMethod,
       },
     };
   }
@@ -437,15 +500,27 @@ export async function computeCashFlow(
     totalDiscountCents: toNumber(currentBreakdown.total_discount_cents),
     totalShippingCents: toNumber(currentBreakdown.total_shipping_cents),
     totalTaxCents: toNumber(currentBreakdown.total_tax_cents),
-    netCents: totalIncome - totalExpense,
+    netCents:
+      totalIncome -
+      totalExpense -
+      toNumber(currentBreakdown.total_discount_cents) -
+      toNumber(currentBreakdown.total_shipping_cents) -
+      toNumber(currentBreakdown.total_tax_cents),
     bySource: Array.from(sourceMap.values()),
+    byPaymentMethod: Array.from(buildPaymentMethodMap(currentRows).values()),
     previousPeriod: {
       totalIncomeCents: prevIncome,
       totalExpenseCents: prevExpense,
       totalDiscountCents: toNumber(prevBreakdown.total_discount_cents),
       totalShippingCents: toNumber(prevBreakdown.total_shipping_cents),
       totalTaxCents: toNumber(prevBreakdown.total_tax_cents),
-      netCents: prevIncome - prevExpense,
+      netCents:
+        prevIncome -
+        prevExpense -
+        toNumber(prevBreakdown.total_discount_cents) -
+        toNumber(prevBreakdown.total_shipping_cents) -
+        toNumber(prevBreakdown.total_tax_cents),
+      byPaymentMethod: Array.from(buildPaymentMethodMap(prevRows).values()),
     },
   };
 }
