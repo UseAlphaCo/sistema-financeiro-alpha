@@ -1,4 +1,5 @@
 import { computeCashFlow } from "@/features/cash-flow/service";
+import PaymentMethodRevenueCards from "../_components/PaymentMethodRevenueCards";
 import { PERIOD_PRESETS, type PeriodPreset } from "@/lib/date-utils";
 
 export const dynamic = "force-dynamic";
@@ -101,10 +102,10 @@ export default async function DashboardPage({ searchParams }: Props) {
     totalIncomeCents,
     totalExpenseCents,
     totalFeesCents,
-    totalDiscountCents,
     totalShippingCents,
     netCents,
     bySource,
+    byPaymentMethod,
     previousPeriod,
   } = summary;
 
@@ -138,7 +139,7 @@ export default async function DashboardPage({ searchParams }: Props) {
       </div>
 
       {/* Cards de resumo */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
         <SummaryCard
           label="Receita bruta"
           value={formatBRL(totalIncomeCents)}
@@ -159,12 +160,6 @@ export default async function DashboardPage({ searchParams }: Props) {
           deltaClass={previousPeriod ? deltaClass(totalFeesCents, previousPeriod.totalTaxCents, true) : "text-gray-400"}
         />
         <SummaryCard
-          label="Descontos"
-          value={formatBRL(totalDiscountCents)}
-          delta={previousPeriod ? deltaPercent(totalDiscountCents, previousPeriod.totalDiscountCents) : null}
-          deltaClass={previousPeriod ? deltaClass(totalDiscountCents, previousPeriod.totalDiscountCents, true) : "text-gray-400"}
-        />
-        <SummaryCard
           label="Entrega"
           value={formatBRL(totalShippingCents)}
           delta={previousPeriod ? deltaPercent(totalShippingCents, previousPeriod.totalShippingCents) : null}
@@ -178,6 +173,12 @@ export default async function DashboardPage({ searchParams }: Props) {
           deltaClass={previousPeriod ? deltaClass(netCents, previousPeriod.netCents) : "text-gray-400"}
         />
       </div>
+
+      <PaymentMethodRevenueCards
+        title="Faturamento por forma de pagamento"
+        current={byPaymentMethod ?? []}
+        previous={previousPeriod?.byPaymentMethod ?? null}
+      />
 
       {/* Breakdown por marketplace */}
       {bySource.length > 0 && (
