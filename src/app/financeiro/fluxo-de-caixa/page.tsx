@@ -1,6 +1,8 @@
 import { computeCashFlow } from "@/features/cash-flow/service";
 import { listMarketplaceReadModelPaginated } from "@/features/transactions/read-model";
 import ExportControls from "./ExportControls";
+import PaymentMethodRevenueCards from "../_components/PaymentMethodRevenueCards";
+import FluxoDeCaixaTable from "./FluxoDeCaixaTable";
 import {
   PAYMENT_METHODS,
   type FinancialTransaction,
@@ -129,25 +131,6 @@ function normalizeDateInput(value: string | undefined): string | undefined {
   return undefined;
 }
 
-function parseOrderNumber(item: FinancialTransaction): string {
-  if (item.orderNumber) {
-    // Garante prefixo # e exibe todos os dígitos
-    const clean = item.orderNumber.replace(/^#/, "");
-    return `#${clean}`;
-  }
-  if (!item.description) return "—";
-  const match = item.description.match(/Pedido\s*#\s*([\w-]+)/i);
-  return match ? `#${match[1].replace(/^#/, "")}` : "—";
-}
-
-function formatPaymentMethod(item: FinancialTransaction): string {
-  if (item.paymentMethodRaw) return item.paymentMethodRaw;
-  if (item.paymentMethodNormalized) {
-    return PAYMENT_METHOD_LABELS[item.paymentMethodNormalized];
-  }
-  return "Não informado";
-}
-
 function buildFlowQuery(params: Record<string, string | undefined>) {
   const search = new URLSearchParams();
 
@@ -242,11 +225,11 @@ export default async function FluxoDeCaixaPage({
     period,
     totalIncomeCents,
     totalExpenseCents,
-    totalDiscountCents,
     totalFeesCents,
     totalShippingCents,
     netCents,
     bySource,
+    byPaymentMethod,
     previousPeriod,
   } =
     summary;
@@ -259,22 +242,6 @@ export default async function FluxoDeCaixaPage({
     endDate,
     limit: String(limit),
   };
-
-  const marketplacePageTotals = marketplaceEntries.reduce(
-    (acc, item) => {
-      acc.shippingCents += item.shippingCents ?? 0;
-      acc.discountCents += item.discountCents ?? 0;
-      acc.feesAndTaxesCents += (item.taxCents ?? 0) + (item.feeCents ?? 0);
-      acc.amountCents += item.amountCents;
-      return acc;
-    },
-    {
-      shippingCents: 0,
-      discountCents: 0,
-      feesAndTaxesCents: 0,
-      amountCents: 0,
-    }
-  );
 
   return (
     <div>
@@ -397,7 +364,7 @@ export default async function FluxoDeCaixaPage({
       />
 
       {/* Cards de totais */}
-      <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+      <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <SummaryCard
           label="Receita bruta"
           cents={totalIncomeCents}
@@ -416,12 +383,6 @@ export default async function FluxoDeCaixaPage({
           inverseColors
         />
         <SummaryCard
-          label="Descontos"
-          cents={totalDiscountCents}
-          previousCents={previousPeriod?.totalDiscountCents ?? null}
-          inverseColors
-        />
-        <SummaryCard
           label="Entrega"
           cents={totalShippingCents}
           previousCents={previousPeriod?.totalShippingCents ?? null}
@@ -435,109 +396,13 @@ export default async function FluxoDeCaixaPage({
         />
       </div>
 
-      <div className="mt-8">
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">
-          Entradas de marketplaces
-        </h2>
+      <PaymentMethodRevenueCards
+        title="Faturamento por forma de pagamento"
+        current={byPaymentMethod}
+        previous={previousPeriod?.byPaymentMethod ?? []}
+      />
 
-        {marketplaceEntries.length === 0 ? (
-          <div className="rounded-md border border-dashed border-gray-300 py-10 text-center text-sm text-gray-500">
-            Nenhuma entrada de marketplace encontrada com os filtros atuais.
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-            <table className="min-w-full divide-y divide-gray-200 text-sm">
-              <thead className="bg-gray-50 text-xs font-medium uppercase tracking-wide text-gray-500">
-                <tr>
-                  <th className="px-4 py-3 text-left">Marketplace</th>
-                  <th className="px-4 py-3 text-left">Número do pedido</th>
-                  <th className="px-4 py-3 text-left">Data</th>
-                  <th className="px-4 py-3 text-left">Forma de pagamento</th>
-                  <th className="px-4 py-3 text-right">Entrega</th>
-                  <th className="px-4 py-3 text-right">Descontos</th>
-                  <th className="px-4 py-3 text-right">Taxas</th>
-                  <th className="px-4 py-3 text-right">Valor</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {marketplaceEntries.map((item) => (
-                  <tr key={item.id} className="hover:bg-gray-50">
-                    <td className="whitespace-nowrap px-4 py-3 text-gray-700 capitalize">
-                      {item.marketplace ?? item.externalSource ?? "—"}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
-                      {parseOrderNumber(item)}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-gray-600">
-                      {formatDate(item.occurredAt)}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-gray-600">
-                      {formatPaymentMethod(item)}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-right text-gray-600">
-                      {formatBRL(item.shippingCents ?? 0)}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-right text-gray-600">
-                      {formatBRL(item.discountCents ?? 0)}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-right text-gray-600">
-                      {formatBRL((item.taxCents ?? 0) + (item.feeCents ?? 0))}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-right font-medium text-green-700">
-                      {formatBRL(item.amountCents)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot className="bg-gray-50">
-                <tr>
-                  <td className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-600" colSpan={4}>
-                    Total da página
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right text-sm font-semibold text-gray-700">
-                    {formatBRL(marketplacePageTotals.shippingCents)}
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right text-sm font-semibold text-gray-700">
-                    {formatBRL(marketplacePageTotals.discountCents)}
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right text-sm font-semibold text-gray-700">
-                    {formatBRL(marketplacePageTotals.feesAndTaxesCents)}
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right text-sm font-semibold text-green-700">
-                    {formatBRL(marketplacePageTotals.amountCents)}
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        )}
-
-        <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
-          <span>
-            Exibindo {marketplaceEntries.length} registros na página {pagination.page}
-          </span>
-          <div className="flex gap-2">
-            <a
-              href={`/financeiro/fluxo-de-caixa${buildFlowQuery({
-                ...baseParams,
-                page: pagination.page > 1 ? String(pagination.page - 1) : "1",
-              })}`}
-              className={`rounded border px-2 py-1 ${pagination.page > 1 ? "border-gray-300 text-gray-700 hover:bg-gray-50" : "border-gray-200 text-gray-300 pointer-events-none"}`}
-            >
-              Anterior
-            </a>
-            <a
-              href={`/financeiro/fluxo-de-caixa${buildFlowQuery({
-                ...baseParams,
-                page: pagination.hasNext ? String(pagination.page + 1) : String(pagination.page),
-              })}`}
-              className={`rounded border px-2 py-1 ${pagination.hasNext ? "border-gray-300 text-gray-700 hover:bg-gray-50" : "border-gray-200 text-gray-300 pointer-events-none"}`}
-            >
-              Próxima
-            </a>
-          </div>
-        </div>
-      </div>
+      <FluxoDeCaixaTable items={marketplaceEntries} pagination={pagination} query={baseParams} />
 
       {/* Breakdown por origem */}
       <div className="mt-8">
