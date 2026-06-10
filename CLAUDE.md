@@ -4,6 +4,10 @@
 - Respostas, comentarios e documentacao em portugues (pt-BR).
 - Nomes de simbolos e arquivos seguem convencao tecnica em ingles.
 
+## Regras de commit
+- Mensagens de commit (titulo e descricao) devem ser escritas em portugues do Brasil (pt-BR).
+- Nomes tecnicos (escopos, arquivos, tipos e identificadores) podem permanecer em ingles quando necessario.
+
 ## Objetivo
 Construir um sistema financeiro com foco em:
 - fluxo de caixa
