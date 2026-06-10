@@ -42,6 +42,13 @@ export type CashFlowExportJob = {
   status: CashFlowExportStatus;
   format: CashFlowExportFormat;
   filters: CashFlowExportFilters;
+  searchSummary: {
+    marketplace: string;
+    periodStart: string;
+    periodEnd: string;
+    paymentMethod: string;
+    preset: string;
+  };
   requestedBy: string | null;
   requestId: string | null;
   startedAt: string;
@@ -64,6 +71,7 @@ type ExportRow = {
   shipping: string;
   discounts: string;
   fees: string;
+  liquid: string;
   amount: string;
 };
 
@@ -78,8 +86,18 @@ const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   other: "Outro",
 };
 
-const EXPORT_FILE_EXPIRES_DAYS = 7;
+const EXPORT_FILE_EXPIRES_DAYS = 1;
 const EXPORT_PAGE_SIZE = 200;
+
+function buildSearchSummary(filters: CashFlowExportFilters): CashFlowExportJob["searchSummary"] {
+  return {
+    marketplace: filters.marketplace ?? "Todos",
+    periodStart: filters.startDate ?? "—",
+    periodEnd: filters.endDate ?? "—",
+    paymentMethod: filters.paymentMethod ?? "Todas",
+    preset: filters.preset ?? "Personalizado",
+  };
+}
 
 function normalizeMarketplaceFilter(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -136,11 +154,13 @@ function normalizeCashFlowExportFilters(raw: unknown): CashFlowExportFilters {
 }
 
 function mapPersistedJob(job: PersistedCashFlowExportJob): CashFlowExportJob {
+  const filters = normalizeCashFlowExportFilters(job.filters);
   return {
     id: job.id,
     status: job.status,
     format: job.format,
-    filters: normalizeCashFlowExportFilters(job.filters),
+    filters,
+    searchSummary: buildSearchSummary(filters),
     requestedBy: job.requested_by,
     requestId: job.request_id,
     startedAt: job.started_at,
@@ -193,6 +213,7 @@ function mapExportRow(item: FinancialTransaction): ExportRow {
     shipping: centsToDecimal(item.shippingCents ?? 0),
     discounts: centsToDecimal(item.discountCents ?? 0),
     fees: centsToDecimal((item.taxCents ?? 0) + (item.feeCents ?? 0)),
+    liquid: centsToDecimal(item.liquidCents ?? item.amountCents),
     amount: centsToDecimal(item.amountCents),
   };
 }
@@ -214,7 +235,8 @@ function renderCsv(rows: ExportRow[]): Buffer {
     "Entrega",
     "Descontos",
     "Taxas",
-    "Valor",
+    "Valor liquido",
+    "Valor bruto",
   ];
 
   const lines = [headers.join(";")];
@@ -229,6 +251,7 @@ function renderCsv(rows: ExportRow[]): Buffer {
         row.shipping,
         row.discounts,
         row.fees,
+        row.liquid,
         row.amount,
       ]
         .map(csvEscape)
@@ -251,7 +274,8 @@ async function renderXlsx(rows: ExportRow[]): Promise<Buffer> {
     { header: "Entrega", key: "shipping", width: 12 },
     { header: "Descontos", key: "discounts", width: 12 },
     { header: "Taxas", key: "fees", width: 12 },
-    { header: "Valor", key: "amount", width: 12 },
+    { header: "Valor liquido", key: "liquid", width: 12 },
+    { header: "Valor bruto", key: "amount", width: 12 },
   ];
 
   for (const row of rows) {
@@ -378,7 +402,10 @@ export async function startCashFlowExportJob(
     id,
     status: "queued",
     format: input.format,
-    filters: input.filters,
+    filters: {
+      ...input.filters,
+      searchSummary: buildSearchSummary(input.filters),
+    },
     requested_by: input.requestedBy,
     request_id: input.requestId,
     started_at: now,
@@ -428,6 +455,10 @@ export async function getCashFlowExportFile(jobId: string): Promise<{
   await ensureCashFlowExportJobsTable();
   const persisted = await getCashFlowExportJob(jobId);
   if (!persisted || persisted.status !== "completed" || !persisted.file_data) {
+    return null;
+  }
+
+  if (persisted.expires_at && new Date(persisted.expires_at).getTime() <= Date.now()) {
     return null;
   }
 

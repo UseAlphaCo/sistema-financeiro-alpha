@@ -37,9 +37,28 @@ export type PersistedCashFlowExportJob = {
   last_error: string | null;
 };
 
+async function purgeExpiredCashFlowExportFiles(): Promise<void> {
+  const pool = getPool();
+  if (!pool) return;
+
+  await pool.query(
+    `UPDATE integration.cash_flow_export_jobs
+     SET file_data = NULL,
+         file_name = NULL,
+         mime_type = NULL,
+         file_size_bytes = NULL
+     WHERE status = 'completed'
+       AND expires_at IS NOT NULL
+       AND expires_at <= NOW()
+       AND file_data IS NOT NULL`
+  );
+}
+
 export async function ensureCashFlowExportJobsTable(): Promise<void> {
   const pool = getPool();
   if (!pool) return;
+
+  await purgeExpiredCashFlowExportFiles();
 
   await pool.query("CREATE SCHEMA IF NOT EXISTS integration");
 
@@ -144,6 +163,8 @@ export async function getCashFlowExportJob(
   const pool = getPool();
   if (!pool) return null;
 
+  await purgeExpiredCashFlowExportFiles();
+
   const result = await pool.query<PersistedCashFlowExportJob>(
     `SELECT
       id, status, format, filters, requested_by, request_id, started_at, finished_at, expires_at,
@@ -161,6 +182,8 @@ export async function getLatestCashFlowExportJobByRequester(
 ): Promise<PersistedCashFlowExportJob | null> {
   const pool = getPool();
   if (!pool) return null;
+
+  await purgeExpiredCashFlowExportFiles();
 
   const result = await pool.query<PersistedCashFlowExportJob>(
     requestedBy

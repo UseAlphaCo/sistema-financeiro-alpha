@@ -32,6 +32,10 @@ export async function GET(request: NextRequest) {
 
       const file = await getCashFlowExportFile(jobId);
       if (!file) {
+        if (job.expiresAt && new Date(job.expiresAt).getTime() < Date.now()) {
+          return createApiError(requestId, "Arquivo de exportacao expirado.", 410);
+        }
+
         return createApiError(requestId, "Arquivo ainda nao esta pronto para download.", 409);
       }
 

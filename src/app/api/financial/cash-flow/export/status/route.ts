@@ -30,6 +30,7 @@ export async function GET(request: NextRequest) {
         jobId: job.id,
         status: job.status,
         format: job.format,
+        searchSummary: job.searchSummary,
         startedAt: job.startedAt,
         finishedAt: job.finishedAt,
         processedRows: job.processedRows,

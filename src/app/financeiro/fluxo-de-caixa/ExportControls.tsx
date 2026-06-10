@@ -26,6 +26,13 @@ type ExportJob = {
   fileSizeBytes: number | null;
   lastError: string | null;
   canDownload: boolean;
+  searchSummary: {
+    marketplace: string;
+    periodStart: string;
+    periodEnd: string;
+    paymentMethod: string;
+    preset: string;
+  };
 };
 
 type ApiEnvelope<T> = {
@@ -67,6 +74,10 @@ function statusLabel(status: ExportStatus): string {
     default:
       return status;
   }
+}
+
+function formatSummaryValue(value: string): string {
+  return value || "—";
 }
 
 export default function ExportControls({ filters }: Props) {
@@ -204,6 +215,21 @@ export default function ExportControls({ filters }: Props) {
 
       {job ? (
         <div className="mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
+          <div className="mb-2 rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-700">
+            <p className="font-semibold text-gray-800">Resumo da busca exportada</p>
+            <p>
+              Marketplace: <strong>{formatSummaryValue(job.searchSummary.marketplace)}</strong>
+            </p>
+            <p>
+              Período: <strong>{formatSummaryValue(job.searchSummary.periodStart)} a {formatSummaryValue(job.searchSummary.periodEnd)}</strong>
+            </p>
+            <p>
+              Forma de pagamento: <strong>{formatSummaryValue(job.searchSummary.paymentMethod)}</strong>
+            </p>
+            <p>
+              Preset: <strong>{formatSummaryValue(job.searchSummary.preset)}</strong>
+            </p>
+          </div>
           <p>
             Status: <strong>{statusLabel(job.status)}</strong>
           </p>
