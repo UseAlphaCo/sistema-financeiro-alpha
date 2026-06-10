@@ -13,6 +13,15 @@ import type { WorkerSummary } from "@/workers/sync/types";
 
 type WorkerSyncJobStatus = "queued" | "running" | "completed" | "failed";
 
+type WorkerSyncPhase =
+  | "queued"
+  | "running"
+  | "backfill_enqueued"
+  | "processing_events"
+  | "completed"
+  | "failed"
+  | "lock_skipped";
+
 type WorkerSyncJob = {
   id: string;
   mode: "retroactive";
@@ -39,8 +48,30 @@ function toRetroactiveMode(value: string | null | undefined): "retroactive" {
   return value === "retroactive" ? "retroactive" : "retroactive";
 }
 
+function withPhase(summary: WorkerSummary, phase: WorkerSyncPhase): WorkerSummary {
+  return {
+    ...summary,
+    phase,
+  };
+}
+
+function normalizeSummary(summary: unknown): WorkerSummary {
+  const base = createInitialSummary();
+  if (!summary || typeof summary !== "object") {
+    return base;
+  }
+
+  const candidate = summary as Partial<WorkerSummary>;
+  return {
+    ...base,
+    ...candidate,
+    phase: candidate.phase ?? base.phase,
+  };
+}
+
 function createInitialSummary(): WorkerSummary {
   return {
+    phase: "queued",
     fetched: 0,
     processed: 0,
     failed: 0,
@@ -55,6 +86,7 @@ function createInitialSummary(): WorkerSummary {
 
 function mergeSummary(target: WorkerSummary, step: WorkerSummary): WorkerSummary {
   return {
+    phase: step.phase ?? target.phase,
     fetched: target.fetched + step.fetched,
     processed: target.processed + step.processed,
     failed: target.failed + step.failed,
@@ -69,13 +101,22 @@ async function executeWorkerJob(jobId: string): Promise<void> {
   const persisted = await getPersistedJob(jobId);
   if (!persisted) return;
 
-  await updateJob(jobId, { status: "running" } as Partial<PersistedJob>);
+  let currentSummary = withPhase(normalizeSummary(persisted.summary), "running");
+
+  await updateJob(jobId, {
+    status: "running",
+    summary: currentSummary,
+  } as Partial<PersistedJob>);
 
   for (let run = 1; run <= (persisted.max_runs ?? 1); run += 1) {
     const latest = await getPersistedJob(jobId);
     if (!latest) return;
 
     try {
+      const phase = run === 1 ? "backfill_enqueued" : "processing_events";
+      currentSummary = withPhase(currentSummary, phase);
+      await updateJob(jobId, { summary: currentSummary } as Partial<PersistedJob>);
+
       const cycle = await runSyncOnce(
         run === 1
           ? {
@@ -84,20 +125,28 @@ async function executeWorkerJob(jobId: string): Promise<void> {
           : {}
       );
 
-      const currentSummary = (latest.summary as WorkerSummary) ?? createInitialSummary();
-      const newSummary = mergeSummary(currentSummary, cycle);
+      currentSummary = mergeSummary(currentSummary, cycle);
 
+      if (cycle.lockSkipped) {
+        currentSummary = withPhase(currentSummary, "lock_skipped");
+        await updateJob(jobId, { summary: currentSummary } as Partial<PersistedJob>);
+        break;
+      }
+
+      const nextPhase: WorkerSyncPhase = cycle.fetched === 0 ? "completed" : "processing_events";
+      currentSummary = withPhase(currentSummary, nextPhase);
       await updateJob(jobId, {
         runs: run,
-        summary: newSummary,
+        summary: currentSummary,
       } as Partial<PersistedJob>);
 
-      if (cycle.lockSkipped || cycle.fetched === 0) {
+      if (cycle.fetched === 0) {
         break;
       }
     } catch (error) {
       await updateJob(jobId, {
         status: "failed",
+        summary: withPhase(currentSummary, "failed"),
         last_error: error instanceof Error ? error.message : String(error),
         finished_at: new Date().toISOString(),
       } as Partial<PersistedJob>);
@@ -107,6 +156,7 @@ async function executeWorkerJob(jobId: string): Promise<void> {
 
   await updateJob(jobId, {
     status: "completed",
+    summary: currentSummary.phase === "failed" ? currentSummary : currentSummary,
     finished_at: new Date().toISOString(),
   } as Partial<PersistedJob>);
 }
@@ -128,7 +178,7 @@ export async function startWorkerSyncJob(input: StartWorkerSyncJobInput): Promis
       maxRuns: running.max_runs ?? 20,
       runs: running.runs ?? 0,
       lastError: running.last_error ?? null,
-      summary: (running.summary as WorkerSummary) ?? createInitialSummary(),
+      summary: normalizeSummary(running.summary),
     } as WorkerSyncJob;
   }
 
@@ -186,7 +236,7 @@ export async function getWorkerSyncJob(jobId: string): Promise<WorkerSyncJob | n
     maxRuns: persisted.max_runs ?? 20,
     runs: persisted.runs ?? 0,
     lastError: persisted.last_error ?? null,
-    summary: (persisted.summary as WorkerSummary) ?? createInitialSummary(),
+      summary: normalizeSummary(persisted.summary),
   } as WorkerSyncJob;
 }
 
@@ -206,7 +256,7 @@ export async function getCurrentWorkerSyncJob(): Promise<WorkerSyncJob | null> {
     maxRuns: running.max_runs ?? 20,
     runs: running.runs ?? 0,
     lastError: running.last_error ?? null,
-    summary: (running.summary as WorkerSummary) ?? createInitialSummary(),
+    summary: normalizeSummary(running.summary),
   } as WorkerSyncJob;
 }
 

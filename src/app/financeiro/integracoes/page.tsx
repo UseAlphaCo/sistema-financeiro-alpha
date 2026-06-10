@@ -45,6 +45,7 @@ type WorkerSyncStatus = {
   runs: number;
   lastError: string | null;
   summary: {
+    phase: "queued" | "running" | "backfill_enqueued" | "processing_events" | "completed" | "failed" | "lock_skipped";
     fetched: number;
     processed: number;
     failed: number;
@@ -77,6 +78,27 @@ const PAYMENT_METHOD_LABELS: Record<
   cash: "Dinheiro",
   other: "Outro",
 };
+
+function phaseLabel(phase: WorkerSyncStatus["summary"]["phase"]): string {
+  switch (phase) {
+    case "queued":
+      return "Na fila";
+    case "running":
+      return "Executando";
+    case "backfill_enqueued":
+      return "Preparando backfill";
+    case "processing_events":
+      return "Processando eventos";
+    case "completed":
+      return "Concluído";
+    case "failed":
+      return "Falhou";
+    case "lock_skipped":
+      return "Ignorado por lock";
+    default:
+      return phase;
+  }
+}
 
 function formatDate(iso: string): string {
   return new Intl.DateTimeFormat("pt-BR", {
@@ -116,7 +138,7 @@ export default function IntegracoesPage() {
   const [loadingList, setLoadingList] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
 
-  const [syncDays, setSyncDays] = useState<30 | 60 | 90>(90);
+  const [syncDays, setSyncDays] = useState<30 | 60 | 90>(30);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [syncStatus, setSyncStatus] = useState<WorkerSyncStatus | null>(null);
@@ -270,11 +292,16 @@ export default function IntegracoesPage() {
         {syncStatus && (
           <div className="mt-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
             <div>
-              Status: <strong>{syncStatus.status}</strong> | Ciclos: {syncStatus.runs}/{syncStatus.maxRuns}
+              Status: <strong>{syncStatus.status}</strong> | Fase: <strong>{phaseLabel(syncStatus.summary.phase)}</strong> | Ciclos: {syncStatus.runs}/{syncStatus.maxRuns}
             </div>
             <div className="mt-1 text-xs text-blue-800">
-              fetched={syncStatus.summary.fetched} processed={syncStatus.summary.processed} failed={syncStatus.summary.failed} skipped={syncStatus.summary.skipped} retried={syncStatus.summary.retried} deadLettered={syncStatus.summary.deadLettered}
+              fetched={syncStatus.summary.fetched} processed={syncStatus.summary.processed} failed={syncStatus.summary.failed} skipped={syncStatus.summary.skipped} retried={syncStatus.summary.retried} deadLettered={syncStatus.summary.deadLettered} lockSkipped={String(syncStatus.summary.lockSkipped)}
             </div>
+            {syncStatus.summary.phase === "lock_skipped" && (
+              <div className="mt-1 text-xs text-amber-700">
+                Execução ignorada porque outra sessão segurou o lock no OMS.
+              </div>
+            )}
             {syncStatus.lastError && (
               <div className="mt-1 text-xs text-red-700">Ultimo erro: {syncStatus.lastError}</div>
             )}

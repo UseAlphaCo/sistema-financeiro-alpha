@@ -24,6 +24,7 @@ export type RawPayloadRecord = {
 };
 
 export type WorkerSummary = {
+  phase: "queued" | "running" | "backfill_enqueued" | "processing_events" | "completed" | "failed" | "lock_skipped";
   fetched: number;
   processed: number;
   failed: number;

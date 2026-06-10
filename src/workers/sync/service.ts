@@ -28,6 +28,7 @@ export async function runSyncOnce(options: RunSyncOptions = {}): Promise<WorkerS
   const coreRepository = new CoreRepository(corePool);
 
   const summary: WorkerSummary = {
+    phase: "running",
     fetched: 0,
     processed: 0,
     failed: 0,
@@ -50,13 +51,14 @@ export async function runSyncOnce(options: RunSyncOptions = {}): Promise<WorkerS
     const hasLock = await omsRepository.acquireExecutionLock(WORKER_LOCK_KEY);
     if (!hasLock) {
       summary.lockSkipped = true;
+      summary.phase = "lock_skipped";
       logInfo("sync_skipped_lock_busy", { cycleId, lockKey: WORKER_LOCK_KEY });
       return summary;
     }
 
     if (options.backfillDays) {
       const backfillLimit = Math.min(
-        Math.max(options.backfillLimit ?? env.BATCH_SIZE * 10, 1),
+        Math.max(options.backfillLimit ?? env.BATCH_SIZE * 2, 1),
         5000
       );
       const candidates = await omsRepository.findRawPayloadCandidates(
@@ -170,6 +172,8 @@ export async function runSyncOnce(options: RunSyncOptions = {}): Promise<WorkerS
       ...summary,
       durationMs: Date.now() - startedAt,
     });
+
+    summary.phase = "completed";
 
     return summary;
   } finally {

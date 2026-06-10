@@ -35,13 +35,13 @@ export async function GET(request: NextRequest) {
     return createApiError(requestId, "Nao autorizado.", 401);
   }
 
-  const days = parseCronDays(process.env.WORKER_CRON_DAYS);
+  const days = parseCronDays(request.nextUrl.searchParams.get("days") ?? process.env.WORKER_CRON_DAYS);
   const maxRuns = 20;
 
   try {
     const job = await startWorkerSyncJob({
       estimatedScopeDays: days,
-      requestedBy: "vercel-cron",
+      requestedBy: "cloudflare-cron",
       requestId,
       maxRuns,
     });
