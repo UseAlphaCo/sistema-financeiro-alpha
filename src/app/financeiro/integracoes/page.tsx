@@ -142,6 +142,7 @@ export default function IntegracoesPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [syncStatus, setSyncStatus] = useState<WorkerSyncStatus | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
 
   const loadEvents = useCallback(async () => {
@@ -167,18 +168,37 @@ export default function IntegracoesPage() {
     setLoadingList(false);
   }, []);
 
-  const loadSyncStatus = useCallback(async (jobId: string) => {
+  const loadSyncStatus = useCallback(async (jobId?: string) => {
+    const endpoint = jobId
+      ? `/api/financial/integrations/worker/status?jobId=${encodeURIComponent(jobId)}`
+      : "/api/financial/integrations/worker/status";
+
     try {
-      const res = await fetch(
-        `/api/financial/integrations/worker/status?jobId=${encodeURIComponent(jobId)}`
-      );
+      const res = await fetch(endpoint);
+
+      if (res.status === 404) {
+        if (!jobId) {
+          setSyncStatus(null);
+          setActiveJobId(null);
+          setSyncError(null);
+          return;
+        }
+
+        setSyncStatus(null);
+        setActiveJobId(null);
+        setSyncError("Job de importação não encontrado. Inicie uma nova sincronização.");
+        return;
+      }
+
       const json = (await res.json()) as ApiEnvelope<WorkerSyncStatus>;
       if (!json.success || !json.data) {
         setSyncError(json.error ?? "Falha ao consultar status do job.");
         return;
       }
 
+      setSyncError(null);
       setSyncStatus(json.data);
+      setActiveJobId(json.data.jobId);
 
       if (json.data.status === "completed") {
         void loadEvents();
@@ -209,6 +229,7 @@ export default function IntegracoesPage() {
           setSyncError("Resposta invalida ao iniciar sincronizacao do worker.");
         } else {
           setSyncResult(started);
+          setActiveJobId(started.jobId);
           void loadSyncStatus(started.jobId);
         }
       } else {
@@ -221,18 +242,26 @@ export default function IntegracoesPage() {
   }
 
   useEffect(() => {
-    if (!syncResult?.jobId) return;
+    const timer = setTimeout(() => {
+      void loadSyncStatus();
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [loadSyncStatus]);
+
+  useEffect(() => {
+    if (!activeJobId) return;
 
     if (syncStatus?.status === "completed" || syncStatus?.status === "failed") {
       return;
     }
 
     const intervalId = setInterval(() => {
-      void loadSyncStatus(syncResult.jobId);
+      void loadSyncStatus(activeJobId);
     }, 1500);
 
     return () => clearInterval(intervalId);
-  }, [loadSyncStatus, syncResult?.jobId, syncStatus?.status]);
+  }, [activeJobId, loadSyncStatus, syncStatus?.status]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
