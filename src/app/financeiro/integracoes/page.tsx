@@ -284,7 +284,7 @@ export default function IntegracoesPage() {
       <section className="mb-8 rounded-lg border border-gray-200 bg-white p-5">
         <h2 className="mb-1 text-sm font-medium text-gray-700">Sincronizar retroativo ALP-OMS (Worker)</h2>
         <p className="mb-4 text-xs text-gray-500">
-          Executa o pipeline oficial OMS {'->'} sync_events {'->'} Worker {'->'} mirror.raw_payloads.
+          Executa o pipeline oficial OMS (leitura) {'->'} sync_queue (CORE) {'->'} Worker {'->'} mirror.raw_payloads.
           Escopo inicial desta rodada: 90 dias retroativos.
         </p>
 

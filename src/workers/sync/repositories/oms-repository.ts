@@ -1,22 +1,14 @@
 import type { Pool } from "pg";
 
 import { getNextRetryAt } from "../retry-policy";
-import type { SyncEventRow } from "../types";
+import type { RawPayloadCandidate, SyncControlStore, SyncEventRow } from "../types";
 
-type RawPayloadCandidate = {
-  id: string;
-  source: string | null;
-  externalOrderId: string | null;
-  eventType: string | null;
-  payloadJson: unknown;
-  headersJson: unknown;
-  receivedAt: Date | null;
-  processedAt: Date | null;
-  processingStatus: string | null;
-  errorMessage: string | null;
-};
-
-export class OmsRepository {
+/**
+ * OMS: fonte de leitura de raw_payloads. Os metodos de controle tecnico
+ * (fila/retry/DLQ/lock) permanecem apenas como fallback de emergencia
+ * (SYNC_CONTROL_TARGET=oms). Em operacao normal o controle vive no CORE.
+ */
+export class OmsRepository implements SyncControlStore {
   constructor(private readonly pool: Pool) {}
 
   async findRawPayloadCandidates(days: 30 | 60 | 90, limit: number): Promise<RawPayloadCandidate[]> {
@@ -68,7 +60,7 @@ export class OmsRepository {
     }));
   }
 
-  async enqueueRawPayloadBackfill(candidates: RawPayloadCandidate[]): Promise<number> {
+  async enqueueBackfill(candidates: RawPayloadCandidate[]): Promise<number> {
     let inserted = 0;
 
     for (const item of candidates) {
@@ -192,7 +184,7 @@ export class OmsRepository {
     }));
   }
 
-  async markProcessed(eventId: number): Promise<void> {
+  async markSynced(eventId: number): Promise<void> {
     await this.pool.query(
       `
         UPDATE integration.sync_events
@@ -253,5 +245,3 @@ export class OmsRepository {
     );
   }
 }
-
-export type { RawPayloadCandidate };

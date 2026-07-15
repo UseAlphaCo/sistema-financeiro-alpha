@@ -6,10 +6,10 @@ function sleep(ms: number) {
   return new Promise((res) => setTimeout(res, ms));
 }
 
-async function getPendingOmsCount() {
-  const pool = new Pool({ connectionString: process.env.OMS_DB_URL });
+async function getPendingCoreCount() {
+  const pool = new Pool({ connectionString: process.env.CORE_DB_URL ?? process.env.DATABASE_URL });
   try {
-    const r = await pool.query("SELECT COUNT(*)::int AS cnt FROM integration.sync_events WHERE processed = FALSE");
+    const r = await pool.query('SELECT COUNT(*)::int AS cnt FROM integration.sync_queue');
     return r.rows[0].cnt as number;
   } catch (e) {
     console.error('error counting pending', e instanceof Error ? e.message : String(e));
@@ -30,7 +30,7 @@ async function main() {
   console.log('process-backlog start', { days, maxRuns, iterations, pollInterval, targetPending });
 
   for (let i = 0; i < iterations; i++) {
-    const pendingBefore = await getPendingOmsCount();
+    const pendingBefore = await getPendingCoreCount();
     console.log(`Iteration ${i + 1} - pending before: ${pendingBefore}`);
     if (pendingBefore <= targetPending) {
       console.log('Target reached. Exiting.');
@@ -49,7 +49,7 @@ async function main() {
       await sleep(pollInterval);
     }
 
-    const pendingAfter = await getPendingOmsCount();
+    const pendingAfter = await getPendingCoreCount();
     console.log(`Iteration ${i + 1} - pending after: ${pendingAfter}`);
 
     if (pendingAfter <= targetPending) {
