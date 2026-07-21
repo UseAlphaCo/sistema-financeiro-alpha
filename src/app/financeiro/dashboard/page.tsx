@@ -1,5 +1,6 @@
 import { computeCashFlow } from "@/features/cash-flow/service";
 import PaymentMethodRevenueCards from "../_components/PaymentMethodRevenueCards";
+import MarketplaceRevenueCards from "../_components/MarketplaceRevenueCards";
 import { PERIOD_PRESETS, type PeriodPreset } from "@/lib/date-utils";
 
 export const dynamic = "force-dynamic";
@@ -23,28 +24,6 @@ function deltaClass(current: number, previous: number, inverseColors = false) {
   const positive = inverseColors ? !up : up;
   return positive ? "text-green-600" : "text-red-500";
 }
-
-const SOURCE_LABELS: Record<string, string> = {
-  shopify: "Shopify",
-  mercado_livre: "Mercado Livre",
-  shopee: "Shopee",
-  amazon: "Amazon",
-  manual: "Manual",
-  import: "Importação",
-  integration: "Integração",
-  webhook: "Webhook",
-};
-
-const SOURCE_COLORS: Record<string, string> = {
-  shopify: "bg-green-500",
-  mercado_livre: "bg-yellow-400",
-  shopee: "bg-orange-500",
-  amazon: "bg-blue-500",
-  manual: "bg-gray-400",
-  import: "bg-purple-500",
-  integration: "bg-teal-500",
-  webhook: "bg-indigo-500",
-};
 
 type PresetOption = { label: string; value: PeriodPreset };
 
@@ -101,15 +80,11 @@ export default async function DashboardPage({ searchParams }: Props) {
     period,
     totalIncomeCents,
     totalExpenseCents,
-    totalFeesCents,
     totalShippingCents,
-    netCents,
     bySource,
     byPaymentMethod,
     previousPeriod,
   } = summary;
-
-  const totalNetMarketplace = bySource.reduce((acc, s) => acc + s.netCents, 0);
 
   return (
     <div className="w-full space-y-8">
@@ -153,24 +128,10 @@ export default async function DashboardPage({ searchParams }: Props) {
           deltaClass={previousPeriod ? deltaClass(totalExpenseCents, previousPeriod.totalExpenseCents, true) : "text-gray-400"}
         />
         <SummaryCard
-          label="Taxas totais"
-          value={formatBRL(totalFeesCents)}
-          sublabel="descontadas da receita"
-          delta={previousPeriod ? deltaPercent(totalFeesCents, previousPeriod.totalTaxCents) : null}
-          deltaClass={previousPeriod ? deltaClass(totalFeesCents, previousPeriod.totalTaxCents, true) : "text-gray-400"}
-        />
-        <SummaryCard
           label="Entrega"
           value={formatBRL(totalShippingCents)}
           delta={previousPeriod ? deltaPercent(totalShippingCents, previousPeriod.totalShippingCents) : null}
           deltaClass={previousPeriod ? deltaClass(totalShippingCents, previousPeriod.totalShippingCents, true) : "text-gray-400"}
-        />
-        <SummaryCard
-          label="Líquido"
-          value={formatBRL(netCents)}
-          valueClass={netCents >= 0 ? "text-green-600" : "text-red-500"}
-          delta={previousPeriod ? deltaPercent(netCents, previousPeriod.netCents) : null}
-          deltaClass={previousPeriod ? deltaClass(netCents, previousPeriod.netCents) : "text-gray-400"}
         />
       </div>
 
@@ -180,88 +141,7 @@ export default async function DashboardPage({ searchParams }: Props) {
         previous={previousPeriod?.byPaymentMethod ?? null}
       />
 
-      {/* Breakdown por marketplace */}
-      {bySource.length > 0 && (
-        <section>
-          <h2 className="mb-3 text-sm font-medium text-gray-700">Resultado líquido por origem</h2>
-          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-            {/* Barra de proporção */}
-            <div className="flex h-2">
-              {bySource
-                .filter((s) => s.netCents > 0)
-                .map((s, i) => {
-                  const pct = totalNetMarketplace > 0 ? (s.netCents / totalNetMarketplace) * 100 : 0;
-                  return (
-                    <div
-                      key={i}
-                      className={`${SOURCE_COLORS[s.source] ?? "bg-gray-300"} first:rounded-l-lg last:rounded-r-lg`}
-                      style={{ width: `${pct}%` }}
-                      title={`${SOURCE_LABELS[s.source] ?? s.source}: ${pct.toFixed(1)}%`}
-                    />
-                  );
-                })}
-            </div>
-
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-left text-xs text-gray-500">
-                  <th className="px-4 py-2 font-normal">Origem</th>
-                  <th className="px-4 py-2 text-right font-normal">Bruto</th>
-                  <th className="px-4 py-2 text-right font-normal">Taxas</th>
-                  <th className="px-4 py-2 text-right font-normal">Líquido</th>
-                  <th className="px-4 py-2 text-right font-normal">Transações</th>
-                  <th className="px-4 py-2 text-right font-normal">% do total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bySource.map((s, i) => {
-                  const sharePct =
-                    totalNetMarketplace > 0
-                      ? ((s.netCents / totalNetMarketplace) * 100).toFixed(1)
-                      : "—";
-                  return (
-                    <tr key={i} className="border-b border-gray-50 last:border-0 hover:bg-gray-50">
-                      <td className="flex items-center gap-2 px-4 py-3">
-                        <span
-                          className={`inline-block h-2 w-2 rounded-full ${SOURCE_COLORS[s.source] ?? "bg-gray-300"}`}
-                        />
-                        {SOURCE_LABELS[s.source] ?? s.source}
-                      </td>
-                      <td className="px-4 py-3 text-right font-mono text-xs">{formatBRL(s.grossCents)}</td>
-                      <td className="px-4 py-3 text-right font-mono text-xs text-red-400">
-                        {s.feesCents > 0 ? `- ${formatBRL(s.feesCents)}` : "—"}
-                      </td>
-                      <td
-                        className={`px-4 py-3 text-right font-mono text-xs font-medium ${s.netCents >= 0 ? "text-green-600" : "text-red-500"}`}
-                      >
-                        {formatBRL(s.netCents)}
-                      </td>
-                      <td className="px-4 py-3 text-right text-xs text-gray-500">{s.transactionCount}</td>
-                      <td className="px-4 py-3 text-right text-xs text-gray-400">{sharePct !== "—" ? `${sharePct}%` : "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr className="border-t bg-gray-50 text-xs font-medium text-gray-700">
-                  <td className="px-4 py-2">Total</td>
-                  <td className="px-4 py-2 text-right font-mono">{formatBRL(totalIncomeCents)}</td>
-                  <td className="px-4 py-2 text-right font-mono text-red-400">
-                    {totalFeesCents > 0 ? `- ${formatBRL(totalFeesCents)}` : "—"}
-                  </td>
-                  <td className={`px-4 py-2 text-right font-mono ${netCents >= 0 ? "text-green-600" : "text-red-500"}`}>
-                    {formatBRL(netCents)}
-                  </td>
-                  <td className="px-4 py-2 text-right text-gray-500">
-                    {bySource.reduce((acc, s) => acc + s.transactionCount, 0)}
-                  </td>
-                  <td className="px-4 py-2 text-right">100%</td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </section>
-      )}
+      <MarketplaceRevenueCards title="Faturamento por marketplace" current={bySource ?? []} />
 
       {/* Comparativo de período */}
       {previousPeriod && (
@@ -280,12 +160,6 @@ export default async function DashboardPage({ searchParams }: Props) {
               previous={previousPeriod.totalExpenseCents}
               format={formatBRL}
               inverseColors
-            />
-            <CompareCard
-              label="Líquido"
-              current={netCents}
-              previous={previousPeriod.netCents}
-              format={formatBRL}
             />
           </div>
         </section>

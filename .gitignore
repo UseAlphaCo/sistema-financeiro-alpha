@@ -37,6 +37,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# arquivos temporários locais (dumps de banco, exports operacionais)
+/tmp/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

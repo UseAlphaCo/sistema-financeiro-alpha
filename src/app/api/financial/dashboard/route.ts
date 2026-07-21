@@ -21,16 +21,23 @@ export async function GET(request: NextRequest) {
         return createApiError(requestId, result.error, 400);
       }
 
-      const { period, totalIncomeCents, totalExpenseCents, netCents, previousPeriod } =
-        result.data;
+      const {
+        period,
+        totalIncomeCents,
+        totalExpenseCents,
+        bySource,
+        byPaymentMethod,
+        previousPeriod,
+      } = result.data;
 
       return createApiSuccess(requestId, {
         revenue: totalIncomeCents,
         expenses: totalExpenseCents,
-        net: netCents,
         period: `${period.days}d`,
         periodStart: period.startDate,
         periodEnd: period.endDate,
+        bySource,
+        byPaymentMethod,
         previousPeriod,
       });
     }

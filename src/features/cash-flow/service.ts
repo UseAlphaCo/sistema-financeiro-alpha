@@ -1,6 +1,7 @@
 import { getPrismaClient } from "@/core/db/prisma-client";
 import { getPaymentMethodSearchTokens } from "@/features/transactions/payment-method-filter";
 import { PAYMENT_METHODS, type PaymentMethod } from "@/features/transactions/types";
+import { isMirrorReadModelEnabled } from "@/shared/read-model-config";
 import {
   getDateRangeForPeriod,
   getDateRangeForPreset,
@@ -174,8 +175,7 @@ function buildSourceMap(rows: AggregateRow[]): Map<string, CashFlowBySource> {
       map.set(src, {
         source: src,
         grossCents: 0,
-        feesCents: 0,
-        netCents: 0,
+        expenseCents: 0,
         transactionCount: 0,
       });
     }
@@ -187,15 +187,19 @@ function buildSourceMap(rows: AggregateRow[]): Map<string, CashFlowBySource> {
       entry.grossCents += amount;
       entry.transactionCount += count;
     } else if (row.type === "expense") {
-      entry.feesCents += amount;
+      entry.expenseCents += amount;
       entry.transactionCount += count;
     }
-    entry.netCents = entry.grossCents - entry.feesCents;
   }
 
   return map;
 }
 
+// NOTA: esta função NÃO classifica forma de pagamento a partir de texto bruto —
+// ela apenas valida se um valor já normalizado (persistido em
+// paymentMethodNormalized) é um PaymentMethod conhecido, retornando "other" caso
+// contrário. A classificação raw -> PaymentMethod tem fonte única em
+// classifyPaymentMethod() (src/features/transactions/payment-method-filter.ts).
 function normalizePaymentMethodBucket(value: string | null | undefined): PaymentMethod {
   if (!value) return "other";
 
@@ -258,12 +262,7 @@ function parseLocalIsoDate(date: string, endOfDay = false): Date {
 }
 
 function shouldUseMirrorReadModel(): boolean {
-  const hasReadModelConnection = Boolean(process.env.CORE_DB_URL ?? process.env.DATABASE_URL);
-  const mirrorFlag = process.env.FINANCIAL_READ_MODEL_MIRROR;
-  const mirrorEnabled =
-    mirrorFlag === "true" || (process.env.NODE_ENV === "production" && mirrorFlag !== "false");
-
-  return hasReadModelConnection && mirrorEnabled;
+  return isMirrorReadModelEnabled();
 }
 
 function normalizeMarketplaceFilter(value: string | undefined): string | undefined {
@@ -337,8 +336,7 @@ function summarizeTransactions(items: Array<{
       bySourceMap.set(sourceKey, {
         source: sourceKey,
         grossCents: 0,
-        feesCents: 0,
-        netCents: 0,
+        expenseCents: 0,
         transactionCount: 0,
       });
     }
@@ -353,14 +351,11 @@ function summarizeTransactions(items: Array<{
       paymentBucket.transactionCount += 1;
     } else if (item.type === "expense") {
       totalExpenseCents += item.amountCents;
-      bucket.feesCents += item.amountCents;
+      bucket.expenseCents += item.amountCents;
     }
   }
 
-  const bySource = Array.from(bySourceMap.values()).map((item) => ({
-    ...item,
-    netCents: item.grossCents - item.feesCents,
-  }));
+  const bySource = Array.from(bySourceMap.values());
 
   return {
     totalIncomeCents,
@@ -442,16 +437,9 @@ export async function computeCashFlow(
       period,
       totalIncomeCents: current.totalIncomeCents,
       totalExpenseCents: current.totalExpenseCents,
-      totalFeesCents: current.totalTaxCents,
       totalDiscountCents: current.totalDiscountCents,
       totalShippingCents: current.totalShippingCents,
       totalTaxCents: current.totalTaxCents,
-      netCents:
-        current.totalIncomeCents -
-        current.totalExpenseCents -
-        current.totalDiscountCents -
-        current.totalShippingCents -
-        current.totalTaxCents,
       bySource: current.bySource,
       byPaymentMethod: current.byPaymentMethod,
       previousPeriod: {
@@ -460,12 +448,6 @@ export async function computeCashFlow(
         totalDiscountCents: previous.totalDiscountCents,
         totalShippingCents: previous.totalShippingCents,
         totalTaxCents: previous.totalTaxCents,
-        netCents:
-          previous.totalIncomeCents -
-          previous.totalExpenseCents -
-          previous.totalDiscountCents -
-          previous.totalShippingCents -
-          previous.totalTaxCents,
         byPaymentMethod: previous.byPaymentMethod,
       },
     };
@@ -496,16 +478,9 @@ export async function computeCashFlow(
     period,
     totalIncomeCents: totalIncome,
     totalExpenseCents: totalExpense,
-    totalFeesCents: toNumber(currentBreakdown.total_tax_cents),
     totalDiscountCents: toNumber(currentBreakdown.total_discount_cents),
     totalShippingCents: toNumber(currentBreakdown.total_shipping_cents),
     totalTaxCents: toNumber(currentBreakdown.total_tax_cents),
-    netCents:
-      totalIncome -
-      totalExpense -
-      toNumber(currentBreakdown.total_discount_cents) -
-      toNumber(currentBreakdown.total_shipping_cents) -
-      toNumber(currentBreakdown.total_tax_cents),
     bySource: Array.from(sourceMap.values()),
     byPaymentMethod: Array.from(buildPaymentMethodMap(currentRows).values()),
     previousPeriod: {
@@ -514,12 +489,6 @@ export async function computeCashFlow(
       totalDiscountCents: toNumber(prevBreakdown.total_discount_cents),
       totalShippingCents: toNumber(prevBreakdown.total_shipping_cents),
       totalTaxCents: toNumber(prevBreakdown.total_tax_cents),
-      netCents:
-        prevIncome -
-        prevExpense -
-        toNumber(prevBreakdown.total_discount_cents) -
-        toNumber(prevBreakdown.total_shipping_cents) -
-        toNumber(prevBreakdown.total_tax_cents),
       byPaymentMethod: Array.from(buildPaymentMethodMap(prevRows).values()),
     },
   };

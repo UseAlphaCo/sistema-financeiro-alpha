@@ -11,8 +11,7 @@ export type CashFlowPeriod = {
 export type CashFlowBySource = {
   source: string;
   grossCents: number;
-  feesCents: number;
-  netCents: number;
+  expenseCents: number;
   transactionCount: number;
 };
 
@@ -26,11 +25,9 @@ export type CashFlowSummary = {
   period: CashFlowPeriod;
   totalIncomeCents: number;
   totalExpenseCents: number;
-  totalFeesCents: number;
   totalDiscountCents: number;
   totalShippingCents: number;
   totalTaxCents: number;
-  netCents: number;
   bySource: CashFlowBySource[];
   byPaymentMethod: CashFlowByPaymentMethod[];
   previousPeriod: {
@@ -39,7 +36,6 @@ export type CashFlowSummary = {
     totalDiscountCents: number;
     totalShippingCents: number;
     totalTaxCents: number;
-    netCents: number;
     byPaymentMethod: CashFlowByPaymentMethod[];
   } | null;
 };

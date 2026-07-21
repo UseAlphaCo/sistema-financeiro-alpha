@@ -36,7 +36,11 @@ export async function GET(request: NextRequest) {
   }
 
   const days = parseCronDays(request.nextUrl.searchParams.get("days") ?? process.env.WORKER_CRON_DAYS);
-  const maxRuns = 20;
+  // Poucas execucoes por invocacao: o cron dispara a cada 30 min e aguarda
+  // o job terminar antes de responder (awaitCompletion), entao o trabalho
+  // precisa caber com folga no timeout padrao da function serverless. A
+  // fila avanca de forma incremental a cada ciclo de cron.
+  const maxRuns = 2;
 
   try {
     const job = await startWorkerSyncJob({
@@ -44,6 +48,7 @@ export async function GET(request: NextRequest) {
       requestedBy: "cloudflare-cron",
       requestId,
       maxRuns,
+      awaitCompletion: true,
     });
 
     return createApiSuccess(requestId, {

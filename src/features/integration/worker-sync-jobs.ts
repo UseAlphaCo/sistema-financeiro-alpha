@@ -12,7 +12,7 @@ import {
 } from "./worker-job-repository";
 import type { WorkerSummary } from "@/workers/sync/types";
 
-const STALE_JOB_MAX_AGE_MINUTES = 120;
+const STALE_JOB_MAX_AGE_MINUTES = 15;
 
 type WorkerSyncJobStatus = "queued" | "running" | "completed" | "failed";
 
@@ -45,6 +45,14 @@ type StartWorkerSyncJobInput = {
   requestedBy: string | null;
   requestId: string;
   maxRuns?: number;
+  /**
+   * Quando true, aguarda a execucao terminar antes de responder. Necessario
+   * para o disparo via cron serverless: sem isso a function pode ser
+   * congelada apos a resposta HTTP, matando o job no meio (fetched/processed
+   * sempre 0). O disparo manual (com polling via worker/status) continua
+   * fire-and-forget, pois pode envolver ate 200 runs.
+   */
+  awaitCompletion?: boolean;
 };
 
 function toRetroactiveMode(value: string | null | undefined): "retroactive" {
@@ -85,7 +93,22 @@ function createInitialSummary(): WorkerSummary {
   };
 }
 
-
+function mapPersistedJob(persisted: PersistedJob): WorkerSyncJob {
+  return {
+    id: persisted.id,
+    mode: toRetroactiveMode(persisted.mode),
+    estimatedScopeDays: (persisted.estimated_scope_days as number) as 30 | 60 | 90,
+    status: persisted.status as WorkerSyncJobStatus,
+    startedAt: persisted.started_at,
+    finishedAt: persisted.finished_at ?? null,
+    requestedBy: persisted.requested_by ?? null,
+    requestId: persisted.request_id ?? "",
+    maxRuns: persisted.max_runs ?? 20,
+    runs: persisted.runs ?? 0,
+    lastError: persisted.last_error ?? null,
+    summary: normalizeSummary(persisted.summary),
+  };
+}
 
 function mergeSummary(target: WorkerSummary, step: WorkerSummary): WorkerSummary {
   return {
@@ -170,20 +193,7 @@ export async function startWorkerSyncJob(input: StartWorkerSyncJobInput): Promis
 
   const running = await getLatestRunningJob();
   if (running && (running.status === "queued" || running.status === "running")) {
-    return {
-      id: running.id,
-      mode: toRetroactiveMode(running.mode),
-      estimatedScopeDays: (running.estimated_scope_days as number) as 30 | 60 | 90,
-      status: running.status as WorkerSyncJobStatus,
-      startedAt: running.started_at,
-      finishedAt: running.finished_at ?? null,
-      requestedBy: running.requested_by ?? null,
-      requestId: running.request_id ?? "",
-      maxRuns: running.max_runs ?? 20,
-      runs: running.runs ?? 0,
-      lastError: running.last_error ?? null,
-      summary: normalizeSummary(running.summary),
-    } as WorkerSyncJob;
+    return mapPersistedJob(running);
   }
 
   const id = randomUUID();
@@ -206,7 +216,16 @@ export async function startWorkerSyncJob(input: StartWorkerSyncJobInput): Promis
 
   await insertJob(persisted).catch(() => undefined);
 
-  void executeWorkerJob(id);
+  if (input.awaitCompletion) {
+    await executeWorkerJob(id);
+
+    const finalJob = await getPersistedJob(id);
+    if (finalJob) {
+      return mapPersistedJob(finalJob);
+    }
+  } else {
+    void executeWorkerJob(id);
+  }
 
   return {
     id,
@@ -228,20 +247,7 @@ export async function getWorkerSyncJob(jobId: string): Promise<WorkerSyncJob | n
   const persisted = await getPersistedJob(jobId);
   if (!persisted) return null;
 
-  return {
-    id: persisted.id,
-    mode: toRetroactiveMode(persisted.mode),
-    estimatedScopeDays: (persisted.estimated_scope_days as number) as 30 | 60 | 90,
-    status: persisted.status as WorkerSyncJobStatus,
-    startedAt: persisted.started_at,
-    finishedAt: persisted.finished_at ?? null,
-    requestedBy: persisted.requested_by ?? null,
-    requestId: persisted.request_id ?? "",
-    maxRuns: persisted.max_runs ?? 20,
-    runs: persisted.runs ?? 0,
-    lastError: persisted.last_error ?? null,
-      summary: normalizeSummary(persisted.summary),
-  } as WorkerSyncJob;
+  return mapPersistedJob(persisted);
 }
 
 export async function getCurrentWorkerSyncJob(): Promise<WorkerSyncJob | null> {
@@ -251,20 +257,7 @@ export async function getCurrentWorkerSyncJob(): Promise<WorkerSyncJob | null> {
   const running = await getLatestRunningJob();
   if (!running) return null;
 
-  return {
-    id: running.id,
-    mode: toRetroactiveMode(running.mode),
-    estimatedScopeDays: (running.estimated_scope_days as number) as 30 | 60 | 90,
-    status: running.status as WorkerSyncJobStatus,
-    startedAt: running.started_at,
-    finishedAt: running.finished_at ?? null,
-    requestedBy: running.requested_by ?? null,
-    requestId: running.request_id ?? "",
-    maxRuns: running.max_runs ?? 20,
-    runs: running.runs ?? 0,
-    lastError: running.last_error ?? null,
-    summary: normalizeSummary(running.summary),
-  } as WorkerSyncJob;
+  return mapPersistedJob(running);
 }
 
 export type { WorkerSyncJob, WorkerSyncJobStatus };

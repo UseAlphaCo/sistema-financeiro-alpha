@@ -1,4 +1,5 @@
 import { computeCashFlow } from "@/features/cash-flow/service";
+import { formatOriginLabel } from "@/features/cash-flow/source-labels";
 import { listMarketplaceReadModelPaginated } from "@/features/transactions/read-model";
 import ExportControls from "./ExportControls";
 import PaymentMethodRevenueCards from "../_components/PaymentMethodRevenueCards";
@@ -35,32 +36,6 @@ function deltaClass(current: number, previous: number, inverseColors = false) {
   const up = current >= previous;
   const positive = inverseColors ? !up : up;
   return positive ? "text-green-600" : "text-red-600";
-}
-
-const SOURCE_LABELS: Record<string, string> = {
-  manual: "Manual",
-  import: "Importação",
-  shopify: "Shopify",
-  anymarket: "Anymarket",
-  mercado_livre: "Mercado Livre",
-  mercadoLivre: "Mercado Livre",
-  shopee: "Shopee",
-  amazon: "Amazon",
-};
-
-function formatOriginLabel(value: string): string {
-  const direct = SOURCE_LABELS[value];
-  if (direct) return direct;
-
-  if (/^[A-Z]/.test(value)) {
-    return value;
-  }
-
-  return value
-    .split(/[_\s-]+/)
-    .filter(Boolean)
-    .map((token) => token.charAt(0).toUpperCase() + token.slice(1).toLowerCase())
-    .join(" ");
 }
 
 const PERIOD_OPTIONS: Array<{ label: string; value: PeriodPreset }> = [
@@ -225,9 +200,7 @@ export default async function FluxoDeCaixaPage({
     period,
     totalIncomeCents,
     totalExpenseCents,
-    totalFeesCents,
     totalShippingCents,
-    netCents,
     bySource,
     byPaymentMethod,
     previousPeriod,
@@ -377,22 +350,10 @@ export default async function FluxoDeCaixaPage({
           inverseColors
         />
         <SummaryCard
-          label="Taxas"
-          cents={totalFeesCents}
-          previousCents={previousPeriod?.totalTaxCents ?? null}
-          inverseColors
-        />
-        <SummaryCard
           label="Entrega"
           cents={totalShippingCents}
           previousCents={previousPeriod?.totalShippingCents ?? null}
           inverseColors
-        />
-        <SummaryCard
-          label="Líquido"
-          cents={netCents}
-          previousCents={previousPeriod?.netCents ?? null}
-          highlight
         />
       </div>
 
@@ -436,14 +397,10 @@ export default async function FluxoDeCaixaPage({
                       {formatBRL(row.grossCents)}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
-                      {formatBRL(row.feesCents)}
+                      {formatBRL(row.expenseCents)}
                     </td>
-                    <td
-                      className={`whitespace-nowrap px-4 py-3 text-right font-medium ${
-                        row.netCents >= 0 ? "text-green-700" : "text-red-700"
-                      }`}
-                    >
-                      {formatBRL(row.netCents)}
+                    <td className="whitespace-nowrap px-4 py-3 text-right font-medium text-gray-900">
+                      {formatBRL(row.grossCents - row.expenseCents)}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-right text-gray-500">
                       {row.transactionCount}
