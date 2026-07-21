@@ -4,7 +4,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-06-09",
   "triggers": {
-    "crons": ["*/30 * * * *"]
+    "crons": ["*/5 * * * *"]
   },
   "vars": {
     "APP_BASE_URL": "https://project-006s3.vercel.app",
