@@ -2,9 +2,10 @@ import { Pool } from "pg";
 
 import { getPrismaClient } from "@/core/db/prisma-client";
 import {
-  getPaymentMethodSearchTokens,
+  classifyPaymentMethod,
   transactionMatchesPaymentMethod,
 } from "@/features/transactions/payment-method-filter";
+import { getCoreConnectionString } from "@/shared/read-model-config";
 import type {
   FinancialTransaction,
   ListTransactionsFilters,
@@ -34,7 +35,7 @@ type ReadModelFilters = Omit<ListTransactionsFilters, "page" | "limit" | "source
 let corePool: Pool | null = null;
 
 function getCorePool(): Pool | null {
-  const connectionString = process.env.CORE_DB_URL ?? process.env.DATABASE_URL;
+  const connectionString = getCoreConnectionString();
   if (!connectionString) {
     return null;
   }
@@ -113,30 +114,6 @@ function normalizeMarketplace(value: string | null, source: string | null): stri
     .filter(Boolean)
     .map((token) => token.charAt(0).toUpperCase() + token.slice(1).toLowerCase())
     .join(" ");
-}
-
-function normalizePaymentMethod(raw: string | null): PaymentMethod | null {
-  if (!raw) return null;
-
-  const methods: PaymentMethod[] = [
-    "credit_card",
-    "pix",
-    "store_credit",
-    "boleto",
-    "bank_transfer",
-    "wallet",
-    "cash",
-    "other",
-  ];
-
-  for (const method of methods) {
-    if (method === "other") continue;
-    if (getPaymentMethodSearchTokens(method).some((token) => raw.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").includes(token.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()))) {
-      return method;
-    }
-  }
-
-  return "other";
 }
 
 function resolveMirrorSource(source: string | null): TransactionSource {
@@ -299,7 +276,7 @@ function mapMirrorRow(row: MirrorRow): FinancialTransaction | null {
     marketplace,
     orderNumber,
     paymentMethodRaw,
-    paymentMethodNormalized: normalizePaymentMethod(paymentMethodRaw),
+    paymentMethodNormalized: classifyPaymentMethod(paymentMethodRaw),
     shippingCents,
     discountCents,
     taxCents,
@@ -387,12 +364,28 @@ async function listMirrorTransactions(filters: ReadModelFilters): Promise<Financ
     return [];
   }
 
-  const rows = await pool.query<MirrorRow>(`
+  // Pre-filtro de performance por received_at, mesmo raciocinio aplicado em
+  // listMarketplaceReadModelPaginated: so o limite inferior e seguro (uma linha
+  // nunca chega no mirror antes do pedido existir), o corte fino por periodo
+  // continua sendo feito por occurredAt em filterTransactions(). Sem isso, esta
+  // query varre 100% de mirror.raw_payloads a cada chamada (medido: 25-70s numa
+  // tabela com ~1.4M linhas), o que e um risco real de timeout em produção.
+  const conditions: string[] = ["payload_json IS NOT NULL", "source IN ('shopify', 'anymarket')"];
+  const values: unknown[] = [];
+  const dateStart = parseFilterDate(filters.startDate);
+  if (dateStart) {
+    values.push(dateStart);
+    conditions.push(`received_at >= $${values.length}`);
+  }
+
+  const rows = await pool.query<MirrorRow>(
+    `
     SELECT id, source, event_type, external_order_id, payload_json, received_at, mirror_updated_at, processing_status
     FROM mirror.raw_payloads
-    WHERE payload_json IS NOT NULL
-      AND source IN ('shopify', 'anymarket')
-  `);
+    WHERE ${conditions.join(" AND ")}
+  `,
+    values
+  );
 
   return filterTransactions(
     rows.rows
@@ -563,7 +556,6 @@ export async function listMarketplaceReadModelPaginated(
   const targetSkip = (filters.page - 1) * filters.limit;
   const chunkSize = Math.max(filters.limit * 3, 150);
   const dateStart = parseFilterDate(filters.startDate);
-  const dateEnd = parseFilterDate(filters.endDate);
 
   const whereClauses: string[] = [
     "payload_json IS NOT NULL",
@@ -571,14 +563,18 @@ export async function listMarketplaceReadModelPaginated(
   ];
   const baseValues: unknown[] = [];
 
+  // Pre-filtro de performance por received_at (quando a linha chegou no mirror do
+  // CORE) — NAO usar como filtro autoritativo de periodo, pois nao e o mesmo campo
+  // que `occurredAt` (data real do pedido, usada por filterTransactions abaixo).
+  // Registros com backfill/sync atrasado podem ter occurredAt dentro do periodo
+  // filtrado mas received_at bem mais recente (sincronizados depois do fim do
+  // periodo). Por isso so aplicamos o limite inferior (received_at nao pode ser
+  // anterior ao inicio do periodo, pois a linha nunca chega antes do pedido
+  // existir) e deixamos o limite superior de fora — quem decide o corte exato por
+  // data e sempre `occurredAt` via filterTransactions().
   if (dateStart) {
     baseValues.push(dateStart);
     whereClauses.push(`received_at >= $${baseValues.length}`);
-  }
-
-  if (dateEnd) {
-    baseValues.push(dateEnd);
-    whereClauses.push(`received_at <= $${baseValues.length}`);
   }
 
   const readModelFilters: ReadModelFilters = {

@@ -1,4 +1,4 @@
-import type { PaymentMethod } from "@/features/transactions/types";
+import { PAYMENT_METHODS, type PaymentMethod } from "@/features/transactions/types";
 
 const METHOD_TOKENS: Record<PaymentMethod, string[]> = {
   credit_card: [
@@ -26,6 +26,23 @@ const METHOD_TOKENS: Record<PaymentMethod, string[]> = {
   other: [],
 };
 
+// Ordem de prioridade usada por classifyPaymentMethod(): quando um raw combina
+// mais de uma forma de pagamento (ex.: pedido split "Pix | Crédito em loja"),
+// store_credit vence porque indica que uma parte do saldo foi resolvida via
+// credito da loja, o sinal mais especifico disponivel. Esta e a UNICA fonte de
+// verdade de classificacao do sistema — nao duplicar esta logica em outros
+// arquivos (ver src/features/integration/payment-method.ts, que delega para
+// classifyPaymentMethod, e src/features/transactions/read-model.ts, idem).
+const CLASSIFICATION_PRIORITY: readonly PaymentMethod[] = [
+  "store_credit",
+  "pix",
+  "boleto",
+  "bank_transfer",
+  "credit_card",
+  "wallet",
+  "cash",
+];
+
 function normalizeForMatch(value: string): string {
   return value
     .normalize("NFD")
@@ -44,6 +61,27 @@ export function paymentRawMatchesMethod(raw: string | null | undefined, method: 
   return getPaymentMethodSearchTokens(method).some((token) => normalizedRaw.includes(normalizeForMatch(token)));
 }
 
+export function classifyPaymentMethod(rawValue: string | null | undefined): PaymentMethod {
+  const raw = (rawValue ?? "").trim();
+  if (!raw) return "other";
+
+  const normalizedRaw = normalizeForMatch(raw);
+
+  for (const method of CLASSIFICATION_PRIORITY) {
+    if (
+      getPaymentMethodSearchTokens(method).some((token) => normalizedRaw.includes(normalizeForMatch(token)))
+    ) {
+      return method;
+    }
+  }
+
+  return "other";
+}
+
+export function isValidPaymentMethod(value: string | null | undefined): value is PaymentMethod {
+  return Boolean(value) && (PAYMENT_METHODS as readonly string[]).includes(value as string);
+}
+
 export function transactionMatchesPaymentMethod(
   tx: { paymentMethodNormalized?: string | null; paymentMethodRaw?: string | null },
   method: PaymentMethod
@@ -54,3 +92,4 @@ export function transactionMatchesPaymentMethod(
 
   return paymentRawMatchesMethod(tx.paymentMethodRaw, method);
 }
+
