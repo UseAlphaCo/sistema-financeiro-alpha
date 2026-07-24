@@ -16,7 +16,8 @@
     "postinstall": "prisma generate",
     "check": "npm run lint && npm run typecheck && npm run check:boundaries && npm run check:contracts && npm run test && npm run build",
     "worker:sync:once": "tsx src/workers/sync/run-once.ts",
-    "gate:b:baseline": "tsx scripts/gate-b-baseline.ts"
+    "gate:b:baseline": "tsx scripts/gate-b-baseline.ts",
+    "verify:shopify": "tsx scripts/verify-shopify-values.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
