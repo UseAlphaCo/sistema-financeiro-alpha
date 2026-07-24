@@ -368,27 +368,33 @@ function summarizeTransactions(items: Array<{
   };
 }
 
+// Extraida para testabilidade sem depender de banco: se so uma das pontas do
+// range vier preenchida (ex.: usuario preencheu so "Data inicial"), a busca
+// deve usar aquele dia, e nao cair silenciosamente no preset (que defaultava
+// para "yesterday" e ignorava a data digitada).
+export function resolveCashFlowDateRange(
+  filters: Pick<CashFlowFilters, "startDate" | "endDate" | "preset" | "days">,
+  now: Date
+): { start: Date; end: Date } {
+  if (filters.startDate || filters.endDate) {
+    return {
+      start: parseLocalIsoDate(filters.startDate ?? filters.endDate!),
+      end: parseLocalIsoDate(filters.endDate ?? filters.startDate!, true),
+    };
+  }
+
+  if (filters.preset) {
+    return getDateRangeForPreset(filters.preset, now);
+  }
+
+  return getDateRangeForPeriod(filters.days ?? 30, now);
+}
+
 export async function computeCashFlow(
   filters: CashFlowFilters
 ): Promise<CashFlowSummary> {
-  const days = filters.days ?? 30;
   const now = new Date();
-
-  let start: Date;
-  let end: Date;
-
-  if (filters.startDate && filters.endDate) {
-    start = parseLocalIsoDate(filters.startDate);
-    end = parseLocalIsoDate(filters.endDate, true);
-  } else if (filters.preset) {
-    const presetRange = getDateRangeForPreset(filters.preset, now);
-    start = presetRange.start;
-    end = presetRange.end;
-  } else {
-    const range = getDateRangeForPeriod(days, now);
-    start = range.start;
-    end = range.end;
-  }
+  const { start, end } = resolveCashFlowDateRange(filters, now);
 
   const periodDays = Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1;
   const prevRange = getPreviousPeriodRange(start, periodDays);

@@ -28,7 +28,6 @@ type ColumnId =
   | "shipping"
   | "discount"
   | "taxes"
-  | "liquid"
   | "amount";
 
 type ColumnConfig = {
@@ -58,8 +57,7 @@ const COLUMN_CONFIGS: ColumnConfig[] = [
   { id: "shipping", label: "Entrega", align: "right" },
   { id: "discount", label: "Descontos", align: "right" },
   { id: "taxes", label: "Taxas", align: "right" },
-  { id: "liquid", label: "Valor líquido", align: "right" },
-  { id: "amount", label: "Valor bruto", align: "right" },
+  { id: "amount", label: "Valor", align: "right" },
 ];
 
 const DEFAULT_VISIBILITY: Record<ColumnId, boolean> = {
@@ -70,7 +68,6 @@ const DEFAULT_VISIBILITY: Record<ColumnId, boolean> = {
   shipping: true,
   discount: false,
   taxes: true,
-  liquid: true,
   amount: true,
 };
 
@@ -166,11 +163,10 @@ export default function FluxoDeCaixaTable({
       acc.shipping += item.shippingCents ?? 0;
       acc.discount += item.discountCents ?? 0;
       acc.taxes += (item.taxCents ?? 0) + (item.feeCents ?? 0);
-      acc.liquid += item.liquidCents ?? item.amountCents;
       acc.amount += item.amountCents;
       return acc;
     },
-    { shipping: 0, discount: 0, taxes: 0, liquid: 0, amount: 0 }
+    { shipping: 0, discount: 0, taxes: 0, amount: 0 }
   );
 
   const pageLink = (page: number) =>
@@ -249,7 +245,6 @@ export default function FluxoDeCaixaTable({
                   {visibility.shipping && <td className="whitespace-nowrap px-4 py-3 text-right text-gray-600">{formatBRL(item.shippingCents ?? 0)}</td>}
                   {visibility.discount && <td className="whitespace-nowrap px-4 py-3 text-right text-gray-600">{formatBRL(item.discountCents ?? 0)}</td>}
                   {visibility.taxes && <td className="whitespace-nowrap px-4 py-3 text-right text-gray-600">{formatBRL((item.taxCents ?? 0) + (item.feeCents ?? 0))}</td>}
-                  {visibility.liquid && <td className="whitespace-nowrap px-4 py-3 text-right font-medium text-green-700">{formatBRL(item.liquidCents ?? item.amountCents)}</td>}
                   {visibility.amount && <td className="whitespace-nowrap px-4 py-3 text-right font-medium text-gray-900">{formatBRL(item.amountCents)}</td>}
                 </tr>
               ))}
@@ -288,14 +283,6 @@ export default function FluxoDeCaixaTable({
                     return (
                       <td key={column.id} className="whitespace-nowrap px-4 py-3 text-right text-sm font-semibold text-gray-700">
                         {formatBRL(totals.taxes)}
-                      </td>
-                    );
-                  }
-
-                  if (column.id === "liquid") {
-                    return (
-                      <td key={column.id} className="whitespace-nowrap px-4 py-3 text-right text-sm font-semibold text-green-700">
-                        {formatBRL(totals.liquid)}
                       </td>
                     );
                   }

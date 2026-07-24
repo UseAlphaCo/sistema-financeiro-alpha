@@ -71,7 +71,6 @@ type ExportRow = {
   shipping: string;
   discounts: string;
   fees: string;
-  liquid: string;
   amount: string;
 };
 
@@ -213,7 +212,6 @@ function mapExportRow(item: FinancialTransaction): ExportRow {
     shipping: centsToDecimal(item.shippingCents ?? 0),
     discounts: centsToDecimal(item.discountCents ?? 0),
     fees: centsToDecimal((item.taxCents ?? 0) + (item.feeCents ?? 0)),
-    liquid: centsToDecimal(item.liquidCents ?? item.amountCents),
     amount: centsToDecimal(item.amountCents),
   };
 }
@@ -235,8 +233,7 @@ function renderCsv(rows: ExportRow[]): Buffer {
     "Entrega",
     "Descontos",
     "Taxas",
-    "Valor liquido",
-    "Valor bruto",
+    "Valor",
   ];
 
   const lines = [headers.join(";")];
@@ -251,7 +248,6 @@ function renderCsv(rows: ExportRow[]): Buffer {
         row.shipping,
         row.discounts,
         row.fees,
-        row.liquid,
         row.amount,
       ]
         .map(csvEscape)
@@ -274,8 +270,7 @@ async function renderXlsx(rows: ExportRow[]): Promise<Buffer> {
     { header: "Entrega", key: "shipping", width: 12 },
     { header: "Descontos", key: "discounts", width: 12 },
     { header: "Taxas", key: "fees", width: 12 },
-    { header: "Valor liquido", key: "liquid", width: 12 },
-    { header: "Valor bruto", key: "amount", width: 12 },
+    { header: "Valor", key: "amount", width: 12 },
   ];
 
   for (const row of rows) {
