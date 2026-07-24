@@ -19,7 +19,11 @@ function getPool(): Pool | null {
 
 export type ShopifyPaymentResolutionRow = {
   external_order_id: string;
-  dominant_gateway_raw: string;
+  // null = pedido sem nenhuma transacao de pagamento resolvivel (tentado e
+  // registrado mesmo assim, para nao reentrar no pool de nao-resolvidos a
+  // cada rodada — ver findUnresolvedShopifyOrders). O read-model trata null
+  // como "cair na heuristica de payment_gateway_names".
+  dominant_gateway_raw: string | null;
   dominant_amount_cents: number;
   total_amount_cents: number;
   transaction_processed_at: string | null;
@@ -44,6 +48,14 @@ export async function ensureShopifyPaymentResolutionTable(): Promise<void> {
       transaction_processed_at timestamptz,
       resolved_at timestamptz NOT NULL DEFAULT NOW()
     )
+  `);
+
+  // Idempotente: relaxa a constraint em tabelas ja existentes (criadas antes
+  // desta mudanca). Necessario para registrar pedidos sem transacao
+  // resolvivel sem usar um valor sentinela — ver runShopifyPaymentResolutionJob.
+  await pool.query(`
+    ALTER TABLE integration.shopify_order_payment_resolution
+    ALTER COLUMN dominant_gateway_raw DROP NOT NULL
   `);
 }
 

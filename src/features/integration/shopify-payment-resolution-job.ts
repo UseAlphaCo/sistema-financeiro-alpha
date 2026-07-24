@@ -62,6 +62,17 @@ export async function runShopifyPaymentResolutionJob(
         const dominant = resolveDominantPaymentMethod(transactions);
 
         if (!dominant) {
+          // Registra a tentativa mesmo sem transacao resolvivel — sem isso,
+          // o pedido nunca sai de findUnresolvedShopifyOrders (spr.external_order_id
+          // IS NULL continua verdadeiro) e e reprocessado a cada rodada,
+          // para sempre, sem nunca convergir para candidates=0.
+          await upsertShopifyPaymentResolution({
+            external_order_id: candidate.external_order_id,
+            dominant_gateway_raw: null,
+            dominant_amount_cents: 0,
+            total_amount_cents: 0,
+            transaction_processed_at: null,
+          });
           skipped += 1;
           continue;
         }

@@ -314,7 +314,7 @@ class PrismaTransactionsRepository implements TransactionsRepository {
 
     if (useMirrorReadModel) {
       try {
-        return listFinancialReadModelPaginated(filters);
+        return await listFinancialReadModelPaginated(filters);
       } catch {
         return {
           items: [],

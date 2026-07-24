@@ -40,6 +40,66 @@ const MIRROR_ROW_JOIN = `
     ON spr.external_order_id = rp.external_order_id AND rp.source = 'shopify'
 `;
 
+// Fallback usado quando integration.shopify_order_payment_resolution ainda
+// nao existe no banco (job de resolucao nunca rodou nesse ambiente/ainda nao
+// processou nenhum pedido) — evita que a pagina de transacoes/fluxo de caixa
+// quebre por completo por causa de uma tabela auxiliar ausente; cai na
+// heuristica de payment_gateway_names ate a tabela existir.
+const MIRROR_ROW_COLUMNS_FALLBACK = `
+  rp.id, rp.source, rp.event_type, rp.external_order_id, rp.payload_json,
+  rp.received_at, rp.mirror_updated_at, rp.processing_status,
+  NULL::text AS resolved_gateway_raw,
+  NULL::timestamptz AS resolved_transaction_processed_at
+`;
+
+const MIRROR_ROW_JOIN_FALLBACK = `FROM mirror.raw_payloads rp`;
+
+let resolutionTableKnownMissing = false;
+
+function isMissingResolutionTableError(error: unknown): boolean {
+  const pgError = error as { code?: string; message?: string };
+  return (
+    pgError?.code === "42P01" &&
+    typeof pgError.message === "string" &&
+    pgError.message.includes("shopify_order_payment_resolution")
+  );
+}
+
+function buildMirrorQuery(columns: string, join: string, whereSql: string, tailSql: string): string {
+  return `
+    SELECT ${columns}
+    ${join}
+    WHERE ${whereSql}
+    ${tailSql}
+  `;
+}
+
+async function queryMirrorRows(
+  pool: Pool,
+  values: unknown[],
+  whereSql: string,
+  tailSql = ""
+): Promise<{ rows: MirrorRow[] }> {
+  if (!resolutionTableKnownMissing) {
+    try {
+      return await pool.query<MirrorRow>(
+        buildMirrorQuery(MIRROR_ROW_COLUMNS, MIRROR_ROW_JOIN, whereSql, tailSql),
+        values
+      );
+    } catch (error) {
+      if (!isMissingResolutionTableError(error)) {
+        throw error;
+      }
+      resolutionTableKnownMissing = true;
+    }
+  }
+
+  return pool.query<MirrorRow>(
+    buildMirrorQuery(MIRROR_ROW_COLUMNS_FALLBACK, MIRROR_ROW_JOIN_FALLBACK, whereSql, tailSql),
+    values
+  );
+}
+
 type MirrorPayload = Record<string, unknown>;
 
 type ReadModelFilters = Omit<ListTransactionsFilters, "page" | "limit" | "source" | "sources"> & {
@@ -405,14 +465,7 @@ async function listMirrorTransactions(filters: ReadModelFilters): Promise<Financ
     conditions.push(`rp.received_at >= $${values.length}`);
   }
 
-  const rows = await pool.query<MirrorRow>(
-    `
-    SELECT ${MIRROR_ROW_COLUMNS}
-    ${MIRROR_ROW_JOIN}
-    WHERE ${conditions.join(" AND ")}
-  `,
-    values
-  );
+  const rows = await queryMirrorRows(pool, values, conditions.join(" AND "));
 
   return filterTransactions(
     rows.rows
@@ -620,16 +673,15 @@ export async function listMarketplaceReadModelPaginated(
 
   while (true) {
     const queryValues = [...baseValues, chunkSize, scanOffset];
-    const rows = await pool.query<MirrorRow>(
+    const rows = await queryMirrorRows(
+      pool,
+      queryValues,
+      whereClauses.join(" AND "),
       `
-        SELECT ${MIRROR_ROW_COLUMNS}
-        ${MIRROR_ROW_JOIN}
-        WHERE ${whereClauses.join(" AND ")}
-        ORDER BY COALESCE(rp.mirror_updated_at, rp.received_at) DESC NULLS LAST, rp.id DESC
+        ORDER BY COALESCE(mirror_updated_at, received_at) DESC NULLS LAST, id DESC
         LIMIT $${baseValues.length + 1}
         OFFSET $${baseValues.length + 2}
-      `,
-      queryValues
+      `
     );
 
     if (rows.rows.length === 0) {
