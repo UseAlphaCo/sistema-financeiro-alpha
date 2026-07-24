@@ -1,11 +1,13 @@
 import { Pool } from "pg";
 
+import { getCoreConnectionString } from "@/shared/read-model-config";
+
 const globalStore = globalThis as typeof globalThis & {
   __workerJobPool?: Pool;
 };
 
 function getPool(): Pool | null {
-  const connectionString = process.env.CORE_DB_URL ?? process.env.DATABASE_URL;
+  const connectionString = getCoreConnectionString();
   if (!connectionString) return null;
 
   if (!globalStore.__workerJobPool) {

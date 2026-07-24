@@ -1,4 +1,5 @@
 import { resolveShopifyPaymentMethod } from "./payment-method";
+import type { DominantPaymentMethodResult } from "./shopify-order-transactions";
 import type { ShopifyOrderPayload } from "./types";
 
 function parseMoney(value: string | undefined | null): number | null {
@@ -42,8 +43,14 @@ function sumMoneyToCents(values: Array<string | undefined | null>): number | nul
   return Math.round(sum * 100);
 }
 
-export function resolveOccurredAt(order: ShopifyOrderPayload): Date {
-  const raw = order.processed_at ?? order.created_at;
+export function resolveOccurredAt(
+  order: ShopifyOrderPayload,
+  dominant?: DominantPaymentMethodResult | null
+): Date {
+  // Usa a data da transacao titular (pagamento) quando disponivel, em vez da
+  // data do pedido — evita divergencia de dia vs. o relatorio de pagamentos
+  // da Shopify quando o pagamento e confirmado num dia diferente do pedido.
+  const raw = dominant?.processedAt ?? order.processed_at ?? order.created_at;
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) {
     throw new Error("invalid occurredAt in Shopify order payload");
@@ -138,8 +145,11 @@ export function resolveShopifyDiscountCents(order: ShopifyOrderPayload): number 
   return 0;
 }
 
-export function mapShopifyOrderFinancials(order: ShopifyOrderPayload) {
-  const paymentMethod = resolveShopifyPaymentMethod(order);
+export function mapShopifyOrderFinancials(
+  order: ShopifyOrderPayload,
+  dominant?: DominantPaymentMethodResult | null
+) {
+  const paymentMethod = resolveShopifyPaymentMethod(order, dominant);
   const displayOrderNumber = normalizeShopifyDisplayOrderNumber(order);
 
   return {
@@ -153,7 +163,7 @@ export function mapShopifyOrderFinancials(order: ShopifyOrderPayload) {
     feeCents: parseMoneyToCents(order.current_total_additional_fees_set?.shop_money?.amount),
     amountCents: parseMoneyToCents(order.total_price),
     currency: order.currency ?? "BRL",
-    occurredAt: resolveOccurredAt(order),
+    occurredAt: resolveOccurredAt(order, dominant),
     description: `Pedido ${displayOrderNumber}`,
   };
 }

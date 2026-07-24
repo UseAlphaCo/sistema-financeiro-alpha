@@ -14,6 +14,7 @@ import {
 } from "@/features/transactions/payment-method-filter";
 import { getDailySnapshot } from "@/core/cache/dailySnapshot";
 import { listFinancialReadModelPaginated } from "@/features/transactions/read-model";
+import { isMirrorReadModelEnabled } from "@/shared/read-model-config";
 
 type DeleteInput = {
   id: string;
@@ -309,8 +310,7 @@ class PrismaTransactionsRepository implements TransactionsRepository {
   }
 
   async list(filters: ListTransactionsFilters): Promise<PaginatedTransactions> {
-    const useMirrorReadModel =
-      Boolean(process.env.CORE_DB_URL) && process.env.FINANCIAL_READ_MODEL_MIRROR !== "false";
+    const useMirrorReadModel = isMirrorReadModelEnabled();
 
     if (useMirrorReadModel) {
       try {

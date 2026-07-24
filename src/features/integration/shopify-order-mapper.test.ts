@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   mapShopifyOrderFinancials,
   normalizeShopifyDisplayOrderNumber,
+  resolveOccurredAt,
   resolveShopifyDiscountCents,
   resolveShopifyShippingCents,
 } from "@/features/integration/shopify-order-mapper";
@@ -120,6 +121,38 @@ describe("shopify-order-mapper", () => {
     const shippingCents = resolveShopifyShippingCents(order);
     // Derivado = total (10291) - subtotal (9000) + desconto (0) + imposto (0) + taxa (0) = 1291
     expect(shippingCents).toBe(1291);
+  });
+
+  it("usa o gateway titular resolvido por valor quando disponivel, ignorando a heuristica de payment_gateway_names", () => {
+    const order = buildOrder({
+      payment_gateway_names: ["Pix", "shopify_store_credit"],
+    });
+
+    const mapped = mapShopifyOrderFinancials(order, {
+      gatewayRaw: "shopify_store_credit",
+      dominantAmountCents: 14719,
+      totalAmountCents: 16479,
+      processedAt: "2026-05-27T02:00:00.000Z",
+    });
+
+    expect(mapped.paymentMethodRaw).toBe("Crédito em loja");
+    expect(mapped.paymentMethodNormalized).toBe("store_credit");
+  });
+
+  it("usa o processed_at da transacao titular como occurredAt quando disponivel", () => {
+    const order = buildOrder({
+      processed_at: "2026-05-26T19:36:00-03:00",
+      created_at: "2026-05-26T19:36:00-03:00",
+    });
+
+    const occurredAt = resolveOccurredAt(order, {
+      gatewayRaw: "Pix",
+      dominantAmountCents: 1000,
+      totalAmountCents: 1000,
+      processedAt: "2026-05-27T02:00:00.000Z",
+    });
+
+    expect(occurredAt.toISOString()).toBe("2026-05-27T02:00:00.000Z");
   });
 
   it("retorna 0 quando frete derivado resulta em valor implausível (negativo)", () => {

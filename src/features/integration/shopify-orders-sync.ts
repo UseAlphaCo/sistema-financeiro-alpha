@@ -17,12 +17,12 @@ type ShopifyOrdersResponse = {
   orders: ShopifyOrderPayload[];
 };
 
-function stripWrappingQuotes(value: string): string {
+export function stripWrappingQuotes(value: string): string {
   const trimmed = value.trim();
   return trimmed.replace(/^['"]+|['"]+$/g, "").replace(/\r?\n/g, "").trim();
 }
 
-function normalizeShopifyStoreDomain(storeUrl: string): string {
+export function normalizeShopifyStoreDomain(storeUrl: string): string {
   const input = stripWrappingQuotes(storeUrl);
   if (!input) return "";
 

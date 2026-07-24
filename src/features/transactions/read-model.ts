@@ -23,7 +23,22 @@ type MirrorRow = {
   received_at: Date | null;
   mirror_updated_at: Date | null;
   processing_status: string | null;
+  resolved_gateway_raw: string | null;
+  resolved_transaction_processed_at: Date | null;
 };
+
+const MIRROR_ROW_COLUMNS = `
+  rp.id, rp.source, rp.event_type, rp.external_order_id, rp.payload_json,
+  rp.received_at, rp.mirror_updated_at, rp.processing_status,
+  spr.dominant_gateway_raw AS resolved_gateway_raw,
+  spr.transaction_processed_at AS resolved_transaction_processed_at
+`;
+
+const MIRROR_ROW_JOIN = `
+  FROM mirror.raw_payloads rp
+  LEFT JOIN integration.shopify_order_payment_resolution spr
+    ON spr.external_order_id = rp.external_order_id AND rp.source = 'shopify'
+`;
 
 type MirrorPayload = Record<string, unknown>;
 
@@ -224,7 +239,13 @@ function mapMirrorRow(row: MirrorRow): FinancialTransaction | null {
   const occurredAt =
     row.source === "anymarket"
       ? resolveStringDate(payload.paymentDate, payload.createdAt, payload.lastUpdate, row.received_at?.toISOString())
-      : resolveStringDate(payload.processed_at, payload.created_at, payload.updated_at, row.received_at?.toISOString());
+      : resolveStringDate(
+          row.resolved_transaction_processed_at?.toISOString(),
+          payload.processed_at,
+          payload.created_at,
+          payload.updated_at,
+          row.received_at?.toISOString()
+        );
 
   if (!occurredAt) return null;
 
@@ -234,8 +255,14 @@ function mapMirrorRow(row: MirrorRow): FinancialTransaction | null {
       ? asString(payload.marketPlaceNumber)
       : asString(payload.name) ?? asString(payload.order_number) ?? asString(payload.number);
 
+  // Gateway titular resolvido por valor (maior R$ pago no pedido, via
+  // integration.shopify_order_payment_resolution) tem prioridade sobre a
+  // heuristica de payment_gateway_names — so cai no heuristico para pedidos
+  // que o job de resolucao ainda nao processou.
   const paymentMethodRaw =
-    row.source === "anymarket" ? resolveAnymarketPaymentMethod(payload) : resolveShopifyPaymentMethod(payload);
+    row.source === "anymarket"
+      ? resolveAnymarketPaymentMethod(payload)
+      : row.resolved_gateway_raw ?? resolveShopifyPaymentMethod(payload);
 
   const shippingCents =
     row.source === "anymarket"
@@ -370,18 +397,18 @@ async function listMirrorTransactions(filters: ReadModelFilters): Promise<Financ
   // continua sendo feito por occurredAt em filterTransactions(). Sem isso, esta
   // query varre 100% de mirror.raw_payloads a cada chamada (medido: 25-70s numa
   // tabela com ~1.4M linhas), o que e um risco real de timeout em produção.
-  const conditions: string[] = ["payload_json IS NOT NULL", "source IN ('shopify', 'anymarket')"];
+  const conditions: string[] = ["rp.payload_json IS NOT NULL", "rp.source IN ('shopify', 'anymarket')"];
   const values: unknown[] = [];
   const dateStart = parseFilterDate(filters.startDate);
   if (dateStart) {
     values.push(dateStart);
-    conditions.push(`received_at >= $${values.length}`);
+    conditions.push(`rp.received_at >= $${values.length}`);
   }
 
   const rows = await pool.query<MirrorRow>(
     `
-    SELECT id, source, event_type, external_order_id, payload_json, received_at, mirror_updated_at, processing_status
-    FROM mirror.raw_payloads
+    SELECT ${MIRROR_ROW_COLUMNS}
+    ${MIRROR_ROW_JOIN}
     WHERE ${conditions.join(" AND ")}
   `,
     values
@@ -558,8 +585,8 @@ export async function listMarketplaceReadModelPaginated(
   const dateStart = parseFilterDate(filters.startDate);
 
   const whereClauses: string[] = [
-    "payload_json IS NOT NULL",
-    "source IN ('shopify', 'anymarket')",
+    "rp.payload_json IS NOT NULL",
+    "rp.source IN ('shopify', 'anymarket')",
   ];
   const baseValues: unknown[] = [];
 
@@ -574,7 +601,7 @@ export async function listMarketplaceReadModelPaginated(
   // data e sempre `occurredAt` via filterTransactions().
   if (dateStart) {
     baseValues.push(dateStart);
-    whereClauses.push(`received_at >= $${baseValues.length}`);
+    whereClauses.push(`rp.received_at >= $${baseValues.length}`);
   }
 
   const readModelFilters: ReadModelFilters = {
@@ -595,10 +622,10 @@ export async function listMarketplaceReadModelPaginated(
     const queryValues = [...baseValues, chunkSize, scanOffset];
     const rows = await pool.query<MirrorRow>(
       `
-        SELECT id, source, event_type, external_order_id, payload_json, received_at, mirror_updated_at, processing_status
-        FROM mirror.raw_payloads
+        SELECT ${MIRROR_ROW_COLUMNS}
+        ${MIRROR_ROW_JOIN}
         WHERE ${whereClauses.join(" AND ")}
-        ORDER BY COALESCE(mirror_updated_at, received_at) DESC NULLS LAST, id DESC
+        ORDER BY COALESCE(rp.mirror_updated_at, rp.received_at) DESC NULLS LAST, rp.id DESC
         LIMIT $${baseValues.length + 1}
         OFFSET $${baseValues.length + 2}
       `,

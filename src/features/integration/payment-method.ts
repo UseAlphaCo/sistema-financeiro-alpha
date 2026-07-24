@@ -1,16 +1,16 @@
+import { classifyPaymentMethod } from "@/features/transactions/payment-method-filter";
 import type { PaymentMethod } from "@/features/transactions/types";
+import type { DominantPaymentMethodResult } from "@/features/integration/shopify-order-transactions";
 
 type PaymentMethodInfo = {
   raw: string | null;
   normalized: PaymentMethod;
 };
 
-const PIX_PATTERNS = [/\bpix\b/i];
-const BOLETO_PATTERNS = [/\bboleto\b/i, /bank\s*slip/i];
-const BANK_TRANSFER_PATTERNS = [/\bted\b/i, /\bdoc\b/i, /bank\s*transfer/i, /wire/i];
-const CREDIT_CARD_PATTERNS = [/credit/i, /visa/i, /master/i, /amex/i, /elo/i, /card/i];
-const WALLET_PATTERNS = [/paypal/i, /mercado\s*pay/i, /apple\s*pay/i, /google\s*pay/i, /wallet/i];
-const CASH_PATTERNS = [/\bcash\b/i, /dinheiro/i];
+// Mantido apenas para decidir a ORDEM de exibicao quando varios gateways sao
+// combinados numa unica string raw (ver dedupeAndJoin/mapGatewayName abaixo).
+// A CLASSIFICACAO raw -> PaymentMethod e feita por classifyPaymentMethod()
+// (fonte unica em src/features/transactions/payment-method-filter.ts).
 const STORE_CREDIT_PATTERNS = [
   /shopify_store_credit/i,
   /shopify\s*store\s*credit/i,
@@ -110,34 +110,38 @@ function joinNonEmpty(values: Array<string | null | undefined>, separator = " | 
 }
 
 export function normalizePaymentMethod(rawValue: string | null | undefined): PaymentMethod {
-  const raw = (rawValue ?? "").trim();
-  if (!raw) return "other";
-
-  if (STORE_CREDIT_PATTERNS.some((pattern) => pattern.test(raw))) return "store_credit";
-  if (PIX_PATTERNS.some((pattern) => pattern.test(raw))) return "pix";
-  if (BOLETO_PATTERNS.some((pattern) => pattern.test(raw))) return "boleto";
-  if (BANK_TRANSFER_PATTERNS.some((pattern) => pattern.test(raw))) return "bank_transfer";
-  if (CREDIT_CARD_PATTERNS.some((pattern) => pattern.test(raw))) return "credit_card";
-  if (WALLET_PATTERNS.some((pattern) => pattern.test(raw))) return "wallet";
-  if (CASH_PATTERNS.some((pattern) => pattern.test(raw))) return "cash";
-
-  return "other";
+  return classifyPaymentMethod(rawValue);
 }
 
-export function resolveShopifyPaymentMethod(order: {
-  gateway?: string | null;
-  payment_gateway_names?: string[] | null;
-  note?: string | null;
-  tags?: string | string[] | null;
-  note_attributes?: Array<{ name?: string; value?: string }> | null;
-  transactions?: Array<{
-    gateway?: string;
-    payment_details?: {
-      credit_card?: { brand?: string };
-      wallet?: { type?: string };
+export function resolveShopifyPaymentMethod(
+  order: {
+    gateway?: string | null;
+    payment_gateway_names?: string[] | null;
+    note?: string | null;
+    tags?: string | string[] | null;
+    note_attributes?: Array<{ name?: string; value?: string }> | null;
+    transactions?: Array<{
+      gateway?: string;
+      payment_details?: {
+        credit_card?: { brand?: string };
+        wallet?: { type?: string };
+      };
+    }> | null;
+  },
+  dominant?: DominantPaymentMethodResult | null
+): PaymentMethodInfo {
+  // Quando o gateway titular ja foi resolvido por valor (maior R$ pago no
+  // pedido, calculado a partir das transacoes reais da Shopify), essa e a
+  // unica fonte usada — ignora heuristicas por texto abaixo, que so servem de
+  // fallback para quando a resolucao por valor ainda nao esta disponivel.
+  if (dominant) {
+    const raw = mapGatewayName(dominant.gatewayRaw);
+    return {
+      raw,
+      normalized: normalizePaymentMethod(raw),
     };
-  }> | null;
-}): PaymentMethodInfo {
+  }
+
   const rawFromPaymentGateway = joinNonEmpty((order.payment_gateway_names ?? []).map(mapGatewayName));
 
   const firstTransaction = order.transactions?.[0];

@@ -1,5 +1,7 @@
 import { Pool } from "pg";
 
+import { getCoreConnectionString } from "@/shared/read-model-config";
+
 type ExportFormat = "csv" | "xlsx";
 type ExportJobStatus = "queued" | "running" | "completed" | "failed";
 
@@ -8,7 +10,7 @@ const globalStore = globalThis as typeof globalThis & {
 };
 
 function getPool(): Pool | null {
-  const connectionString = process.env.CORE_DB_URL ?? process.env.DATABASE_URL;
+  const connectionString = getCoreConnectionString();
   if (!connectionString) return null;
 
   if (!globalStore.__cashFlowExportPool) {

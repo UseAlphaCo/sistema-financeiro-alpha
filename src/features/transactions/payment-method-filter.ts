@@ -86,8 +86,12 @@ export function transactionMatchesPaymentMethod(
   tx: { paymentMethodNormalized?: string | null; paymentMethodRaw?: string | null },
   method: PaymentMethod
 ): boolean {
-  if (tx.paymentMethodNormalized === method) {
-    return true;
+  // So cai no fallback de substring no raw quando NAO ha normalizado valido —
+  // um raw que combina mais de uma forma (dado legado sem resolucao por
+  // valor) nao pode casar com dois filtros de forma de pagamento ao mesmo
+  // tempo, senao o mesmo pedido aparece duplicado ao filtrar por cada forma.
+  if (isValidPaymentMethod(tx.paymentMethodNormalized)) {
+    return tx.paymentMethodNormalized === method;
   }
 
   return paymentRawMatchesMethod(tx.paymentMethodRaw, method);

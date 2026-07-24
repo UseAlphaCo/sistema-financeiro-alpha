@@ -39,6 +39,31 @@ describe("payment-method-filter", () => {
     ).toBe(false);
   });
 
+  it("nao duplica pedido split entre dois filtros quando ja existe normalized valido", () => {
+    const tx = {
+      paymentMethodNormalized: "store_credit",
+      paymentMethodRaw: "Crédito em loja | Pix",
+    };
+
+    // Com gateway titular ja resolvido, o pedido so pode casar com o filtro
+    // do seu normalized — nao pode aparecer tambem ao filtrar por "pix" so
+    // porque o raw legado ainda menciona os dois nomes.
+    expect(transactionMatchesPaymentMethod(tx, "store_credit")).toBe(true);
+    expect(transactionMatchesPaymentMethod(tx, "pix")).toBe(false);
+  });
+
+  it("mantem fallback por raw para dado legado sem normalized valido", () => {
+    expect(
+      transactionMatchesPaymentMethod(
+        {
+          paymentMethodNormalized: null,
+          paymentMethodRaw: "Pix (3% de desconto)",
+        },
+        "pix"
+      )
+    ).toBe(true);
+  });
+
   describe("classifyPaymentMethod", () => {
     it("classifica appmax como credit_card", () => {
       expect(classifyPaymentMethod("Appmax - Cartão de Crédito")).toBe("credit_card");
