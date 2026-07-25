@@ -147,7 +147,13 @@ function isTransientConnectionError(error: unknown): boolean {
   if (typeof err.message === "string" && err.message.includes("Connection terminated unexpectedly")) {
     return true;
   }
-  return ["ECONNRESET", "ETIMEDOUT", "08006", "08003", "08001"].includes(err.code ?? "");
+  // 57014 (statement timeout) tambem entra aqui: numa conexao recem-aberta
+  // (ex.: primeira consulta apos o processo subir), a mesma query que roda
+  // em ~300ms isolada as vezes estoura o statement_timeout so por causa da
+  // lentidao de handshake da rede local ate o Supabase — nao pelo custo real
+  // da query (confirmado via EXPLAIN ANALYZE). Retry curto tende a pegar uma
+  // conexao ja estabelecida e resolver.
+  return ["ECONNRESET", "ETIMEDOUT", "08006", "08003", "08001", "57014"].includes(err.code ?? "");
 }
 
 async function withConnectionRetry<T>(run: () => Promise<T>, retries = 2): Promise<T> {
@@ -213,6 +219,23 @@ function getCorePool(): Pool | null {
       // rede/banco fica instavel (ja observado nesta investigacao).
       connectionTimeoutMillis: 10_000,
       statement_timeout: 20_000,
+      // Defesa contra pooler (Supavisor) derrubando conexoes ociosas do lado
+      // do servidor sem avisar o cliente — sem TCP keepalive, o driver so
+      // percebe na proxima tentativa de uso, e fica pendurado esperando
+      // resposta de um socket morto. idleTimeoutMillis reduz a chance de a
+      // conexao ficar ociosa tempo suficiente pro pooler mata-la primeiro.
+      // NOTA: a lentidao de minutos observada em teste local (26/07) teve
+      // causa DIFERENTE — confirmada via pg_stat_activity como wait_event
+      // ClientWrite, ou seja, o Postgres ja tinha o resultado pronto e
+      // estava so tentando transmitir o payload_json inteiro (JSON bruto do
+      // pedido, ~10-30KB por linha) pela rede local ate o Supabase (us-east-1).
+      // Nao e' bug de conexao/query; e' volume de dados x banda da rede local
+      // de dev. Reduzir os bytes trafegados (projetar so os campos usados do
+      // JSON via SQL em vez de "payload_json" inteiro) resolveria de raiz, mas
+      // e' uma reescrita maior, nao feita nesta rodada.
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 5_000,
+      idleTimeoutMillis: 15_000,
     });
   }
 
