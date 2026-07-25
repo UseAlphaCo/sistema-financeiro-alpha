@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { PAYMENT_METHOD_LABELS } from "@/features/transactions/format";
+
 type TransactionItem = {
   id: string;
   externalSource: string | null;
@@ -64,20 +66,6 @@ type LegacySyncResult = {
 };
 
 type ApiEnvelope<T> = { success: boolean; data: T | null; error: string | null };
-
-const PAYMENT_METHOD_LABELS: Record<
-  NonNullable<TransactionItem["paymentMethodNormalized"]>,
-  string
-> = {
-  credit_card: "Cartão de crédito",
-  pix: "Pix",
-  store_credit: "Crédito em loja",
-  boleto: "Boleto",
-  bank_transfer: "Transferência",
-  wallet: "Carteira digital",
-  cash: "Dinheiro",
-  other: "Outro",
-};
 
 function phaseLabel(phase: WorkerSyncStatus["summary"]["phase"]): string {
   switch (phase) {

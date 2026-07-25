@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-import type { FinancialTransaction, PaymentMethod } from "@/features/transactions/types";
+import { formatPaymentMethod, parseOrderNumber } from "@/features/transactions/format";
+import type { FinancialTransaction } from "@/features/transactions/types";
 
 type Pagination = {
   page: number;
@@ -38,17 +39,6 @@ type ColumnConfig = {
 
 const COLUMN_STORAGE_KEY = "fluxo-de-caixa-visible-columns";
 
-const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
-  credit_card: "Cartão de crédito",
-  pix: "Pix",
-  store_credit: "Crédito em loja",
-  boleto: "Boleto",
-  bank_transfer: "Transferência",
-  wallet: "Carteira digital",
-  cash: "Dinheiro",
-  other: "Outro",
-};
-
 const COLUMN_CONFIGS: ColumnConfig[] = [
   { id: "marketplace", label: "Marketplace", align: "left" },
   { id: "orderNumber", label: "Número do pedido", align: "left" },
@@ -80,24 +70,6 @@ function formatBRL(cents: number): string {
 
 function formatDate(iso: string): string {
   return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" }).format(new Date(iso));
-}
-
-function parseOrderNumber(item: FinancialTransaction): string {
-  if (item.orderNumber) {
-    const clean = item.orderNumber.replace(/^#/, "");
-    return `#${clean}`;
-  }
-
-  if (!item.description) return "—";
-
-  const match = item.description.match(/Pedido\s*#\s*([\w-]+)/i);
-  return match ? `#${match[1].replace(/^#/, "")}` : "—";
-}
-
-function formatPaymentMethod(item: FinancialTransaction): string {
-  if (item.paymentMethodRaw) return item.paymentMethodRaw;
-  if (item.paymentMethodNormalized) return PAYMENT_METHOD_LABELS[item.paymentMethodNormalized];
-  return "Não informado";
 }
 
 function buildFlowQuery(params: QueryState & { page: number }): string {

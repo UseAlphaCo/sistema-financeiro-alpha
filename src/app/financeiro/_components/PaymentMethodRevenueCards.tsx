@@ -1,16 +1,6 @@
 import type { CashFlowByPaymentMethod } from "@/features/cash-flow/types";
-import { PAYMENT_METHODS, type PaymentMethod } from "@/features/transactions/types";
-
-const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
-  credit_card: "Cartão de crédito",
-  pix: "Pix",
-  store_credit: "Crédito em loja",
-  boleto: "Boleto",
-  bank_transfer: "Transferência",
-  wallet: "Carteira digital",
-  cash: "Dinheiro",
-  other: "Outro",
-};
+import { PAYMENT_METHOD_LABELS } from "@/features/transactions/format";
+import { PAYMENT_METHODS } from "@/features/transactions/types";
 
 function formatBRL(cents: number): string {
   return new Intl.NumberFormat("pt-BR", {

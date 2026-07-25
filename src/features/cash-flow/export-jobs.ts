@@ -11,6 +11,7 @@ import {
   type PersistedCashFlowExportJob,
   updateCashFlowExportJob,
 } from "@/features/cash-flow/export-job-repository";
+import { formatPaymentMethod, parseOrderNumber } from "@/features/transactions/format";
 import { listMarketplaceReadModelPaginated } from "@/features/transactions/read-model";
 import {
   PAYMENT_METHODS,
@@ -72,17 +73,6 @@ type ExportRow = {
   discounts: string;
   fees: string;
   amount: string;
-};
-
-const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
-  credit_card: "Cartão de crédito",
-  pix: "Pix",
-  store_credit: "Crédito em loja",
-  boleto: "Boleto",
-  bank_transfer: "Transferência",
-  wallet: "Carteira digital",
-  cash: "Dinheiro",
-  other: "Outro",
 };
 
 const EXPORT_FILE_EXPIRES_DAYS = 1;
@@ -173,26 +163,6 @@ function mapPersistedJob(job: PersistedCashFlowExportJob): CashFlowExportJob {
     lastError: job.last_error,
     hasFile: Boolean(job.file_data),
   };
-}
-
-function parseOrderNumber(item: FinancialTransaction): string {
-  if (item.orderNumber) {
-    const clean = item.orderNumber.replace(/^#/, "");
-    return `#${clean}`;
-  }
-
-  if (!item.description) return "—";
-
-  const match = item.description.match(/Pedido\s*#\s*([\w-]+)/i);
-  return match ? `#${match[1].replace(/^#/, "")}` : "—";
-}
-
-function formatPaymentMethod(item: FinancialTransaction): string {
-  if (item.paymentMethodRaw) return item.paymentMethodRaw;
-  if (item.paymentMethodNormalized) {
-    return PAYMENT_METHOD_LABELS[item.paymentMethodNormalized];
-  }
-  return "Não informado";
 }
 
 function centsToDecimal(cents: number): string {

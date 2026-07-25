@@ -4,6 +4,7 @@ import { listMarketplaceReadModelPaginated } from "@/features/transactions/read-
 import ExportControls from "./ExportControls";
 import PaymentMethodRevenueCards from "../_components/PaymentMethodRevenueCards";
 import FluxoDeCaixaTable from "./FluxoDeCaixaTable";
+import { PAYMENT_METHOD_LABELS } from "@/features/transactions/format";
 import {
   PAYMENT_METHODS,
   type FinancialTransaction,
@@ -46,17 +47,6 @@ const PERIOD_OPTIONS: Array<{ label: string; value: PeriodPreset }> = [
   { label: "60 dias", value: "d60" },
   { label: "90 dias", value: "d90" },
 ];
-
-const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
-  credit_card: "Cartão de crédito",
-  pix: "Pix",
-  store_credit: "Crédito em loja",
-  boleto: "Boleto",
-  bank_transfer: "Transferência",
-  wallet: "Carteira digital",
-  cash: "Dinheiro",
-  other: "Outro",
-};
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 
