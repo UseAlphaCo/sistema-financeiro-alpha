@@ -412,22 +412,27 @@ export async function computeCashFlow(
       ? { source: filters.source }
       : { sources: ["integration", "webhook"] };
 
-    const [currentItems, previousItems] = await Promise.all([
-      listFinancialReadModelTransactions({
-        ...extraFilters,
-        ...mirrorSourceFilters,
-        marketplace,
-        startDate: start.toISOString(),
-        endDate: end.toISOString(),
-      }),
-      listFinancialReadModelTransactions({
-        ...extraFilters,
-        ...mirrorSourceFilters,
-        marketplace,
-        startDate: prevRange.start.toISOString(),
-        endDate: prevRange.end.toISOString(),
-      }),
-    ]);
+    // Sequencial de proposito, nao Promise.all: o pool do CORE_DB_URL tem so
+    // 2 conexoes (getCorePool em read-model.ts) e disparar as consultas do
+    // periodo atual e anterior ao mesmo tempo contra esse pool causava falhas
+    // intermitentes de conexao/estouro de statement_timeout neste ambiente
+    // (reproduzido de forma consistente; a mesma query isolada roda em
+    // ~300ms). Custo adicional aqui e' irrelevante (soma de duas consultas
+    // rapidas), a instabilidade nao vale a pena.
+    const currentItems = await listFinancialReadModelTransactions({
+      ...extraFilters,
+      ...mirrorSourceFilters,
+      marketplace,
+      startDate: start.toISOString(),
+      endDate: end.toISOString(),
+    });
+    const previousItems = await listFinancialReadModelTransactions({
+      ...extraFilters,
+      ...mirrorSourceFilters,
+      marketplace,
+      startDate: prevRange.start.toISOString(),
+      endDate: prevRange.end.toISOString(),
+    });
 
     const current = summarizeTransactions(currentItems);
     const previous = summarizeTransactions(previousItems);

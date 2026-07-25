@@ -1,6 +1,13 @@
 import { Pool } from "pg";
 
 import { getPrismaClient } from "@/core/db/prisma-client";
+import { resolveShopifyPaymentMethod as resolveShopifyPaymentMethodFull } from "@/features/integration/payment-method";
+import {
+  resolveShopifyDiscountCents,
+  resolveShopifyShippingCents,
+} from "@/features/integration/shopify-order-mapper";
+import type { DominantPaymentMethodResult } from "@/features/integration/shopify-order-transactions";
+import type { ShopifyOrderPayload } from "@/features/integration/types";
 import {
   classifyPaymentMethod,
   transactionMatchesPaymentMethod,
@@ -54,6 +61,11 @@ const MIRROR_ROW_COLUMNS_FALLBACK = `
 
 const MIRROR_ROW_JOIN_FALLBACK = `FROM mirror.raw_payloads rp`;
 
+// Folga tolerada entre a data do pedido (occurredAt) e o momento em que a
+// linha chegou no mirror (received_at) — cobre backfill/reprocessamento
+// atrasado sem obrigar a varrer a tabela inteira ate "agora" a cada consulta.
+const RECEIVED_AT_GRACE_MS = 21 * 24 * 60 * 60 * 1000;
+
 let resolutionTableKnownMissing = false;
 
 function isMissingResolutionTableError(error: unknown): boolean {
@@ -74,6 +86,83 @@ function buildMirrorQuery(columns: string, join: string, whereSql: string, tailS
   `;
 }
 
+function isMirrorRowPaid(row: MirrorRow): boolean {
+  const payload = asRecord(row.payload_json);
+  if (!payload) return false;
+  return isMirrorOrderPaid(row, payload);
+}
+
+// mirror.raw_payloads guarda 1 linha por evento recebido, nao 1 por pedido —
+// reentregas de webhook/backfill duplicam o mesmo external_order_id. Dedup em
+// JS (nao em SQL, ex.: DISTINCT ON numa CTE) de proposito: a versao em SQL
+// tornava a query pesada o bastante para falhar de forma intermitente
+// (Connection terminated unexpectedly / statement timeout) quando rodada
+// dentro de computeCashFlow, que dispara periodo atual e anterior em paralelo
+// no mesmo pool (max: 2).
+//
+// Prioriza "pago" sobre recencia pura: o worker de sync pode persistir o
+// evento orders/create (financial_status=pending) alguns milissegundos DEPOIS
+// de orders/paid, pela ordem de processamento da fila, nao pela ordem real
+// dos eventos na Shopify — pegar so a linha mais recente por timestamp
+// escondia pedidos genuinamente pagos atras do evento de criacao (bug real
+// observado: derrubava a contagem de pedidos pagos do dia em ~60%). Uma vez
+// pago, o pedido continua pago; entre linhas com o mesmo status de pagamento,
+// desempate pela mais recente.
+function dedupeMirrorRows(rows: MirrorRow[]): MirrorRow[] {
+  const latestByKey = new Map<string, MirrorRow>();
+
+  for (const row of rows) {
+    const key = `${row.external_order_id ?? row.id}::${row.source ?? ""}`;
+    const current = latestByKey.get(key);
+    if (!current) {
+      latestByKey.set(key, row);
+      continue;
+    }
+
+    const currentPaid = isMirrorRowPaid(current);
+    const rowPaid = isMirrorRowPaid(row);
+    if (rowPaid !== currentPaid) {
+      if (rowPaid) latestByKey.set(key, row);
+      continue;
+    }
+
+    const currentTime = current.mirror_updated_at ?? current.received_at;
+    const rowTime = row.mirror_updated_at ?? row.received_at;
+    if (rowTime && (!currentTime || rowTime > currentTime)) {
+      latestByKey.set(key, row);
+    }
+  }
+
+  return [...latestByKey.values()];
+}
+
+// Quedas de conexao (nao erros de SQL) observadas de forma intermitente
+// contra o CORE_DB_URL, mesmo com uma unica query sequencial — instabilidade
+// de rede/pooler fora do nosso controle. Um retry curto absorve o blip sem
+// propagar erro pro usuario final; se persistir apos as tentativas, o erro
+// original sobe normalmente.
+function isTransientConnectionError(error: unknown): boolean {
+  const err = error as { message?: string; code?: string } | null;
+  if (!err) return false;
+  if (typeof err.message === "string" && err.message.includes("Connection terminated unexpectedly")) {
+    return true;
+  }
+  return ["ECONNRESET", "ETIMEDOUT", "08006", "08003", "08001"].includes(err.code ?? "");
+}
+
+async function withConnectionRetry<T>(run: () => Promise<T>, retries = 2): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await run();
+    } catch (error) {
+      if (!isTransientConnectionError(error) || attempt >= retries) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+    }
+  }
+}
+
 async function queryMirrorRows(
   pool: Pool,
   values: unknown[],
@@ -82,10 +171,10 @@ async function queryMirrorRows(
 ): Promise<{ rows: MirrorRow[] }> {
   if (!resolutionTableKnownMissing) {
     try {
-      return await pool.query<MirrorRow>(
-        buildMirrorQuery(MIRROR_ROW_COLUMNS, MIRROR_ROW_JOIN, whereSql, tailSql),
-        values
+      const result = await withConnectionRetry(() =>
+        pool.query<MirrorRow>(buildMirrorQuery(MIRROR_ROW_COLUMNS, MIRROR_ROW_JOIN, whereSql, tailSql), values)
       );
+      return { rows: dedupeMirrorRows(result.rows) };
     } catch (error) {
       if (!isMissingResolutionTableError(error)) {
         throw error;
@@ -94,10 +183,10 @@ async function queryMirrorRows(
     }
   }
 
-  return pool.query<MirrorRow>(
-    buildMirrorQuery(MIRROR_ROW_COLUMNS_FALLBACK, MIRROR_ROW_JOIN_FALLBACK, whereSql, tailSql),
-    values
+  const result = await withConnectionRetry(() =>
+    pool.query<MirrorRow>(buildMirrorQuery(MIRROR_ROW_COLUMNS_FALLBACK, MIRROR_ROW_JOIN_FALLBACK, whereSql, tailSql), values)
   );
+  return { rows: dedupeMirrorRows(result.rows) };
 }
 
 type MirrorPayload = Record<string, unknown>;
@@ -120,6 +209,10 @@ function getCorePool(): Pool | null {
       connectionString,
       application_name: "sistema-financeiro-read-model",
       max: 2,
+      // Falhar rapido em vez de ficar pendurado indefinidamente quando a
+      // rede/banco fica instavel (ja observado nesta investigacao).
+      connectionTimeoutMillis: 10_000,
+      statement_timeout: 20_000,
     });
   }
 
@@ -267,26 +360,6 @@ function resolveAnymarketFeeCents(payload: MirrorPayload): number {
   }, 0);
 }
 
-function resolveShopifyPaymentMethod(payload: MirrorPayload): string | null {
-  const gateways = payload.payment_gateway_names;
-  if (Array.isArray(gateways)) {
-    const values = gateways.map(asString).filter((value): value is string => Boolean(value));
-    if (values.length > 0) return values.join(" + ");
-  }
-
-  const noteAttributes = payload.note_attributes;
-  if (!Array.isArray(noteAttributes)) return null;
-
-  for (const attribute of noteAttributes) {
-    const item = asRecord(attribute);
-    if (asString(item?.name) === "_payment_method") {
-      return asString(item?.value);
-    }
-  }
-
-  return null;
-}
-
 function mapMirrorRow(row: MirrorRow): FinancialTransaction | null {
   const payload = asRecord(row.payload_json);
   if (!payload || !row.source) return null;
@@ -317,22 +390,40 @@ function mapMirrorRow(row: MirrorRow): FinancialTransaction | null {
 
   // Gateway titular resolvido por valor (maior R$ pago no pedido, via
   // integration.shopify_order_payment_resolution) tem prioridade sobre a
-  // heuristica de payment_gateway_names — so cai no heuristico para pedidos
-  // que o job de resolucao ainda nao processou.
+  // heuristica de texto (payment_gateway_names/note/tags/transactions) — so
+  // cai no heuristico para pedidos que o job de resolucao ainda nao
+  // processou. resolveShopifyPaymentMethodFull e' a mesma logica usada pelo
+  // mapeador de sync (shopify-order-mapper.ts) — unificado aqui para nao
+  // manter uma versao reduzida em paralelo (so olhava payment_gateway_names/
+  // note_attributes, perdendo os fallbacks por nota/tag/transacao).
+  const shopifyDominant: DominantPaymentMethodResult | null = row.resolved_gateway_raw
+    ? {
+        gatewayRaw: row.resolved_gateway_raw,
+        dominantAmountCents: 0,
+        totalAmountCents: 0,
+        processedAt: row.resolved_transaction_processed_at?.toISOString() ?? null,
+      }
+    : null;
+
   const paymentMethodRaw =
     row.source === "anymarket"
       ? resolveAnymarketPaymentMethod(payload)
-      : row.resolved_gateway_raw ?? resolveShopifyPaymentMethod(payload);
+      : resolveShopifyPaymentMethodFull(payload as unknown as ShopifyOrderPayload, shopifyDominant).raw;
 
+  // Fallbacks de shipping_lines / calculo derivado por balanco (ver
+  // resolveShopifyShippingCents/resolveShopifyDiscountCents em
+  // shopify-order-mapper.ts) unificados aqui — o caminho antigo so olhava
+  // total_shipping_price_set/current_shipping_price_set (este ultimo nome de
+  // campo nem existe no payload real da Shopify, sempre retornava 0).
   const shippingCents =
     row.source === "anymarket"
       ? moneyToCents(payload.freight)
-      : resolveShopMoneyAmount(payload, "total_shipping_price_set") || resolveShopMoneyAmount(payload, "current_shipping_price_set");
+      : resolveShopifyShippingCents(payload as unknown as ShopifyOrderPayload);
 
   const discountCents =
     row.source === "anymarket"
       ? moneyToCents(payload.discount)
-      : resolveShopMoneyAmount(payload, "current_total_discounts_set") || moneyToCents(payload.total_discounts) || moneyToCents(payload.current_total_discounts);
+      : resolveShopifyDiscountCents(payload as unknown as ShopifyOrderPayload);
 
   const feeCents =
     row.source === "anymarket"
@@ -463,6 +554,18 @@ async function listMirrorTransactions(filters: ReadModelFilters): Promise<Financ
   if (dateStart) {
     values.push(dateStart);
     conditions.push(`rp.received_at >= $${values.length}`);
+  }
+
+  // Limite superior com folga (nao o fim exato do periodo, que continua sendo
+  // decidido por occurredAt em filterTransactions) — sem isso, consultar um
+  // periodo antigo varre tudo ate o presente numa tabela de ~1.4M linhas em
+  // crescimento continuo, o que ja causou timeout/instabilidade de conexao
+  // rodando em paralelo com o periodo anterior via Promise.all.
+  const dateEnd = parseFilterDate(filters.endDate);
+  if (dateEnd) {
+    const boundedEnd = new Date(Math.min(dateEnd.getTime() + RECEIVED_AT_GRACE_MS, Date.now()));
+    values.push(boundedEnd);
+    conditions.push(`rp.received_at <= $${values.length}`);
   }
 
   const rows = await queryMirrorRows(pool, values, conditions.join(" AND "));
@@ -648,13 +751,20 @@ export async function listMarketplaceReadModelPaginated(
   // que `occurredAt` (data real do pedido, usada por filterTransactions abaixo).
   // Registros com backfill/sync atrasado podem ter occurredAt dentro do periodo
   // filtrado mas received_at bem mais recente (sincronizados depois do fim do
-  // periodo). Por isso so aplicamos o limite inferior (received_at nao pode ser
-  // anterior ao inicio do periodo, pois a linha nunca chega antes do pedido
-  // existir) e deixamos o limite superior de fora — quem decide o corte exato por
-  // data e sempre `occurredAt` via filterTransactions().
+  // periodo). Por isso o limite inferior e' exato (received_at nao pode ser
+  // anterior ao inicio do periodo) e o superior usa uma folga generosa
+  // (RECEIVED_AT_GRACE_MS) em vez de ficar em aberto ate "agora" — quem decide
+  // o corte exato por data continua sendo `occurredAt` via filterTransactions().
   if (dateStart) {
     baseValues.push(dateStart);
     whereClauses.push(`rp.received_at >= $${baseValues.length}`);
+  }
+
+  const dateEnd = parseFilterDate(filters.endDate);
+  if (dateEnd) {
+    const boundedEnd = new Date(Math.min(dateEnd.getTime() + RECEIVED_AT_GRACE_MS, Date.now()));
+    baseValues.push(boundedEnd);
+    whereClauses.push(`rp.received_at <= $${baseValues.length}`);
   }
 
   const readModelFilters: ReadModelFilters = {
