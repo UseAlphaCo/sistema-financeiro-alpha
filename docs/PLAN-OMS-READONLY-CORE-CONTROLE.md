@@ -5,6 +5,10 @@ Atualizado: 2026-07-13
 Status: Em execucao (correcao focada aplicada no codigo; governanca pendente)
 Owner: Integracao/Financeiro
 
+> **Precedencia:** este e' o plano de sync vigente. Sucede
+> [PLAN-EXECUCAO-UNIFICADO-ALP-CORE-FIN.md](./PLAN-EXECUCAO-UNIFICADO-ALP-CORE-FIN.md)
+> (2026-06-02), que fica mantido so como registro historico.
+
 ## Progresso (2026-07-13)
 Aplicada a correcao focada que elimina a escrita tecnica em OMS no fluxo padrao:
 - [x] Migration CORE `integration.sync_queue` (fila EFEMERA) e `integration.failed_jobs` com retencao

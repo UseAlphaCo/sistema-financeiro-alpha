@@ -3,6 +3,15 @@
 Data: 2026-06-02
 Status: Planejado
 
+> **Nota de precedencia (2026-07-26):** este documento se autodeclara "fonte
+> unica" do ciclo, mas foi sucedido por
+> [PLAN-OMS-READONLY-CORE-CONTROLE.md](./PLAN-OMS-READONLY-CORE-CONTROLE.md)
+> (2026-07-01, atualizado 2026-07-13), que reflete a arquitetura de sync
+> realmente em producao (OMS read-only, controle de fila/lock/DLQ no CORE via
+> `integration.sync_queue`). Em caso de conflito entre os dois, o plano
+> OMS-READONLY-CORE-CONTROLE prevalece. Este documento fica mantido como
+> registro historico da decisao mirror-first original.
+
 ## Objetivo
 Executar o cutover operacional do Sistema Financeiro para ALP-CORE-FIN com estrategia mirror-first, garantindo que exibicao e consolidacao financeira usem exclusivamente mirror.raw_payloads, sem conexao direta com Shopify no app.
 

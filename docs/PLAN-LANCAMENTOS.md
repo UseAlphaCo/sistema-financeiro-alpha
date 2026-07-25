@@ -108,7 +108,7 @@ Adicionar suporte a categorias para Entradas e Saídas nos lançamentos financei
 - src/app/financeiro/lancamentos/LancamentosContent.tsx — UI de lançamentos, categorias e gráficos
 - vitest.config.ts — alias `@` para testes
 - src/shared/api/envelope.ts, src/types/api.ts — contratos
-- docs/feature-imports.md — documentação
+- docs/feature-lancamentos-categorias.md — documentação
 
 ---
 

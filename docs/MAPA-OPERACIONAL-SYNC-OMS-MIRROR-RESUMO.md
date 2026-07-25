@@ -2,6 +2,14 @@
 
 Data de referencia: 2026-07-01
 
+> **⚠ Desatualizado (2026-07-26):** este resumo descreve escrita tecnica no
+> OMS (schema `integration`: fila/retry/DLQ) como estado atual e como ajuste
+> pendente para o futuro. Isso ja foi corrigido — ver
+> [PLAN-OMS-READONLY-CORE-CONTROLE.md](./PLAN-OMS-READONLY-CORE-CONTROLE.md):
+> `runSyncOnce` opera CORE-only, OMS e' hoje apenas leitura de `raw_payloads`.
+> Use aquele plano como fonte de verdade da arquitetura de sync; este resumo
+> fica mantido so como registro historico do desenho anterior.
+
 ## Objetivo
 
 Garantir sincronizacao confiavel de dados do OMS para o mirror no CORE, com rastreabilidade operacional e criterio claro para retomada da prova final de reconciliacao.

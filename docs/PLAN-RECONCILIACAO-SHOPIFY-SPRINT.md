@@ -52,3 +52,18 @@ Resultado técnico pretendido (não implementado):
 
 - Nesta etapa não houve migração de schema para metadata adicional em ReconciliationSnapshot.
 - Persistência detalhada de metadados de reconciliação permanece como próximo incremento.
+
+## Relação com o job de resolução de gateway titular (2026-07-26)
+
+O problema central desta sprint — decidir o gateway "certo" de um pedido
+Shopify com pagamento dividido — acabou resolvido por um caminho diferente
+do planejado aqui: em vez de expandir `reconciliation/service.ts`, foi criada
+uma tabela dedicada (`integration.shopify_order_payment_resolution`) e um job
+próprio (`src/features/integration/shopify-payment-resolution-job.ts`) que
+calcula o gateway titular por maior valor pago (ver
+[docs/shopify/shopify-payments-by-gateway.md](./shopify/shopify-payments-by-gateway.md)
+para a regra de negócio) e alimenta `read-model.ts` via LEFT JOIN. Resolve o
+caso de uso original desta sprint (gateway correto por pedido no Fluxo de
+Caixa), mas não implementa `gatewaySummary`/`window` em
+`ReconciliationResult` — a tela de Reconciliação em si segue sem ler dados do
+mirror (ver Fase 4 do plano de auditoria do projeto).
