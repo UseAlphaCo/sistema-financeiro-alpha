@@ -28,20 +28,35 @@ function parseAmountToCents(value: unknown): number {
   return Math.round(parsed * 100);
 }
 
+const SHOPIFY_FETCH_TIMEOUT_MS = 15_000;
+const SHOPIFY_FETCH_RETRIES = 2;
+
 export async function fetchShopifyOrderTransactions(
   storeDomain: string,
   accessToken: string,
   orderId: string | number
 ): Promise<ShopifyOrderTransaction[]> {
-  const response = await fetch(
-    `https://${storeDomain}/admin/api/2024-10/orders/${encodeURIComponent(String(orderId))}/transactions.json`,
-    {
-      headers: {
-        "X-Shopify-Access-Token": accessToken,
-        "Content-Type": "application/json",
-      },
+  let response: Response;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      response = await fetch(
+        `https://${storeDomain}/admin/api/2024-10/orders/${encodeURIComponent(String(orderId))}/transactions.json`,
+        {
+          headers: {
+            "X-Shopify-Access-Token": accessToken,
+            "Content-Type": "application/json",
+          },
+          signal: AbortSignal.timeout(SHOPIFY_FETCH_TIMEOUT_MS),
+        }
+      );
+      break;
+    } catch (error) {
+      // Timeout/erro de rede transitorio — nunca ficar tentando pra sempre
+      // (limite fixo de tentativas), mas absorve blips pontuais da rede local.
+      if (attempt >= SHOPIFY_FETCH_RETRIES) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
     }
-  );
+  }
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");

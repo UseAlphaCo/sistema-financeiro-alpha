@@ -348,22 +348,34 @@ async function shopifyGraphql(
   storeDomain: string,
   accessToken: string,
   query: string,
-  variables: Record<string, unknown>
+  variables: Record<string, unknown>,
+  retries = 2
 ): Promise<TenderTransactionsResponse> {
-  const response = await fetch(`https://${storeDomain}/admin/api/2024-10/graphql.json`, {
-    method: "POST",
-    headers: {
-      "X-Shopify-Access-Token": accessToken,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-  const json = await response.json();
-  if (!response.ok || json.errors) {
-    throw new Error(`Shopify GraphQL falhou: ${response.status} ${JSON.stringify(json.errors ?? json)}`);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await fetch(`https://${storeDomain}/admin/api/2024-10/graphql.json`, {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": accessToken,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ query, variables }),
+        // Timeout generoso (rede local as vezes lenta ate a Shopify, ja
+        // observado) — mas sempre limitado, nunca em aberto (uma execucao
+        // anterior deste script travou ~3h com fetch sem timeout nenhum).
+        signal: AbortSignal.timeout(30_000),
+      });
+      const json = await response.json();
+      if (!response.ok || json.errors) {
+        throw new Error(`Shopify GraphQL falhou: ${response.status} ${JSON.stringify(json.errors ?? json)}`);
+      }
+      return json.data;
+    } catch (error) {
+      if (attempt >= retries) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
   }
-  return json.data;
 }
 
 function formatMoney(cents: number): string {

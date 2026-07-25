@@ -31,7 +31,8 @@ const DEFAULT_CONCURRENCY = 5;
  * chamado repetidamente sem duplicar trabalho.
  */
 export async function runShopifyPaymentResolutionJob(
-  batchSize = DEFAULT_BATCH_SIZE
+  batchSize = DEFAULT_BATCH_SIZE,
+  sinceReceivedAt?: Date
 ): Promise<ShopifyPaymentResolutionJobResult> {
   await ensureShopifyPaymentResolutionTable();
 
@@ -42,7 +43,7 @@ export async function runShopifyPaymentResolutionJob(
     throw new Error("SHOPIFY_STORE_URL/SHOPIFY_ACCESS_TOKEN nao configurados para o job de resolucao de gateway.");
   }
 
-  const candidates = await findUnresolvedShopifyOrders(batchSize);
+  const candidates = await findUnresolvedShopifyOrders(batchSize, sinceReceivedAt);
 
   let resolved = 0;
   let skipped = 0;

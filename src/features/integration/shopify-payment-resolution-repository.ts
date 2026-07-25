@@ -11,7 +11,18 @@ function getPool(): Pool | null {
   if (!connectionString) return null;
 
   if (!globalStore.__shopifyPaymentResolutionPool) {
-    globalStore.__shopifyPaymentResolutionPool = new Pool({ connectionString, max: 2 });
+    globalStore.__shopifyPaymentResolutionPool = new Pool({
+      connectionString,
+      max: 2,
+      connectionTimeoutMillis: 10_000,
+      statement_timeout: 20_000,
+      // Ver comentario equivalente em read-model.ts::getCorePool — sem isso,
+      // uma conexao ociosa derrubada pelo pooler do Supabase so e' detectada
+      // minutos depois, na proxima tentativa de uso.
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 5_000,
+      idleTimeoutMillis: 15_000,
+    });
   }
 
   return globalStore.__shopifyPaymentResolutionPool;
@@ -63,10 +74,27 @@ export async function ensureShopifyPaymentResolutionTable(): Promise<void> {
  * Pedidos Shopify pagos no mirror que ainda nao tem resolucao de gateway
  * titular, ou cuja resolucao ficou desatualizada (payload do mirror mudou
  * depois da ultima resolucao — ex.: reprocessamento/backfill).
+ *
+ * Prioriza pedidos mais recentes primeiro (ORDER BY DESC): o backlog
+ * historico pode ter dezenas de milhares de pedidos, e o que importa para o
+ * Fluxo de Caixa do dia e' resolver rapido os pedidos recentes, nao esvaziar
+ * o backlog inteiro numa unica rodada. `sinceReceivedAt` permite escopar a
+ * uma janela especifica (ex.: so pedidos dos ultimos N dias) para rodadas
+ * curtas e previsiveis.
  */
-export async function findUnresolvedShopifyOrders(limit: number): Promise<UnresolvedShopifyOrder[]> {
+export async function findUnresolvedShopifyOrders(
+  limit: number,
+  sinceReceivedAt?: Date
+): Promise<UnresolvedShopifyOrder[]> {
   const pool = getPool();
   if (!pool) return [];
+
+  const values: unknown[] = [limit];
+  let sinceClause = "";
+  if (sinceReceivedAt) {
+    values.push(sinceReceivedAt);
+    sinceClause = `AND rp.received_at >= $${values.length}`;
+  }
 
   const result = await pool.query<UnresolvedShopifyOrder>(
     `
@@ -81,10 +109,11 @@ export async function findUnresolvedShopifyOrders(limit: number): Promise<Unreso
           spr.external_order_id IS NULL
           OR rp.mirror_updated_at > spr.resolved_at
         )
-      ORDER BY rp.external_order_id
+        ${sinceClause}
+      ORDER BY rp.external_order_id DESC
       LIMIT $1
     `,
-    [limit]
+    values
   );
 
   return result.rows;
