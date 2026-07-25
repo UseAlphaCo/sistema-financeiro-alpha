@@ -144,19 +144,3 @@ model WebhookEvent {
   @@index([processedAt])
 }
 
-model MarketplaceFee {
-  id              String   @id @default(cuid())
-  marketplace     String
-  feeType         String
-  ratePercent     Decimal  @db.Decimal(8, 4)
-  fixedCents      Int      @default(0)
-  currency        String   @default("BRL")
-  effectiveFrom   DateTime
-  effectiveUntil  DateTime?
-  createdBy       String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  @@index([marketplace, feeType])
-  @@index([effectiveFrom])
-}

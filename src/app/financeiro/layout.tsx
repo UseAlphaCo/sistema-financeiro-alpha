@@ -27,11 +27,6 @@ export default async function FinanceiroLayout({
           <a href="/financeiro/importacoes" className="hover:text-gray-900">
             Importações
           </a>
-          {user?.role === "admin" && (
-            <a href="/financeiro/reconciliacao" className="hover:text-gray-900">
-              Reconciliação
-            </a>
-          )}
           <a href="/financeiro/integracoes" className="hover:text-gray-900">
             Integrações
           </a>
