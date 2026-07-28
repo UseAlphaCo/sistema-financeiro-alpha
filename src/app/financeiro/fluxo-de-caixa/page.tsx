@@ -1,3 +1,4 @@
+import { logError } from "@/core/observability/logger";
 import { computeCashFlow } from "@/features/cash-flow/service";
 import { formatOriginLabel } from "@/features/cash-flow/source-labels";
 import { listMarketplaceReadModelPaginated } from "@/features/transactions/read-model";
@@ -145,6 +146,7 @@ export default async function FluxoDeCaixaPage({
 
   let summary;
   let marketplaceEntries: FinancialTransaction[] = [];
+  let listFailed = false;
   let pagination = {
     page: 1,
     limit,
@@ -182,8 +184,18 @@ export default async function FluxoDeCaixaPage({
 
     marketplaceEntries = paginated.items;
     pagination = paginated.pagination;
-  } catch {
-    // Mantém o resumo visível mesmo se a listagem detalhada falhar no cutover.
+  } catch (error) {
+    // Mantém o resumo visível mesmo se a listagem detalhada falhar, mas
+    // sinaliza o erro (log + UI) em vez de aparentar "sem resultados".
+    listFailed = true;
+    logError("fluxo_caixa_marketplace_entries_failed", {
+      marketplace,
+      paymentMethod,
+      startDate: summaryResult.period.startDate,
+      endDate: summaryResult.period.endDate,
+      page,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   const {
@@ -353,7 +365,14 @@ export default async function FluxoDeCaixaPage({
         previous={previousPeriod?.byPaymentMethod ?? []}
       />
 
-      <FluxoDeCaixaTable items={marketplaceEntries} pagination={pagination} query={baseParams} />
+      {listFailed ? (
+        <div className="mt-8 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Não foi possível carregar as entradas de marketplaces no momento. Os totais acima continuam
+          válidos; tente novamente em instantes.
+        </div>
+      ) : (
+        <FluxoDeCaixaTable items={marketplaceEntries} pagination={pagination} query={baseParams} />
+      )}
 
       {/* Breakdown por origem */}
       <div className="mt-8">

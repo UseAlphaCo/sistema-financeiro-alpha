@@ -746,50 +746,6 @@ function parseFilterDate(value: string | undefined): Date | null {
 export async function listMarketplaceReadModelPaginated(
   filters: MarketplaceReadModelFilters
 ): Promise<PaginatedTransactions> {
-  const pool = getCorePool();
-  if (!pool) {
-    return {
-      items: [],
-      pagination: {
-        page: filters.page,
-        limit: filters.limit,
-        total: 0,
-        hasNext: false,
-      },
-    };
-  }
-
-  const targetSkip = (filters.page - 1) * filters.limit;
-  const chunkSize = Math.max(filters.limit * 3, 150);
-  const dateStart = parseFilterDate(filters.startDate);
-
-  const whereClauses: string[] = [
-    "rp.payload_json IS NOT NULL",
-    "rp.source IN ('shopify', 'anymarket')",
-  ];
-  const baseValues: unknown[] = [];
-
-  // Pre-filtro de performance por received_at (quando a linha chegou no mirror do
-  // CORE) — NAO usar como filtro autoritativo de periodo, pois nao e o mesmo campo
-  // que `occurredAt` (data real do pedido, usada por filterTransactions abaixo).
-  // Registros com backfill/sync atrasado podem ter occurredAt dentro do periodo
-  // filtrado mas received_at bem mais recente (sincronizados depois do fim do
-  // periodo). Por isso o limite inferior e' exato (received_at nao pode ser
-  // anterior ao inicio do periodo) e o superior usa uma folga generosa
-  // (RECEIVED_AT_GRACE_MS) em vez de ficar em aberto ate "agora" — quem decide
-  // o corte exato por data continua sendo `occurredAt` via filterTransactions().
-  if (dateStart) {
-    baseValues.push(dateStart);
-    whereClauses.push(`rp.received_at >= $${baseValues.length}`);
-  }
-
-  const dateEnd = parseFilterDate(filters.endDate);
-  if (dateEnd) {
-    const boundedEnd = new Date(Math.min(dateEnd.getTime() + RECEIVED_AT_GRACE_MS, Date.now()));
-    baseValues.push(boundedEnd);
-    whereClauses.push(`rp.received_at <= $${baseValues.length}`);
-  }
-
   const readModelFilters: ReadModelFilters = {
     type: "income",
     sources: ["integration", "webhook"],
@@ -799,64 +755,25 @@ export async function listMarketplaceReadModelPaginated(
     endDate: filters.endDate,
   };
 
-  let scanOffset = 0;
-  let skipped = 0;
-  const pageItems: FinancialTransaction[] = [];
-  let hasNext = false;
+  // Mesma fonte usada por "POR ORIGEM" (via listFinancialReadModelTransactions),
+  // ja validada: busca completa do periodo (pre-filtrada por received_at) +
+  // dedup global. listMirrorTransactions nao define ORDER BY (usada hoje so
+  // para agregacao, onde ordem nao importa), entao a ordenacao pro cursor de
+  // pagina precisa ser aplicada aqui.
+  const items = (await listMirrorTransactions(readModelFilters)).sort((left, right) =>
+    right.occurredAt.localeCompare(left.occurredAt)
+  );
 
-  while (true) {
-    const queryValues = [...baseValues, chunkSize, scanOffset];
-    const rows = await queryMirrorRows(
-      pool,
-      queryValues,
-      whereClauses.join(" AND "),
-      `
-        ORDER BY COALESCE(mirror_updated_at, received_at) DESC NULLS LAST, id DESC
-        LIMIT $${baseValues.length + 1}
-        OFFSET $${baseValues.length + 2}
-      `
-    );
-
-    if (rows.rows.length === 0) {
-      break;
-    }
-
-    const filteredRows = filterTransactions(
-      rows.rows
-        .map(mapMirrorRow)
-        .filter((item): item is FinancialTransaction => Boolean(item)),
-      readModelFilters
-    );
-
-    for (const item of filteredRows) {
-      if (skipped < targetSkip) {
-        skipped += 1;
-        continue;
-      }
-
-      if (pageItems.length < filters.limit) {
-        pageItems.push(item);
-        continue;
-      }
-
-      hasNext = true;
-      break;
-    }
-
-    if (hasNext || rows.rows.length < chunkSize) {
-      break;
-    }
-
-    scanOffset += chunkSize;
-  }
+  const offset = (filters.page - 1) * filters.limit;
+  const pageItems = items.slice(offset, offset + filters.limit);
 
   return {
     items: pageItems,
     pagination: {
       page: filters.page,
       limit: filters.limit,
-      total: targetSkip + pageItems.length + (hasNext ? 1 : 0),
-      hasNext,
+      total: items.length,
+      hasNext: offset + filters.limit < items.length,
     },
   };
 }
