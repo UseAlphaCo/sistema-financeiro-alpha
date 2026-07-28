@@ -1,9 +1,19 @@
+import { unstable_cache } from "next/cache";
 import { computeCashFlow } from "@/features/cash-flow/service";
 import PaymentMethodRevenueCards from "../_components/PaymentMethodRevenueCards";
 import MarketplaceRevenueCards from "../_components/MarketplaceRevenueCards";
 import { PERIOD_PRESETS, type PeriodPreset } from "@/lib/date-utils";
 
 export const dynamic = "force-dynamic";
+
+// computeCashFlow bate no mirror.raw_payloads (payload_json inteiro por
+// pedido) e pode demorar de segundos a minutos dependendo da rede ate o
+// Postgres (ver comentario em getCorePool, read-model.ts). Como o preset
+// padrao pos-login e' sempre o mesmo ("yesterday"), cachear por 90s cobre
+// visitas repetidas sem pagar esse custo a cada carregamento.
+const getCachedCashFlow = unstable_cache(computeCashFlow, ["dashboard-cash-flow"], {
+  revalidate: 90,
+});
 
 function formatBRL(cents: number): string {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(cents / 100);
@@ -61,7 +71,7 @@ export default async function DashboardPage({ searchParams }: Props) {
 
   let summary;
   try {
-    summary = await computeCashFlow({ preset, days });
+    summary = await getCachedCashFlow({ preset, days });
   } catch {
     return (
       <div>
