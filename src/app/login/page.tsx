@@ -39,8 +39,8 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-full flex-1 items-center justify-center bg-zinc-100 px-6 py-16">
       <div className="w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-8 shadow-sm">
-        <h1 className="text-xl font-semibold text-zinc-900">Sistema Financeiro</h1>
-        <p className="mt-1 text-sm text-zinc-500">Acesse com seu e-mail e senha</p>
+        <h1 className="text-xl font-semibold text-zinc-900 text-center">Acessar Phi</h1>
+        <p className="mt-1 text-sm text-zinc-500 text-center">Acesse com seu e-mail e senha</p>
 
         <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">
           <div>
