@@ -1,5 +1,16 @@
 # Plano de Reconciliação Shopify (Sprint Curto)
 
+> **STATUS (2026-07-27): SUPERADO/FECHADO.** O objetivo de negócio desta
+> sprint (gateway titular correto por pedido Shopify com pagamento dividido)
+> foi resolvido por outro caminho — ver "Relação com o job de resolução de
+> gateway titular" no final deste documento. Os itens do checklist abaixo
+> nunca foram implementados e não serão: a própria feature de Reconciliação
+> (`src/features/reconciliation/*`, `/financeiro/reconciliacao`) foi
+> **removida do código no commit `8195b57`** (decisão do time — não usada,
+> nunca lia o mirror). A validação de valores/transações Sistema x Shopify
+> segue hoje por `npm run verify:shopify` e pela rota automatizada
+> `/api/internal/cron/shopify-verify`, não pela tela de Reconciliação.
+
 Data de início: 2026-06-30
 Escopo: ajustar reconciliação para visão transacional por gateway com metadados de janela e testes mínimos.
 
@@ -20,13 +31,13 @@ Aproximar a saída de reconciliação da semântica do relatório Shopify de pag
 > existir no disco. Este trabalho está fora de escopo da sprint atual por
 > decisão do time.
 
-- [ ] Expandir contrato de resultado com resumo por gateway
-- [ ] Incluir metadados de janela na saída (timezone, fonte, start/end UTC)
-- [ ] Implementar agregação por gateway no serviço de reconciliação
-- [ ] Adicionar testes unitários para cálculo de gross/refund/net por gateway
-- [ ] Adicionar teste unitário para retorno de janela e resumo no runReconciliation
-- [ ] Validar comparativo com baseline operacional do script Shopify em data real
-- [ ] Decidir evolução para fonte transacional dedicada (persistência de transações Shopify)
+- [x] ~~Expandir contrato de resultado com resumo por gateway~~ — superado (feature de Reconciliação removida em `8195b57`)
+- [x] ~~Incluir metadados de janela na saída (timezone, fonte, start/end UTC)~~ — superado (janela/timezone hoje vivem em `shopify-value-verification.ts`)
+- [x] ~~Implementar agregação por gateway no serviço de reconciliação~~ — superado (resolvido via `shopify-payment-resolution-job.ts` + tabela dedicada)
+- [x] ~~Adicionar testes unitários para cálculo de gross/refund/net por gateway~~ — superado, sem código correspondente para testar
+- [x] ~~Adicionar teste unitário para retorno de janela e resumo no runReconciliation~~ — superado, `runReconciliationAction` não existe mais
+- [x] Validar comparativo com baseline operacional do script Shopify em data real — feito via `npm run verify:shopify` (ver seção final)
+- [x] Decidir evolução para fonte transacional dedicada (persistência de transações Shopify) — decidido: tabela `integration.shopify_order_payment_resolution`
 
 ## Implementação aplicada
 
@@ -64,6 +75,21 @@ calcula o gateway titular por maior valor pago (ver
 [docs/shopify/shopify-payments-by-gateway.md](./shopify/shopify-payments-by-gateway.md)
 para a regra de negócio) e alimenta `read-model.ts` via LEFT JOIN. Resolve o
 caso de uso original desta sprint (gateway correto por pedido no Fluxo de
-Caixa), mas não implementa `gatewaySummary`/`window` em
-`ReconciliationResult` — a tela de Reconciliação em si segue sem ler dados do
-mirror (ver Fase 4 do plano de auditoria do projeto).
+Caixa).
+
+**Atualização (2026-07-27):** a tela de Reconciliação foi removida do código
+(commit `8195b57`), então o ponto acima sobre `gatewaySummary`/`window` em
+`ReconciliationResult` deixou de ser relevante — não há mais tela de
+Reconciliação para expandir. A referência original a "Fase 4 do plano de
+auditoria do projeto" corresponde à seção "Governança (Fase 4/6/7)" de
+[docs/PLAN-OMS-READONLY-CORE-CONTROLE.md](./PLAN-OMS-READONLY-CORE-CONTROLE.md)
+(migração de histórico legado para auditoria, permissão SELECT-only no OMS,
+limpeza de tabelas legadas) — pendências de governança de dados, não de
+reconciliação em si.
+
+A validação de valores/número de transações Sistema x Shopify segue hoje por
+`npm run verify:shopify` (script CLI) e pela rota automatizada
+`/api/internal/cron/shopify-verify` (checagem horária, sempre D-1, com
+auto-alinhamento via `runShopifyPaymentResolutionJob` quando a divergência é
+considerada um alerta real — ver
+[src/features/integration/shopify-value-verification.ts](../src/features/integration/shopify-value-verification.ts)).

@@ -156,7 +156,7 @@ function isTransientConnectionError(error: unknown): boolean {
   return ["ECONNRESET", "ETIMEDOUT", "08006", "08003", "08001", "57014"].includes(err.code ?? "");
 }
 
-async function withConnectionRetry<T>(run: () => Promise<T>, retries = 2): Promise<T> {
+export async function withConnectionRetry<T>(run: () => Promise<T>, retries = 2): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await run();
@@ -204,7 +204,7 @@ type ReadModelFilters = Omit<ListTransactionsFilters, "page" | "limit" | "source
 
 let corePool: Pool | null = null;
 
-function getCorePool(): Pool | null {
+export function getCorePool(): Pool | null {
   const connectionString = getCoreConnectionString();
   if (!connectionString) {
     return null;

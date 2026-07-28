@@ -104,13 +104,24 @@ Objetivo: sistema funcional de ponta a ponta com login, importacao, dashboard co
 - [x] Seletor de periodo (7/30/90 dias) via searchParams
 - [x] Links Dashboard adicionados em layout e indice do financeiro
 
-### Fase D — Reconciliacao [CONCLUIDO]
+### Fase D — Reconciliacao [REMOVIDO]
 
-- [x] src/features/reconciliation/types.ts — ReconciliationIssue, IssueType
-- [x] src/features/reconciliation/service.ts — 5 verificacoes: duplicatas, sem categoria, saldo negativo, orphan import rows, webhooks nao processados
-- [x] src/features/reconciliation/actions.ts — runReconciliationAction
-- [x] Atualizar API /api/financial/reconciliation — GET e POST executam e persistem ReconciliationSnapshot
-- [x] UI /reconciliacao — resumo de issues por severidade com seletor de periodo
+Implementada e depois **removida no commit `8195b57`** (decisao do time): a
+feature so verificava dados manuais/importados via Prisma, nunca o mirror
+onde vivem os pedidos reais de Shopify/Anymarket. Fica para uma versao futura
+com escopo que cubra o mirror — ver validacao de valores/transacoes Sistema x
+Shopify via `npm run verify:shopify` e o job de resolucao de gateway
+(`src/features/integration/shopify-payment-resolution-job.ts`) como o
+caminho atual de verificacao contra a Shopify.
+
+- [x] ~~src/features/reconciliation/types.ts — ReconciliationIssue, IssueType~~ (removido)
+- [x] ~~src/features/reconciliation/service.ts — 5 verificacoes: duplicatas, sem categoria, saldo negativo, orphan import rows, webhooks nao processados~~ (removido)
+- [x] ~~src/features/reconciliation/actions.ts — runReconciliationAction~~ (removido)
+- [x] ~~API /api/financial/reconciliation — GET e POST executam e persistem ReconciliationSnapshot~~ (removido)
+- [x] ~~UI /reconciliacao — resumo de issues por severidade com seletor de periodo~~ (removido)
+
+Tambem removido no mesmo commit: `marketplace-fees` (codigo morto, nunca
+conectado ao calculo real de `feeCents`).
 
 ---
 

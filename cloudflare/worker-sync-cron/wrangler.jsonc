@@ -4,10 +4,16 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-06-09",
   "triggers": {
-    "crons": ["*/5 * * * *"]
+    // */5: sync OMS->mirror (worker-sync). */20: resolucao de gateway titular
+    // Shopify (batch pequeno, escopado aos ultimos dias — nao o backlog
+    // historico inteiro). "0 * * * *": verificacao horaria Sistema x Shopify
+    // (sempre D-1, com auto-alinhamento se a divergencia for um alerta real).
+    "crons": ["*/5 * * * *", "*/20 * * * *", "0 * * * *"]
   },
   "vars": {
     "APP_BASE_URL": "https://project-006s3.vercel.app",
-    "WORKER_CRON_DAYS": "30"
+    "WORKER_CRON_DAYS": "30",
+    "SHOPIFY_RESOLUTION_BATCH_SIZE": "150",
+    "SHOPIFY_RESOLUTION_SINCE_DAYS": "3"
   }
 }
