@@ -14,8 +14,8 @@
 - imports
 - cash-flow
 - dashboard
-- reconciliation
-- marketplace-fees
+- categories
+- users
 
 ## Shared
 - api envelope
@@ -30,4 +30,5 @@
 - /api/financial/dashboard
 - /api/financial/transactions
 - /api/financial/imports
-- /api/financial/reconciliation
+- /api/financial/categories
+- /api/financial/users
