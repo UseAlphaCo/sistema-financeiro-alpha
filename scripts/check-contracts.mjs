@@ -5,7 +5,7 @@ const requiredFiles = [
   "src/types/api.ts",
   "src/shared/api/envelope.ts",
   "src/core/security/with-api-security.ts",
-  "middleware.ts",
+  "src/proxy.ts",
 ];
 
 const missing = requiredFiles.filter((file) => !existsSync(join(process.cwd(), file)));

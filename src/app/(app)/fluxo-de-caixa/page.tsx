@@ -231,7 +231,7 @@ export default async function FluxoDeCaixaPage({
           {PERIOD_OPTIONS.map((option) => (
             <a
               key={option.value}
-              href={`/financeiro/fluxo-de-caixa${buildFlowQuery({
+              href={`/fluxo-de-caixa${buildFlowQuery({
                 preset: option.value,
                 marketplace,
                 paymentMethod,
@@ -320,7 +320,7 @@ export default async function FluxoDeCaixaPage({
             Filtrar
           </button>
           <a
-            href="/financeiro/fluxo-de-caixa"
+            href="/fluxo-de-caixa"
             className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
           >
             Limpar

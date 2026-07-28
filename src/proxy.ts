@@ -3,7 +3,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/core/auth/auth";
 import type { UserRole } from "@/types/api";
 
-const PROTECTED_PAGE_PREFIXES = ["/financeiro"];
+const PROTECTED_PAGE_PREFIXES = [
+  "/dashboard",
+  "/fluxo-de-caixa",
+  "/lancamentos",
+  "/importacoes",
+  "/integracoes",
+  "/usuarios",
+  "/alterar-senha",
+  "/reconciliacao",
+];
 const PROTECTED_API_PREFIX = "/api/financial";
 
 function normalizeRole(value: unknown): UserRole | null {
@@ -17,7 +26,7 @@ function isAllowedRole(role: UserRole | null): boolean {
   return role === "admin" || role === "financeiro";
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   const isRootPath = pathname === "/";
@@ -61,21 +70,21 @@ export async function middleware(request: NextRequest) {
 
   const roleValue = role as UserRole;
 
-  if (pathname.startsWith("/financeiro/usuarios") && role !== "admin") {
+  if (pathname.startsWith("/usuarios") && role !== "admin") {
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("error", "forbidden");
     return NextResponse.redirect(loginUrl);
   }
 
-  if (pathname.startsWith("/financeiro/reconciliacao") && role !== "admin") {
+  if (pathname.startsWith("/reconciliacao") && role !== "admin") {
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("error", "forbidden");
     return NextResponse.redirect(loginUrl);
   }
 
-  const isPasswordPage = pathname.startsWith("/financeiro/alterar-senha");
+  const isPasswordPage = pathname.startsWith("/alterar-senha");
   if (user.forcePasswordChange && !isPasswordPage && !isProtectedApi) {
-    return NextResponse.redirect(new URL("/financeiro/alterar-senha", request.url));
+    return NextResponse.redirect(new URL("/alterar-senha", request.url));
   }
 
   const requestHeaders = new Headers(request.headers);
@@ -91,6 +100,17 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/", "/financeiro/:path*", "/api/financial/:path*"],
+  matcher: [
+    "/",
+    "/dashboard/:path*",
+    "/fluxo-de-caixa/:path*",
+    "/lancamentos/:path*",
+    "/importacoes/:path*",
+    "/integracoes/:path*",
+    "/usuarios/:path*",
+    "/alterar-senha/:path*",
+    "/reconciliacao/:path*",
+    "/api/financial/:path*",
+  ],
 };
 

@@ -17,21 +17,21 @@ export default async function FinanceiroLayout({
           <span className="text-base font-semibold text-gray-900">
             Sistema Financeiro
           </span>
-          <a href="/financeiro/dashboard" className="hover:text-gray-900">
+          <a href="/dashboard" className="hover:text-gray-900">
             Dashboard
           </a>
-          <a href="/financeiro/fluxo-de-caixa" className="hover:text-gray-900">
+          <a href="/fluxo-de-caixa" className="hover:text-gray-900">
             Fluxo de Caixa
           </a>
           <LancamentosMenu />
-          <a href="/financeiro/importacoes" className="hover:text-gray-900">
+          <a href="/importacoes" className="hover:text-gray-900">
             Importações
           </a>
-          <a href="/financeiro/integracoes" className="hover:text-gray-900">
+          <a href="/integracoes" className="hover:text-gray-900">
             Integrações
           </a>
           {user?.role === "admin" && (
-            <a href="/financeiro/usuarios" className="hover:text-gray-900">
+            <a href="/usuarios" className="hover:text-gray-900">
               Usuários
             </a>
           )}

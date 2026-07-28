@@ -142,7 +142,7 @@ export default function FluxoDeCaixaTable({
   );
 
   const pageLink = (page: number) =>
-    `/financeiro/fluxo-de-caixa${buildFlowQuery({
+    `/fluxo-de-caixa${buildFlowQuery({
       ...query,
       page,
     })}`;

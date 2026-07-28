@@ -9,7 +9,7 @@
  * contra o que a Shopify realmente processou naquele dia, via API real.
  *
  * Lado Sistema Financeiro: chama computeCashFlow() diretamente — a mesma
- * funcao que alimenta a tela /financeiro/fluxo-de-caixa.
+ * funcao que alimenta a tela /fluxo-de-caixa.
  *
  * Lado Shopify: reusa a metodologia validada em
  * docs/shopify/shopify-payments-by-gateway.md (tenderTransactions + REST

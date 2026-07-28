@@ -57,7 +57,7 @@ export default function AlterarSenhaPage() {
       email: body.data?.email ?? "",
       password: nextPassword,
       redirect: false,
-      callbackUrl: "/financeiro/fluxo-de-caixa",
+      callbackUrl: "/fluxo-de-caixa",
     });
 
     if (relogin?.error) {
@@ -67,7 +67,7 @@ export default function AlterarSenhaPage() {
       return;
     }
 
-    router.push("/financeiro/fluxo-de-caixa");
+    router.push("/fluxo-de-caixa");
     router.refresh();
   }
 

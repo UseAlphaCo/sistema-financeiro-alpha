@@ -17,7 +17,7 @@ export default function LoginPage() {
     setLoading(true);
 
     const nextPath = new URLSearchParams(window.location.search).get("next");
-    const callbackUrl = nextPath && nextPath.startsWith("/") ? nextPath : "/financeiro";
+    const callbackUrl = nextPath && nextPath.startsWith("/") ? nextPath : "/dashboard";
 
     const result = await signIn("credentials", {
       email,

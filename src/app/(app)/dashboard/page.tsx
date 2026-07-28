@@ -100,7 +100,7 @@ export default async function DashboardPage({ searchParams }: Props) {
           {PRESET_OPTIONS.map((opt) => (
             <a
               key={opt.value}
-              href={`/financeiro/dashboard?preset=${opt.value}`}
+              href={`/dashboard?preset=${opt.value}`}
               className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
                 preset === opt.value
                   ? "border-gray-900 bg-gray-900 text-white"
