@@ -11,7 +11,7 @@
     "crons": ["*/5 * * * *", "*/20 * * * *", "0 * * * *"]
   },
   "vars": {
-    "APP_BASE_URL": "https://project-006s3.vercel.app",
+    "APP_BASE_URL": "https://phi.usealphaco.com.br",
     "WORKER_CRON_DAYS": "30",
     "SHOPIFY_RESOLUTION_BATCH_SIZE": "150",
     "SHOPIFY_RESOLUTION_SINCE_DAYS": "3"
