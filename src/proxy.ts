@@ -29,6 +29,18 @@ const PROTECTED_API_PREFIX = "/api/financial";
  */
 const MAINTENANCE_MODE = process.env.MAINTENANCE_MODE !== "false";
 
+/**
+ * Rotas de API congeladas junto com as paginas.
+ *
+ * /api/internal/* concentra as rotas de cron, que abrem pools pg contra o OMS
+ * e o CORE. O 503 e devolvido aqui, antes do handler, entao a requisicao nao
+ * chega a abrir conexao no Postgres nem a segurar duracao de function.
+ *
+ * /api/health fica de fora de proposito, para continuar observando o banco
+ * durante o freeze.
+ */
+const FROZEN_API_PREFIXES = ["/api/internal"];
+
 const MAINTENANCE_PAGE = `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -69,6 +81,22 @@ export async function proxy(request: NextRequest) {
   const isRootPath = pathname === "/";
   const isProtectedPage = PROTECTED_PAGE_PREFIXES.some((p) => pathname.startsWith(p));
   const isProtectedApi = pathname.startsWith(PROTECTED_API_PREFIX);
+  const isFrozenApi = FROZEN_API_PREFIXES.some((p) => pathname.startsWith(p));
+
+  // Gate de manutencao das APIs congeladas: precisa vir antes do early return
+  // abaixo, senao /api/internal/* passaria direto para o handler.
+  if (MAINTENANCE_MODE && isFrozenApi) {
+    return NextResponse.json(
+      {
+        success: false,
+        data: null,
+        error: "Servico temporariamente congelado para manutencao.",
+        requestId: crypto.randomUUID(),
+        meta: { timestamp: new Date().toISOString() },
+      },
+      { status: 503, headers: { "cache-control": "no-store", "retry-after": "3600" } }
+    );
+  }
 
   if (!isRootPath && !isProtectedPage && !isProtectedApi) {
     return NextResponse.next();
@@ -161,6 +189,8 @@ export const config = {
     "/alterar-senha/:path*",
     "/reconciliacao/:path*",
     "/api/financial/:path*",
+    // Incluida para o freeze: fora dele o middleware apenas deixa passar.
+    "/api/internal/:path*",
   ],
 };
 
