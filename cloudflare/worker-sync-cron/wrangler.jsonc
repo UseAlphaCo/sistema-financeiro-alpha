@@ -4,11 +4,18 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-06-09",
   "triggers": {
+    // FREEZE TEMPORARIO CORE FIN — crons desativados.
+    // O array vazio e obrigatorio: remover a chave "triggers" NAO apaga os
+    // cron triggers ja registrados no Cloudflare; so "crons": [] os remove
+    // no deploy.
+    //
+    // Valor original, a restaurar na retomada:
+    //   "crons": ["*/5 * * * *", "*/20 * * * *", "0 * * * *"]
     // */5: sync OMS->mirror (worker-sync). */20: resolucao de gateway titular
     // Shopify (batch pequeno, escopado aos ultimos dias — nao o backlog
     // historico inteiro). "0 * * * *": verificacao horaria Sistema x Shopify
     // (sempre D-1, com auto-alinhamento se a divergencia for um alerta real).
-    "crons": ["*/5 * * * *", "*/20 * * * *", "0 * * * *"]
+    "crons": []
   },
   "vars": {
     "APP_BASE_URL": "https://phi.usealphaco.com.br",
