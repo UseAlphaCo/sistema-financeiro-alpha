@@ -15,6 +15,43 @@ const PROTECTED_PAGE_PREFIXES = [
 ];
 const PROTECTED_API_PREFIX = "/api/financial";
 
+/**
+ * FREEZE TEMPORARIO CORE FIN.
+ *
+ * Derruba as paginas do app com 503, mantendo as APIs (/api/financial,
+ * /api/internal, /api/webhooks, /api/health) respondendo normalmente.
+ *
+ * Ligado por padrao: enquanto este codigo estiver em main, o app fica fora
+ * do ar. Para reabrir, escolha um dos dois caminhos:
+ *   1. reverter este commit (limpeza definitiva); ou
+ *   2. definir MAINTENANCE_MODE="false" nas env vars da Vercel e redeployar
+ *      (reabertura rapida, sem mexer no codigo).
+ */
+const MAINTENANCE_MODE = process.env.MAINTENANCE_MODE !== "false";
+
+const MAINTENANCE_PAGE = `<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sistema Financeiro - em manutencao</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; background:#0b0b0f; color:#e8e8ed; }
+  main { max-width:32rem; padding:2rem; text-align:center; }
+  h1 { font-size:1.25rem; margin:0 0 .75rem; font-weight:600; }
+  p { margin:0; color:#a1a1aa; line-height:1.6; font-size:.95rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sistema em manutencao</h1>
+  <p>O Sistema Financeiro esta temporariamente indisponivel para manutencao programada. Tente novamente mais tarde.</p>
+</main>
+</body>
+</html>`;
+
 function normalizeRole(value: unknown): UserRole | null {
   if (typeof value !== "string") return null;
   const lowered = value.toLowerCase();
@@ -35,6 +72,19 @@ export async function proxy(request: NextRequest) {
 
   if (!isRootPath && !isProtectedPage && !isProtectedApi) {
     return NextResponse.next();
+  }
+
+  // Gate de manutencao: vem antes de auth() de proposito, para que nenhuma
+  // pagina bloqueada chegue a consultar a sessao no banco.
+  if (MAINTENANCE_MODE && (isRootPath || isProtectedPage)) {
+    return new NextResponse(MAINTENANCE_PAGE, {
+      status: 503,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "retry-after": "3600",
+      },
+    });
   }
 
   const session = await auth();
