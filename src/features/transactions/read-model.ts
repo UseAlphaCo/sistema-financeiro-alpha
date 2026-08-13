@@ -557,13 +557,54 @@ function filterTransactions(items: FinancialTransaction[], filters: ReadModelFil
   });
 }
 
-async function listMirrorTransactions(filters: ReadModelFilters): Promise<FinancialTransaction[]> {
-  const pool = getCorePool();
-  if (!pool) return [];
+/**
+ * Todo pedido vindo do mirror e mapeado com type "income", categoryId null e
+ * source "webhook" (shopify) ou "integration" (demais) — ver mapMirrorRow e
+ * resolveMirrorSource. Sao invariantes, nao valores derivados do payload.
+ */
+const MIRROR_SOURCES: readonly string[] = ["integration", "webhook"];
 
-  if (filters.type && filters.type !== "income") {
+/**
+ * Decide, so pelos filtros, se o mirror nao tem como contribuir com nenhuma
+ * linha — caso em que a query pode ser evitada por completo.
+ *
+ * Sem isso, uma chamada como a de /lancamentos (source "manual", sem datas)
+ * varre 100% de mirror.raw_payloads (~1,4M linhas, payload de 10-30KB cada),
+ * traz tudo para o Node e descarta o resultado inteiro em filterTransactions.
+ *
+ * Cada condicao aqui espelha um filtro de filterTransactions que reprovaria
+ * *todas* as linhas do mirror por causa das invariantes acima. Ao mexer em
+ * uma, mexer na outra.
+ */
+function mirrorCannotContribute(filters: ReadModelFilters): boolean {
+  // filterTransactions: item.type !== filters.type
+  if (filters.type && filters.type !== "income") return true;
+
+  // filterTransactions: item.categoryId !== filters.categoryId (sempre null)
+  if (filters.categoryId) return true;
+
+  // filterTransactions: item.source !== filters.source
+  if (filters.source && !MIRROR_SOURCES.includes(filters.source)) return true;
+
+  // filterTransactions: !filters.sources.includes(item.source)
+  if (
+    filters.sources &&
+    filters.sources.length > 0 &&
+    !filters.sources.some((source) => MIRROR_SOURCES.includes(source))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+async function listMirrorTransactions(filters: ReadModelFilters): Promise<FinancialTransaction[]> {
+  if (mirrorCannotContribute(filters)) {
     return [];
   }
+
+  const pool = getCorePool();
+  if (!pool) return [];
 
   // Pre-filtro de performance por received_at, mesmo raciocinio aplicado em
   // listMarketplaceReadModelPaginated: so o limite inferior e seguro (uma linha
@@ -748,7 +789,7 @@ export async function listMarketplaceReadModelPaginated(
 ): Promise<PaginatedTransactions> {
   const readModelFilters: ReadModelFilters = {
     type: "income",
-    sources: ["integration", "webhook"],
+    sources: [...MIRROR_SOURCES],
     marketplace: filters.marketplace,
     paymentMethod: filters.paymentMethod,
     startDate: filters.startDate,
