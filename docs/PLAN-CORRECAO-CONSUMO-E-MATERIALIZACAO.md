@@ -1,7 +1,11 @@
 # Corrigir a raiz do consumo e materializar o read model financeiro
 
-> **Status:** aprovado, nao iniciado. Producao congelada (commits `8b1003e` e `2620098` em `main`).
-> Nenhuma etapa deste plano foi implementada. Registro para retomada.
+> **Status:** em execucao. Producao congelada (commits `8b1003e` e `2620098`).
+> Etapa 0 concluida (`661107c`). Parte 1 com 1.1, 1.2 e a raiz do 1.4 concluidas (`0dfd481`),
+> mais o hardening de OMS read-only (`edfb908`). Pendentes: 1.3, 1.5 e a Parte 2 inteira.
+>
+> **Nada foi validado contra banco real ainda** — `npm run check` passa (49 testes, build),
+> mas o ciclo de sync nao rodou desde a mudanca. Ver "Verificacao pendente" no fim.
 
 ## Contexto
 
@@ -41,42 +45,69 @@ numeros atuais, e unificar as tres convencoes de dia que convivem hoje fica como
 
 Pre-requisito para descongelar producao. Ordem por impacto.
 
-### 1.1 Tirar o backfill do ciclo automatico
+### 1.1 Tirar o backfill do ciclo automatico — CONCLUIDO, com correcao de rota
 
-Em [worker-sync-jobs.ts:146-152](../src/features/integration/worker-sync-jobs.ts#L146-L152),
-`run === 1` passa `backfillDays` incondicionalmente. O ciclo automatico passa a **apenas drenar
-`integration.sync_queue`**; o backfill por janela vira parametro explicito, acionado por
-`requestedBy` manual — caminho que ja existe via `POST /api/financial/integrations/worker/start`
-(tela `/integracoes`) e `scripts/trigger-backfill.ts`.
+> **Corrigido durante a execucao.** A formulacao original ("o ciclo automatico passa a apenas
+> drenar `integration.sync_queue`") **quebraria a ingestao**. O unico
+> `INSERT INTO integration.sync_queue` do repositorio esta em `enqueueBackfill`
+> ([core-repository.ts:100](../src/workers/sync/repositories/core-repository.ts#L100)), e ele so
+> roda quando `backfillDays` esta setado. Com `SYNC_CONTROL_TARGET=core` (default), a varredura de
+> janela **e** o unico mecanismo de ingestao: tirar o backfill e so drenar esvaziaria a fila para
+> sempre. O `integration.sync_events` do OMS, alimentado por trigger, so e lido no fallback
+> `SYNC_CONTROL_TARGET=oms`.
 
-### 1.2 Parar de segurar a function
+O desperdicio nao esta em *descobrir* linhas no ciclo, e sim em **redescobrir sempre as mesmas**.
+A descoberta passou a ser incremental por marca d'agua (`integration.sync_watermark` no CORE,
+keyset `(sort_at, record_id)` com `sort_at = COALESCE(received_at, processed_at)`), lida por
+`findRawPayloadsAfter` em ordem ASC. O backfill por janela continua existindo, agora explicito em
+`backfill_window_days` do job, preenchido so pelos disparos manuais
+(`POST /api/financial/integrations/worker/start` e `scripts/trigger-backfill.ts`).
 
-[worker-sync/route.ts](../src/app/api/internal/cron/worker-sync/route.ts) usa
-`awaitCompletion: true`. Trocar por resposta imediata (202, padrao fire-and-forget que o disparo
-manual ja usa) ou declarar `maxDuration` explicito com escopo que caiba. Corrigir junto o comentario
-das linhas 40-45, que ainda diz "o cron dispara a cada 30 min" — desatualizado desde que virou
-`*/5`.
+A marca d'agua vive **sempre no CORE e fora de `SyncControlStore`**, de proposito: avancar o cursor
+nunca pode exigir escrita no OMS.
+
+### 1.2 Parar de segurar a function — CONCLUIDO
+
+Das duas saidas previstas, valeu a segunda. O 202 fire-and-forget **nao serve aqui**: a function
+pode ser congelada assim que responde, matando o job no meio (e a razao documentada do
+`awaitCompletion: true`). Ficou `awaitCompletion` mantido + `maxDuration = 60` declarado em
+[worker-sync/route.ts](../src/app/api/internal/cron/worker-sync/route.ts), em vez de herdar o
+default da plataforma. Comentario desatualizado ("a cada 30 min") corrigido.
 
 ### 1.3 Reduzir a frequencia
 
 `*/5` era desproporcional mesmo sem o rescan. Definir a frequencia pelo volume real de pedidos ao
 restaurar `triggers.crons` em [wrangler.jsonc](../cloudflare/worker-sync-cron/wrangler.jsonc).
 
-### 1.4 Corrigir o alcance do backfill
+### 1.4 Corrigir o alcance do backfill — RESOLVIDO NO CAMINHO AUTOMATICO
 
 `findRawPayloadCandidates` ordena `DESC` com `LIMIT`, entao so enxerga os N mais recentes:
 **lacunas antigas dentro da janela nunca sao alcancadas**. E por isso que existem
-`scripts/backfill-june-mirror.ts` e `scripts/process-backlog.ts`. Com o item 1.1 tirando o backfill
-do ciclo, isto vira obrigatorio — senao ninguem fecha buracos. Usar paginacao keyset por
-`(received_at, id)` em vez de `DESC LIMIT`.
+`scripts/backfill-june-mirror.ts` e `scripts/process-backlog.ts`.
+
+O keyset ascendente do item 1.1 resolve isto para o ciclo automatico: o cursor caminha para frente
+e nao deixa buraco para tras. **O backfill manual por janela continua com `DESC LIMIT`** — nao foi
+alterado. Fechar lacunas historicas segue sendo trabalho do carregamento em bloco de §2.4, que e
+mais direto que fazer o worker rastejar. Reavaliar se o caminho manual ainda precisa de keyset
+depois que §2.4 rodar.
 
 ### 1.5 Session mode -> transaction mode (por ultimo, isolado)
 
 `CORE_DB_URL` e `OMS_DB_URL` usam a porta 5432. **Nao trocar para 6543 sem antes migrar o lock**:
-`pg_advisory_lock`/`pg_advisory_unlock` ([service.ts:12](../src/workers/sync/service.ts#L12), chave
-`9382201`) sao escopados a sessao e quebram em transaction mode. Migrar para
-`pg_advisory_xact_lock` dentro de transacao primeiro. Maior risco do conjunto — fazer sozinho,
-depois de tudo estavel.
+`pg_advisory_lock`/`pg_advisory_unlock` sao escopados a sessao e quebram em transaction mode.
+
+Correcao de referencia: o lock **nao** esta em `service.ts:12` (la fica so a constante
+`WORKER_LOCK_KEY = 9382201`). As chamadas estao em **dois** lugares —
+[core-repository.ts:82-93](../src/workers/sync/repositories/core-repository.ts#L82-L93) e
+[oms-repository.ts:145-152](../src/workers/sync/repositories/oms-repository.ts#L145-L152). Migrar
+para `pg_advisory_xact_lock` dentro de transacao primeiro.
+
+Ponto novo a considerar junto: o pool do OMS agora abre com
+`options=-c default_transaction_read_only=on` (ver [db.ts](../src/workers/sync/db.ts)). Alguns
+poolers ignoram `options` em transaction mode — ao migrar para 6543, revalidar que a garantia de
+read-only continua de pe.
+
+Maior risco do conjunto — fazer sozinho, depois de tudo estavel.
 
 ---
 
@@ -292,8 +323,8 @@ D-1 e alguns dias historicos depois de ligar a flag. Rollback e desligar a env.
 
 | # | Etapa | Verificacao |
 |---|---|---|
-| 0 | Curto-circuito do `/lancamentos` (§2.5) | Unit com `getCorePool` mockado: `pool.query` nao e chamado para `{source:"manual"}` |
-| 1 | Parte 1 completa (§1.1-1.4; 1.5 depois) | `npm run check`; rodar sync manual e conferir que um ciclo nao dispara backfill |
+| 0 | ~~Curto-circuito do `/lancamentos` (§2.5)~~ **feito** (`661107c`) | Unit com `pg` mockado: `pool.query` nao e chamado para `{source:"manual"}`, `categoryId`, `type!=income` nem `sources` disjunto — mais 3 controles provando que o caminho normal ainda consulta |
+| 1 | ~~§1.1, §1.2, raiz do §1.4~~ **feito** (`0dfd481`, `edfb908`); faltam §1.3 e §1.5 | `npm run check` verde. **Falta rodar contra banco real** — ver "Verificacao pendente" |
 | 2 | Extrair `mirror-order-mapper.ts` (§2.2) | Vitest sem banco: pago/nao pago, dedup "pago vence recencia", `amountCents<=0`, gateway via `spr` vs heuristica, `search_text` identico ao haystack atual |
 | 3 | Migration + `ensureFinancialOrdersTable` + upsert (§2.1) | Teste de integracao no padrao de [worker-job-repository.test.ts](../src/features/integration/worker-job-repository.test.ts) (skip sem `CORE_DB_URL`): ensure 2x idempotente, upsert com mesmo hash nao muda `materialized_at` |
 | 4 | Job diario + rota de cron (§2.3) | `curl` autenticado na rota para um dia; comparar `count(*)`/`sum(amount_cents)` contra o `/fluxo-de-caixa` do mesmo dia |
@@ -315,6 +346,27 @@ zero divergencia de 2026-08-01 em diante, `verify:shopify` bate para D-1, e o `/
 mantem `db=up` com os crons religados — a mesma medicao que provou o diagnostico.
 
 ---
+
+## Verificacao pendente da Parte 1
+
+Nada abaixo foi exercitado contra banco real. Sao pre-requisitos para descongelar producao.
+
+1. **`options` do libpq contra o pooler real do OMS.** Se o Supavisor ignorar ou rejeitar o
+   parametro, ou a conexao falha (sync para) ou a garantia de read-only nao vale — e os dois casos
+   sao silenciosos no `npm run check`. Verificar: conectar com a `OMS_DB_URL` real e confirmar
+   `SHOW default_transaction_read_only` = `on`, e que um `INSERT` de teste falha com
+   "read-only transaction".
+2. **Inicializacao da marca d'agua.** Rodar um ciclo e conferir no log `sync_watermark_initialized`
+   que `sortAt` saiu de `mirror_max` (nao de `epoch`), e depois que
+   `integration.sync_watermark` avanca a cada ciclo.
+3. **Um ciclo automatico nao dispara backfill.** Conferir no log que `discoveryMode` e
+   `incremental` e que nao aparece `sync_backfill_enqueued`.
+4. **Um disparo manual ainda dispara.** Pela tela `/integracoes`, confirmar
+   `sync_backfill_enqueued` com a janela pedida.
+5. **A coluna nova entra em tabela existente.** `worker_sync_jobs` ja existe em producao;
+   confirmar que o `ALTER TABLE ... ADD COLUMN IF NOT EXISTS backfill_window_days` aplica.
+6. **`SYNC_CONTROL_TARGET=oms` agora falha de proposito.** Se o fallback de emergencia ainda for
+   considerado necessario, ele precisa ser repensado — hoje quebra em `ensureInfrastructure`.
 
 ## Pendencias operacionais fora do plano
 
