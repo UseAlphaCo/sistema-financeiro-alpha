@@ -37,9 +37,23 @@ export type RawPayloadCandidate = {
 };
 
 /**
+ * Posicao do keyset de descoberta incremental. Ordena por
+ * (sortAt, recordId), onde sortAt e COALESCE(received_at, processed_at) na
+ * origem. Null significa "nunca leu" — o ciclo inicializa antes de usar.
+ */
+export type SyncWatermark = {
+  sortAt: Date;
+  recordId: string;
+};
+
+/**
  * Contrato do armazenamento de controle tecnico da sincronizacao
  * (fila, retry, DLQ e lock). Implementado pelo CORE (padrao) e, para
  * rollback de emergencia, tambem pelo OMS legado.
+ *
+ * A marca d'agua NAO faz parte deste contrato de proposito: ela e sempre
+ * gravada no CORE, mesmo com SYNC_CONTROL_TARGET=oms, para que o avanco do
+ * keyset nunca dependa de escrita no OMS. Ver CoreRepository.setWatermark.
  */
 export interface SyncControlStore {
   ensureInfrastructure(): Promise<void>;

@@ -5,6 +5,19 @@ import { createApiError, createApiSuccess } from "@/shared/api/envelope";
 
 export const runtime = "nodejs";
 
+/**
+ * O job roda dentro da requisicao (awaitCompletion), porque a function pode
+ * ser congelada assim que responde — fire-and-forget mataria o ciclo no meio.
+ * Como a alternativa nao existe, o limite tem que ser declarado em vez de
+ * herdado: sem isto vale o default da plataforma, e um ciclo que passe dele
+ * e cortado sem registro.
+ *
+ * 60s cabe com folga no ciclo atual (descoberta incremental de
+ * BATCH_SIZE * 2 linhas + drenagem de BATCH_SIZE, vezes maxRuns = 2). Ao
+ * aumentar BATCH_SIZE ou maxRuns, revisar.
+ */
+export const maxDuration = 60;
+
 type AllowedDays = 30 | 60 | 90;
 
 function parseCronDays(value: string | undefined): AllowedDays {
@@ -36,13 +49,15 @@ export async function GET(request: NextRequest) {
   }
 
   const days = parseCronDays(request.nextUrl.searchParams.get("days") ?? process.env.WORKER_CRON_DAYS);
-  // Poucas execucoes por invocacao: o cron dispara a cada 30 min e aguarda
-  // o job terminar antes de responder (awaitCompletion), entao o trabalho
-  // precisa caber com folga no timeout padrao da function serverless. A
-  // fila avanca de forma incremental a cada ciclo de cron.
+  // Poucas execucoes por invocacao: o trabalho precisa caber com folga no
+  // maxDuration declarado abaixo. A fila avanca de forma incremental a cada
+  // ciclo de cron.
   const maxRuns = 2;
 
   try {
+    // Sem backfillWindowDays: o ciclo automatico faz apenas descoberta
+    // incremental por marca d'agua. A varredura por janela de dias e
+    // exclusiva dos disparos manuais.
     const job = await startWorkerSyncJob({
       estimatedScopeDays: days,
       requestedBy: "cloudflare-cron",

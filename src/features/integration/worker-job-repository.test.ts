@@ -34,12 +34,15 @@ describe("worker-job-repository (integration)", () => {
       runs: 0,
       last_error: null,
       summary: null,
+      backfill_window_days: null,
     };
 
     await insertJob(job);
     const loaded = await getJob(id);
     expect(loaded).not.toBeNull();
     expect(loaded?.id).toBe(id);
+    // NULL e o caso do ciclo automatico: nenhum backfill por janela pedido.
+    expect(loaded?.backfill_window_days).toBeNull();
     await closePool();
   });
 });

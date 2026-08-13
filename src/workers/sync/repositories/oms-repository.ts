@@ -11,6 +11,76 @@ import type { RawPayloadCandidate, SyncControlStore, SyncEventRow } from "../typ
 export class OmsRepository implements SyncControlStore {
   constructor(private readonly pool: Pool) {}
 
+  /**
+   * Descoberta incremental: le apenas o que entrou depois da marca d'agua,
+   * em ordem ascendente de (sort_at, id), onde sort_at e
+   * COALESCE(received_at, processed_at).
+   *
+   * Substitui o rescan de janela fixa no ciclo automatico. Duas diferencas
+   * que importam em relacao a findRawPayloadCandidates:
+   *
+   * - ASC em vez de DESC: o cursor caminha para frente e nunca deixa uma
+   *   lacuna para tras. O DESC com LIMIT so enxergava os N mais recentes,
+   *   entao buracos anteriores a eles eram inalcancaveis por construcao.
+   * - O LIMIT recorta o proximo lote a partir do cursor, nao os N mais
+   *   recentes de toda a janela — cada ciclo processa material novo.
+   *
+   * Linhas sem received_at e sem processed_at ficam de fora: nao ha por onde
+   * ordena-las de forma estavel. Sao alcancadas pelo backfill por janela.
+   */
+  async findRawPayloadsAfter(
+    watermark: { sortAt: Date; recordId: string },
+    limit: number
+  ): Promise<RawPayloadCandidate[]> {
+    const boundedLimit = Math.min(Math.max(limit, 1), 5000);
+
+    const result = await this.pool.query<{
+      id: string;
+      source: string | null;
+      external_order_id: string | null;
+      event_type: string | null;
+      payload_json: unknown;
+      headers_json: unknown;
+      received_at: Date | null;
+      processed_at: Date | null;
+      processing_status: string | null;
+      error_message: string | null;
+    }>(
+      `
+        SELECT
+          rp.id,
+          rp.source,
+          rp.external_order_id,
+          rp.event_type,
+          rp.payload_json,
+          rp.headers_json,
+          rp.received_at,
+          rp.processed_at,
+          rp.processing_status,
+          rp.error_message
+        FROM raw_payloads rp
+        WHERE COALESCE(rp.received_at, rp.processed_at) IS NOT NULL
+          AND (COALESCE(rp.received_at, rp.processed_at), rp.id::text) > ($1::timestamptz, $2::text)
+        ORDER BY COALESCE(rp.received_at, rp.processed_at) ASC, rp.id::text ASC
+        LIMIT $3
+      `,
+      [watermark.sortAt, watermark.recordId, boundedLimit]
+    );
+
+    return result.rows.map((row) => ({
+      id: row.id,
+      source: row.source,
+      externalOrderId: row.external_order_id,
+      eventType: row.event_type,
+      payloadJson: row.payload_json,
+      headersJson: row.headers_json,
+      receivedAt: row.received_at,
+      processedAt: row.processed_at,
+      processingStatus: row.processing_status,
+      errorMessage: row.error_message,
+    }));
+  }
+
   async findRawPayloadCandidates(days: 30 | 60 | 90, limit: number): Promise<RawPayloadCandidate[]> {
     const boundedLimit = Math.min(Math.max(limit, 1), 5000);
 

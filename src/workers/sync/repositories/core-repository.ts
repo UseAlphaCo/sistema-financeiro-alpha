@@ -6,6 +6,7 @@ import type {
   RawPayloadRecord,
   SyncControlStore,
   SyncEventRow,
+  SyncWatermark,
 } from "../types";
 
 export class CoreRepository implements SyncControlStore {
@@ -77,6 +78,66 @@ export class CoreRepository implements SyncControlStore {
       CREATE INDEX IF NOT EXISTS idx_failed_jobs_moved_at
         ON integration.failed_jobs(moved_at)
     `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS integration.sync_watermark (
+        stream TEXT PRIMARY KEY,
+        sort_at TIMESTAMPTZ,
+        record_id TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+  }
+
+  /**
+   * Marca d'agua da descoberta incremental. Vive sempre no CORE, mesmo quando
+   * SYNC_CONTROL_TARGET=oms, para que avancar o keyset nunca exija escrita no
+   * OMS (que opera read-only — ver createOmsPool).
+   */
+  async getWatermark(stream: string): Promise<SyncWatermark | null> {
+    const result = await this.pool.query<{ sort_at: Date | null; record_id: string | null }>(
+      `
+        SELECT sort_at, record_id
+        FROM integration.sync_watermark
+        WHERE stream = $1
+      `,
+      [stream]
+    );
+
+    const row = result.rows[0];
+    if (!row?.sort_at) return null;
+
+    return { sortAt: row.sort_at, recordId: row.record_id ?? "" };
+  }
+
+  async setWatermark(stream: string, watermark: SyncWatermark): Promise<void> {
+    await this.pool.query(
+      `
+        INSERT INTO integration.sync_watermark (stream, sort_at, record_id, updated_at)
+        VALUES ($1, $2, $3, NOW())
+        ON CONFLICT (stream) DO UPDATE
+          SET sort_at = EXCLUDED.sort_at,
+              record_id = EXCLUDED.record_id,
+              updated_at = NOW()
+      `,
+      [stream, watermark.sortAt, watermark.recordId]
+    );
+  }
+
+  /**
+   * Ponto de partida da marca d'agua na primeira execucao: ate onde o mirror
+   * ja chegou. Custa um seq scan em mirror.raw_payloads, mas roda uma unica
+   * vez — depois disso a marca avanca sozinha.
+   *
+   * Inicializar por aqui (em vez de NOW()) evita pular silenciosamente o que
+   * entrou no OMS enquanto o sync esteve parado.
+   */
+  async findMirrorMaxSortAt(): Promise<Date | null> {
+    const result = await this.pool.query<{ max_sort_at: Date | null }>(
+      `SELECT max(COALESCE(received_at, processed_at)) AS max_sort_at FROM mirror.raw_payloads`
+    );
+
+    return result.rows[0]?.max_sort_at ?? null;
   }
 
   async acquireExecutionLock(lockKey: number): Promise<boolean> {

@@ -46,6 +46,13 @@ type StartWorkerSyncJobInput = {
   requestId: string;
   maxRuns?: number;
   /**
+   * Pede explicitamente um backfill por janela de N dias. Omitido, o job faz
+   * apenas descoberta incremental por marca d'agua — o modo do ciclo
+   * automatico. So os disparos manuais (tela /integracoes e
+   * scripts/trigger-backfill.ts) devem preencher isto.
+   */
+  backfillWindowDays?: 30 | 60 | 90;
+  /**
    * Quando true, aguarda a execucao terminar antes de responder. Necessario
    * para o disparo via cron serverless: sem isso a function pode ser
    * congelada apos a resposta HTTP, matando o job no meio (fetched/processed
@@ -57,6 +64,11 @@ type StartWorkerSyncJobInput = {
 
 function toRetroactiveMode(value: string | null | undefined): "retroactive" {
   return value === "retroactive" ? "retroactive" : "retroactive";
+}
+
+function normalizeBackfillWindow(value: number | null | undefined): 30 | 60 | 90 | null {
+  if (value === 30 || value === 60 || value === 90) return value;
+  return null;
 }
 
 function withPhase(summary: WorkerSummary, phase: WorkerSyncPhase): WorkerSummary {
@@ -127,6 +139,8 @@ async function executeWorkerJob(jobId: string): Promise<void> {
   const persisted = await getPersistedJob(jobId);
   if (!persisted) return;
 
+  const windowBackfill = normalizeBackfillWindow(persisted.backfill_window_days);
+
   let currentSummary = withPhase(normalizeSummary(persisted.summary), "running");
 
   await updateJob(jobId, {
@@ -139,17 +153,26 @@ async function executeWorkerJob(jobId: string): Promise<void> {
     if (!latest) return;
 
     try {
-      const phase = run === 1 ? "backfill_enqueued" : "processing_events";
+      const phase: WorkerSyncPhase =
+        windowBackfill && run === 1 ? "backfill_enqueued" : "processing_events";
       currentSummary = withPhase(currentSummary, phase);
       await updateJob(jobId, { summary: currentSummary } as Partial<PersistedJob>);
 
-      const cycle = await runSyncOnce(
-        run === 1
-          ? {
-              backfillDays: (latest.estimated_scope_days as unknown as 30 | 60 | 90) || undefined,
-            }
-          : {}
-      );
+      // O backfill por janela so acontece quando alguem pede explicitamente,
+      // e apenas na primeira execucao — as seguintes drenam o que ela
+      // enfileirou. Sem pedido explicito (o caso do cron), o ciclo faz
+      // descoberta incremental por marca d'agua.
+      //
+      // Antes, run === 1 passava backfillDays incondicionalmente: com o cron
+      // em */5, era uma varredura de 30 dias 288 vezes por dia sobre as
+      // mesmas linhas.
+      const cycle = await runSyncOnce({
+        discovery: windowBackfill
+          ? run === 1
+            ? { mode: "window", days: windowBackfill }
+            : { mode: "none" }
+          : { mode: "incremental" },
+      });
 
       currentSummary = mergeSummary(currentSummary, cycle);
 
@@ -212,6 +235,7 @@ export async function startWorkerSyncJob(input: StartWorkerSyncJobInput): Promis
     runs: 0,
     last_error: null,
     summary: createInitialSummary(),
+    backfill_window_days: input.backfillWindowDays ?? null,
   } as unknown as PersistedJob;
 
   await insertJob(persisted).catch(() => undefined);

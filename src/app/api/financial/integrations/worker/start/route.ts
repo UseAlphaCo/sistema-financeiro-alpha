@@ -36,8 +36,11 @@ export async function POST(request: NextRequest) {
         typeof body.maxRuns === "number" ? Math.min(Math.max(1, body.maxRuns), 200) : 20;
 
       try {
+        // Disparo manual: pede o backfill por janela explicitamente. O ciclo
+        // automatico do cron nao passa isto e faz so descoberta incremental.
         const job = await startWorkerSyncJob({
           estimatedScopeDays: days,
+          backfillWindowDays: days,
           requestedBy: session?.email ?? null,
           requestId,
           maxRuns,

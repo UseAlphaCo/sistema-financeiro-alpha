@@ -8,8 +8,10 @@ async function main() {
 
   console.log('Starting backfill job with', { days, maxRuns });
 
+  // Disparo manual: pede o backfill por janela explicitamente.
   const job = await startWorkerSyncJob({
     estimatedScopeDays: days,
+    backfillWindowDays: days,
     requestedBy: 'cli-trigger',
     requestId: `cli-${Date.now()}`,
     maxRuns,

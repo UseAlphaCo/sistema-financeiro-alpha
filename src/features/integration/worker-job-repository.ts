@@ -30,6 +30,13 @@ export type PersistedJob = {
   runs: number;
   last_error: string | null;
   summary: unknown | null;
+  /**
+   * Janela de backfill pedida explicitamente, em dias. NULL significa ciclo
+   * automatico: descoberta incremental por marca d'agua, sem varredura de
+   * janela. Distinto de estimated_scope_days, que segue existindo so para
+   * exibicao na tela /integracoes.
+   */
+  backfill_window_days: number | null;
 };
 
 export async function ensureJobsTable(): Promise<void> {
@@ -55,7 +62,16 @@ export async function ensureJobsTable(): Promise<void> {
       created_at timestamptz DEFAULT NOW()
     )
   `);
+
+  // CREATE TABLE IF NOT EXISTS nao altera tabela ja existente.
+  await pool.query(`
+    ALTER TABLE integration.worker_sync_jobs
+      ADD COLUMN IF NOT EXISTS backfill_window_days int
+  `);
 }
+
+const JOB_COLUMNS = `id, mode, estimated_scope_days, status, started_at, finished_at,
+  requested_by, request_id, max_runs, runs, last_error, summary, backfill_window_days`;
 
 export async function insertJob(job: Omit<PersistedJob, "created_at">): Promise<void> {
   const pool = getPool();
@@ -63,8 +79,8 @@ export async function insertJob(job: Omit<PersistedJob, "created_at">): Promise<
 
   await pool.query(
     `INSERT INTO integration.worker_sync_jobs (
-      id, mode, estimated_scope_days, status, started_at, finished_at, requested_by, request_id, max_runs, runs, last_error, summary
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      id, mode, estimated_scope_days, status, started_at, finished_at, requested_by, request_id, max_runs, runs, last_error, summary, backfill_window_days
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
     ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, runs = EXCLUDED.runs, last_error = EXCLUDED.last_error, summary = EXCLUDED.summary, finished_at = EXCLUDED.finished_at`,
     [
       job.id,
@@ -79,6 +95,7 @@ export async function insertJob(job: Omit<PersistedJob, "created_at">): Promise<
       job.runs,
       job.last_error,
       job.summary,
+      job.backfill_window_days,
     ]
   );
 }
@@ -108,7 +125,10 @@ export async function getJob(jobId: string): Promise<PersistedJob | null> {
   const pool = getPool();
   if (!pool) return null;
 
-  const res = await pool.query(`SELECT id, mode, estimated_scope_days, status, started_at, finished_at, requested_by, request_id, max_runs, runs, last_error, summary FROM integration.worker_sync_jobs WHERE id = $1`, [jobId]);
+  const res = await pool.query(
+    `SELECT ${JOB_COLUMNS} FROM integration.worker_sync_jobs WHERE id = $1`,
+    [jobId]
+  );
   return res.rows[0] ?? null;
 }
 
@@ -117,7 +137,7 @@ export async function getLatestRunningJob(): Promise<PersistedJob | null> {
   if (!pool) return null;
 
   const res = await pool.query(
-    `SELECT id, mode, estimated_scope_days, status, started_at, finished_at, requested_by, request_id, max_runs, runs, last_error, summary
+    `SELECT ${JOB_COLUMNS}
      FROM integration.worker_sync_jobs
      WHERE status = 'queued' OR status = 'running'
      ORDER BY started_at DESC
