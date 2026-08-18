@@ -90,9 +90,9 @@ export class CoreRepository implements SyncControlStore {
   }
 
   /**
-   * Marca d'agua da descoberta incremental. Vive sempre no CORE, mesmo quando
-   * SYNC_CONTROL_TARGET=oms, para que avancar o keyset nunca exija escrita no
-   * OMS (que opera read-only — ver createOmsPool).
+   * Marca d'agua da descoberta incremental. Vive no CORE, como todo o controle
+   * tecnico de sync — o OMS opera read-only e nao aceita escrita nenhuma
+   * (ver createOmsPool e OmsRepository).
    */
   async getWatermark(stream: string): Promise<SyncWatermark | null> {
     const result = await this.pool.query<{ sort_at: Date | null; record_id: string | null }>(

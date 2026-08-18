@@ -11,8 +11,9 @@ const STATEMENT_TIMEOUT_MILLIS = 30_000;
  * A garantia e dada no startup da conexao, via parametro `options` do libpq:
  * toda transacao nasce READ ONLY, entao qualquer INSERT/UPDATE/DELETE/DDL
  * falha com "cannot execute ... in a read-only transaction" antes de tocar
- * dado. Vale inclusive para o fallback SYNC_CONTROL_TARGET=oms, que ainda
- * carrega metodos de escrita herdados do desenho antigo.
+ * dado. OmsRepository nem tem mais metodo de escrita (o fallback que os
+ * usava foi removido), mas o guard fica como defesa em profundidade contra
+ * qualquer regressao futura.
  *
  * Escolhido `options` em vez de "SET SESSION CHARACTERISTICS" no evento
  * `connect` do pool porque o pg nao aguarda listeners assincronos: uma query

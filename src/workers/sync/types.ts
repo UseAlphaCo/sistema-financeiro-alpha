@@ -48,12 +48,13 @@ export type SyncWatermark = {
 
 /**
  * Contrato do armazenamento de controle tecnico da sincronizacao
- * (fila, retry, DLQ e lock). Implementado pelo CORE (padrao) e, para
- * rollback de emergencia, tambem pelo OMS legado.
+ * (fila, retry, DLQ e lock). Implementado exclusivamente pelo CORE
+ * (CoreRepository) -- o OMS e fonte de leitura e nao ha fallback que
+ * escreva nele.
  *
  * A marca d'agua NAO faz parte deste contrato de proposito: ela e sempre
- * gravada no CORE, mesmo com SYNC_CONTROL_TARGET=oms, para que o avanco do
- * keyset nunca dependa de escrita no OMS. Ver CoreRepository.setWatermark.
+ * gravada no CORE, para que o avanco do keyset nunca dependa de escrita no
+ * OMS. Ver CoreRepository.setWatermark.
  */
 export interface SyncControlStore {
   ensureInfrastructure(): Promise<void>;

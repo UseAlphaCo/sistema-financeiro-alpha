@@ -18,7 +18,6 @@ const env = {
   CORE_DB_URL: "postgresql://core",
   BATCH_SIZE: 100,
   MAX_RETRIES: 5,
-  SYNC_CONTROL_TARGET: "core",
   DLQ_RETENTION_DAYS: 90,
   SYNC_WATERMARK_GRACE_SECONDS: 300,
 } as WorkerEnv;
@@ -29,9 +28,8 @@ describe("pools de sincronizacao", () => {
     createOmsPool(env);
 
     // Garantia estrutural: o OMS e fonte de leitura. Qualquer
-    // INSERT/UPDATE/DELETE/DDL falha no servidor, inclusive pelos metodos de
-    // escrita herdados que sobrevivem em OmsRepository para o fallback
-    // SYNC_CONTROL_TARGET=oms.
+    // INSERT/UPDATE/DELETE/DDL falha no servidor -- e OmsRepository nem
+    // tem mais metodo de escrita que pudesse tentar.
     expect(configs[0]?.options).toBe("-c default_transaction_read_only=on");
   });
 

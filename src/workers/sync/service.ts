@@ -156,10 +156,10 @@ export async function runSyncOnce(options: RunSyncOptions = {}): Promise<WorkerS
   const omsRepository = new OmsRepository(omsPool);
   const coreRepository = new CoreRepository(corePool);
 
-  // OMS read-only por padrao: o controle tecnico (fila/retry/DLQ/lock) vive no
-  // CORE. "oms" existe apenas como fallback de emergencia (rollback controlado).
-  const controlStore: SyncControlStore =
-    env.SYNC_CONTROL_TARGET === "oms" ? omsRepository : coreRepository;
+  // Controle tecnico (fila/retry/DLQ/lock) vive exclusivamente no CORE. O OMS
+  // e fonte de leitura, ponto -- OmsRepository nem tem mais os metodos que
+  // SyncControlStore exigiria.
+  const controlStore: SyncControlStore = coreRepository;
 
   const summary: WorkerSummary = {
     phase: "running",
@@ -178,19 +178,12 @@ export async function runSyncOnce(options: RunSyncOptions = {}): Promise<WorkerS
     cycleId,
     batchSize: env.BATCH_SIZE,
     maxRetries: env.MAX_RETRIES,
-    controlTarget: env.SYNC_CONTROL_TARGET,
     discoveryMode: discovery.mode,
     backfillDays: discovery.mode === "window" ? discovery.days : null,
   });
 
   try {
     await controlStore.ensureInfrastructure();
-
-    if (controlStore !== coreRepository) {
-      // Mirror e marca d'agua vivem sempre no CORE, mesmo com o controle
-      // tecnico apontado para o OMS.
-      await coreRepository.ensureInfrastructure();
-    }
 
     const hasLock = await controlStore.acquireExecutionLock(WORKER_LOCK_KEY);
     if (!hasLock) {
@@ -200,11 +193,9 @@ export async function runSyncOnce(options: RunSyncOptions = {}): Promise<WorkerS
       return summary;
     }
 
-    if (env.SYNC_CONTROL_TARGET === "core") {
-      const purged = await coreRepository.purgeExpiredDeadLetters(env.DLQ_RETENTION_DAYS);
-      if (purged > 0) {
-        logInfo("sync_dlq_purged", { cycleId, purged, retentionDays: env.DLQ_RETENTION_DAYS });
-      }
+    const purged = await coreRepository.purgeExpiredDeadLetters(env.DLQ_RETENTION_DAYS);
+    if (purged > 0) {
+      logInfo("sync_dlq_purged", { cycleId, purged, retentionDays: env.DLQ_RETENTION_DAYS });
     }
 
     if (discovery.mode === "incremental") {

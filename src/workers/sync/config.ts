@@ -8,9 +8,6 @@ const envSchema = z.object({
   CORE_DB_URL: z.string().min(1, "CORE_DB_URL nao configurada"),
   BATCH_SIZE: z.coerce.number().int().min(1).max(1000).default(100),
   MAX_RETRIES: z.coerce.number().int().min(1).max(20).default(5),
-  // Alvo do controle tecnico de sync. "core" (padrao) mantem o OMS read-only.
-  // "oms" e apenas fallback de emergencia para rollback controlado.
-  SYNC_CONTROL_TARGET: z.enum(["core", "oms"]).default("core"),
   // Retencao da DLQ (integration.failed_jobs) no CORE, em dias.
   DLQ_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(90),
   // Quanto a descoberta incremental recua antes da marca d'agua a cada ciclo.
