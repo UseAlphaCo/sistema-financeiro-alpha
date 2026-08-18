@@ -2,10 +2,13 @@
 
 > **Status:** em execucao. Producao congelada (commits `8b1003e` e `2620098`).
 > Etapa 0 concluida (`661107c`). Parte 1 com 1.1, 1.2 e a raiz do 1.4 concluidas (`0dfd481`),
-> mais o hardening de OMS read-only (`edfb908`). Pendentes: 1.3, 1.5 e a Parte 2 inteira.
+> mais o hardening de OMS read-only (`edfb908`) — **corrigido**, ver item 1 abaixo, o hardening
+> original nao funcionava contra o pooler real. Pendentes: 1.3, 1.5 e a Parte 2 inteira.
 >
-> **Nada foi validado contra banco real ainda** — `npm run check` passa (49 testes, build),
-> mas o ciclo de sync nao rodou desde a mudanca. Ver "Verificacao pendente" no fim.
+> **Validacao contra banco real: itens 1-5 rodados. Item 1 revelou bug real e foi corrigido; itens
+> 2-5 passaram limpos.** Falta so o item 6, que e uma decisao de design, nao uma execucao.
+> `npm run check` passa (53 testes, build). Ver "Verificacao pendente" no fim para o detalhe de cada
+> item.
 
 ## Contexto
 
@@ -324,7 +327,7 @@ D-1 e alguns dias historicos depois de ligar a flag. Rollback e desligar a env.
 | # | Etapa | Verificacao |
 |---|---|---|
 | 0 | ~~Curto-circuito do `/lancamentos` (§2.5)~~ **feito** (`661107c`) | Unit com `pg` mockado: `pool.query` nao e chamado para `{source:"manual"}`, `categoryId`, `type!=income` nem `sources` disjunto — mais 3 controles provando que o caminho normal ainda consulta |
-| 1 | ~~§1.1, §1.2, raiz do §1.4~~ **feito** (`0dfd481`, `edfb908`); faltam §1.3 e §1.5 | `npm run check` verde. **Falta rodar contra banco real** — ver "Verificacao pendente" |
+| 1 | ~~§1.1, §1.2, raiz do §1.4~~ **feito** (`0dfd481`, `edfb908`); faltam §1.3 e §1.5 | `npm run check` verde. **Validado contra banco real, itens 1-5** — ver "Verificacao pendente" |
 | 2 | Extrair `mirror-order-mapper.ts` (§2.2) | Vitest sem banco: pago/nao pago, dedup "pago vence recencia", `amountCents<=0`, gateway via `spr` vs heuristica, `search_text` identico ao haystack atual |
 | 3 | Migration + `ensureFinancialOrdersTable` + upsert (§2.1) | Teste de integracao no padrao de [worker-job-repository.test.ts](../src/features/integration/worker-job-repository.test.ts) (skip sem `CORE_DB_URL`): ensure 2x idempotente, upsert com mesmo hash nao muda `materialized_at` |
 | 4 | Job diario + rota de cron (§2.3) | `curl` autenticado na rota para um dia; comparar `count(*)`/`sum(amount_cents)` contra o `/fluxo-de-caixa` do mesmo dia |
@@ -349,24 +352,71 @@ mantem `db=up` com os crons religados — a mesma medicao que provou o diagnosti
 
 ## Verificacao pendente da Parte 1
 
-Nada abaixo foi exercitado contra banco real. Sao pre-requisitos para descongelar producao.
+Sao pre-requisitos para descongelar producao. Itens 1-5 rodados contra banco real; item 6 e decisao
+de design, nao execucao.
 
-1. **`options` do libpq contra o pooler real do OMS.** Se o Supavisor ignorar ou rejeitar o
-   parametro, ou a conexao falha (sync para) ou a garantia de read-only nao vale — e os dois casos
-   sao silenciosos no `npm run check`. Verificar: conectar com a `OMS_DB_URL` real e confirmar
-   `SHOW default_transaction_read_only` = `on`, e que um `INSERT` de teste falha com
-   "read-only transaction".
-2. **Inicializacao da marca d'agua.** Rodar um ciclo e conferir no log `sync_watermark_initialized`
-   que `sortAt` saiu de `mirror_max` (nao de `epoch`), e depois que
-   `integration.sync_watermark` avanca a cada ciclo.
-3. **Um ciclo automatico nao dispara backfill.** Conferir no log que `discoveryMode` e
-   `incremental` e que nao aparece `sync_backfill_enqueued`.
-4. **Um disparo manual ainda dispara.** Pela tela `/integracoes`, confirmar
-   `sync_backfill_enqueued` com a janela pedida.
-5. **A coluna nova entra em tabela existente.** `worker_sync_jobs` ja existe em producao;
-   confirmar que o `ALTER TABLE ... ADD COLUMN IF NOT EXISTS backfill_window_days` aplica.
-6. **`SYNC_CONTROL_TARGET=oms` agora falha de proposito.** Se o fallback de emergencia ainda for
-   considerado necessario, ele precisa ser repensado — hoje quebra em `ensureInfrastructure`.
+1. **`options` do libpq contra o pooler real do OMS — RODADO, ERA UM BUG REAL, CORRIGIDO.**
+   Conectando com `createOmsPool` contra a `OMS_DB_URL` real (Supavisor, sessao em
+   `aws-*.pooler.supabase.com:5432`): `SHOW default_transaction_read_only` voltou **`off`**, e um
+   `UPDATE` de teste (com `WHERE` sobre um UUID garantidamente inexistente, para ser seguro mesmo se
+   a garantia falhasse) **nao foi rejeitado**. Diagnostico: o Supavisor **nao repassa o `options` do
+   startup packet** ao backend real — confirmado tambem por `application_name` chegar sobrescrito
+   como `"Supavisor"` em vez do valor pedido pelo client. O `options: "-c
+   default_transaction_read_only=on"` do Pool ([db.ts](../src/workers/sync/db.ts)) nunca protegeu
+   nada contra esse pooler, em nenhuma porta — nao e um risco exclusivo da futura migracao para 6543
+   (item 1.5), ja estava quebrado em 5432.
+
+   **Correcao aplicada** em
+   [oms-repository.ts](../src/workers/sync/repositories/oms-repository.ts): todo metodo da classe
+   passou a rodar via `pool.connect()` + `SET default_transaction_read_only = on` explicito, na
+   mesma conexao fisica, antes de qualquer outra instrucao — em vez de confiar no `options` do
+   startup packet (que fica como defesa em profundidade, nao faz mal manter). Validado contra o OMS
+   real: apos o `SET` explicito, o mesmo `UPDATE` de teste falhou com "cannot execute UPDATE in a
+   read-only transaction". Coberto por teste unitario com `pg` mockado em
+   [oms-repository.test.ts](../src/workers/sync/repositories/oms-repository.test.ts) (prova a ordem
+   das chamadas e que o client e sempre liberado, inclusive em erro) — nao repete a escrita contra o
+   OMS real; `npm run check` passa (53 testes, build, lint, typecheck, boundaries, contracts).
+
+   **Nota lateral:** os metodos de fallback (`acquireExecutionLock`/`releaseExecutionLock`/etc.,
+   usados apenas quando `SYNC_CONTROL_TARGET=oms`) agora pegam uma conexao fisica nova a cada
+   chamada, entao um lock adquirido numa chamada nao seria liberavel pela mesma sessao numa chamada
+   seguinte. Nao corrigido de proposito: esse caminho ja quebra antes disso, em
+   `ensureInfrastructure` (ver item 6) — e a correcao daquele caminho depende da decisao de design
+   ainda em aberto, nao faz sentido polir um fallback que pode ser removido.
+
+2. **Inicializacao da marca d'agua — RODADO, OK.** `npm run worker:sync:once` logou
+   `sync_watermark_initialized` com `derivedFrom: "mirror_max"` (`sortAt: 2026-08-11T19:46:00.848Z`,
+   nao `epoch`). Apos o ciclo, `SELECT ... FROM integration.sync_watermark WHERE stream =
+   'oms_raw_payloads'` confirmou `sort_at` avancado para `2026-08-11T19:49:56.022Z`, batendo com o
+   `toSortAt` do `sync_incremental_enqueued` do mesmo ciclo — a marca d'agua avanca de verdade a
+   cada ciclo.
+3. **Um ciclo automatico nao dispara backfill — RODADO, OK.** No mesmo log do item 2:
+   `sync_started` com `discoveryMode: "incremental"`, `batch_processed`/`sync_completed` com 86
+   processados e 0 falhas, e nenhum `sync_backfill_enqueued` no run inteiro.
+4. **Um disparo manual ainda dispara — RODADO, OK (com uma flakiness anotada abaixo).**
+   `npx tsx scripts/trigger-backfill.ts 30 1` logou `sync_started` com `discoveryMode: "window"`,
+   `backfillDays: 30`, seguido de `sync_backfill_enqueued` com `days: 30, candidates: 200, missing:
+   200, queued: 200`.
+
+   Na primeira tentativa o job falhou antes de chegar a enfileirar: `last_error: "Connection
+   terminated due to connection timeout"` (erro do `pg-pool` ao abrir uma conexao fisica nova com o
+   OMS, estourando `connectionTimeoutMillis: 10_000`; ver [db.ts](../src/workers/sync/db.ts)) — nao
+   e uma regressao do fix do item 1 (o padrao de conexao-por-query e o mesmo de antes, e
+   `pool.query()` tambem abre/fecha conexao internamente), pareceu hiccup transitorio do Supavisor.
+   A segunda tentativa, alguns segundos depois, passou limpo. Vale observar se volta a acontecer com
+   frequencia — se sim, o worker precisa de retry em `startWorkerSyncJob`/`executeWorkerJob`, que
+   hoje nao tem.
+5. **A coluna nova entra em tabela existente — RODADO, OK.** O job do item 4 terminou com `status:
+   "completed"`, `runs: 1`, `backfill_window_days: 30`, `last_error: null`, `summary.processed: 100`
+   — confirma que `ALTER TABLE integration.worker_sync_jobs ADD COLUMN IF NOT EXISTS
+   backfill_window_days` aplicou sem erro contra a tabela ja existente em producao.
+6. **`SYNC_CONTROL_TARGET=oms` agora falha de proposito — confirmado, nao so hipotetico.** Antes da
+   correcao do item 1, isso nao era garantido (a garantia read-only nem funcionava). Com o `SET`
+   explicito agora em vigor, `ensureInfrastructure()` do `OmsRepository` (`CREATE SCHEMA`/`ALTER
+   TABLE`) vai falhar mesmo, na primeira chamada, com "read-only transaction" — nao precisa rodar
+   contra banco para confirmar, e o design ja garante isso. Decisao pendente: **remover o fallback
+   morto** (simplifica, ja que nao funciona e o hardening o tornou desnecessario) ou redesenhar para
+   um modo que nunca tente escrever no OMS. Nao decidido ainda.
 
 ## Pendencias operacionais fora do plano
 
