@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, QueryResult, QueryResultRow } from "pg";
 
 import { getNextRetryAt } from "../retry-policy";
 import type { RawPayloadCandidate, SyncControlStore, SyncEventRow } from "../types";
@@ -10,6 +10,29 @@ import type { RawPayloadCandidate, SyncControlStore, SyncEventRow } from "../typ
  */
 export class OmsRepository implements SyncControlStore {
   constructor(private readonly pool: Pool) {}
+
+  /**
+   * O `options: -c default_transaction_read_only=on` do Pool (ver db.ts) e
+   * necessario mas nao suficiente: confirmado contra o pooler real (Supavisor,
+   * aws-*.pooler.supabase.com:5432) que o startup packet do libpq e ignorado
+   * -- `SHOW default_transaction_read_only` voltava "off", e ate
+   * `application_name` chegava sobrescrito como "Supavisor" em vez do valor
+   * pedido pelo client. A garantia so funciona como `SET` explicito, na mesma
+   * conexao fisica da query (por isso pool.connect() em vez de pool.query()),
+   * antes de qualquer outra instrucao nessa conexao.
+   */
+  private async query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values?: unknown[]
+  ): Promise<QueryResult<T>> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("SET default_transaction_read_only = on");
+      return await client.query<T>(text, values as unknown[]);
+    } finally {
+      client.release();
+    }
+  }
 
   /**
    * Descoberta incremental: le apenas o que entrou depois da marca d'agua,
@@ -34,7 +57,7 @@ export class OmsRepository implements SyncControlStore {
   ): Promise<RawPayloadCandidate[]> {
     const boundedLimit = Math.min(Math.max(limit, 1), 5000);
 
-    const result = await this.pool.query<{
+    const result = await this.query<{
       id: string;
       source: string | null;
       external_order_id: string | null;
@@ -84,7 +107,7 @@ export class OmsRepository implements SyncControlStore {
   async findRawPayloadCandidates(days: 30 | 60 | 90, limit: number): Promise<RawPayloadCandidate[]> {
     const boundedLimit = Math.min(Math.max(limit, 1), 5000);
 
-    const result = await this.pool.query<{
+    const result = await this.query<{
       id: string;
       source: string | null;
       external_order_id: string | null;
@@ -147,7 +170,7 @@ export class OmsRepository implements SyncControlStore {
         error_message: item.errorMessage,
       };
 
-      const result = await this.pool.query(
+      const result = await this.query(
         `
           INSERT INTO integration.sync_events (
             table_name,
@@ -186,14 +209,14 @@ export class OmsRepository implements SyncControlStore {
   }
 
   async ensureInfrastructure(): Promise<void> {
-    await this.pool.query(`CREATE SCHEMA IF NOT EXISTS integration`);
+    await this.query(`CREATE SCHEMA IF NOT EXISTS integration`);
 
-    await this.pool.query(`
+    await this.query(`
       ALTER TABLE integration.sync_events
       ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ
     `);
 
-    await this.pool.query(`
+    await this.query(`
       CREATE TABLE IF NOT EXISTS integration.failed_jobs (
         id BIGSERIAL PRIMARY KEY,
         sync_event_id BIGINT NOT NULL,
@@ -209,7 +232,7 @@ export class OmsRepository implements SyncControlStore {
   }
 
   async acquireExecutionLock(lockKey: number): Promise<boolean> {
-    const result = await this.pool.query<{ locked: boolean }>(
+    const result = await this.query<{ locked: boolean }>(
       `SELECT pg_try_advisory_lock($1) AS locked`,
       [lockKey]
     );
@@ -218,11 +241,11 @@ export class OmsRepository implements SyncControlStore {
   }
 
   async releaseExecutionLock(lockKey: number): Promise<void> {
-    await this.pool.query(`SELECT pg_advisory_unlock($1)`, [lockKey]);
+    await this.query(`SELECT pg_advisory_unlock($1)`, [lockKey]);
   }
 
   async findPendingEvents(batchSize: number, maxRetries: number): Promise<SyncEventRow[]> {
-    const result = await this.pool.query<{
+    const result = await this.query<{
       id: number;
       table_name: string;
       record_id: string;
@@ -255,7 +278,7 @@ export class OmsRepository implements SyncControlStore {
   }
 
   async markSynced(eventId: number): Promise<void> {
-    await this.pool.query(
+    await this.query(
       `
         UPDATE integration.sync_events
         SET processed = TRUE,
@@ -272,7 +295,7 @@ export class OmsRepository implements SyncControlStore {
     const nextAttempt = event.retries + 1;
     const nextRetryAt = getNextRetryAt(nextAttempt);
 
-    const result = await this.pool.query<{ retries: number }>(
+    const result = await this.query<{ retries: number }>(
       `
         UPDATE integration.sync_events
         SET retries = retries + 1,
@@ -288,7 +311,7 @@ export class OmsRepository implements SyncControlStore {
   }
 
   async moveToDeadLetter(event: SyncEventRow, retries: number, errorMessage: string): Promise<void> {
-    await this.pool.query(
+    await this.query(
       `
         INSERT INTO integration.failed_jobs (
           sync_event_id,
@@ -303,7 +326,7 @@ export class OmsRepository implements SyncControlStore {
       [event.id, event.tableName, event.recordId, event.operation, event.payload ?? null, retries, errorMessage]
     );
 
-    await this.pool.query(
+    await this.query(
       `
         UPDATE integration.sync_events
         SET processed = TRUE,
