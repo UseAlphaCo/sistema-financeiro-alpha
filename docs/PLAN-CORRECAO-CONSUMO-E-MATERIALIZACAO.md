@@ -6,9 +6,9 @@
 > original nao funcionava contra o pooler real. Pendentes: 1.3, 1.5 e a Parte 2 inteira.
 >
 > **Validacao contra banco real: itens 1-5 rodados. Item 1 revelou bug real e foi corrigido; itens
-> 2-5 passaram limpos.** Falta so o item 6, que e uma decisao de design, nao uma execucao.
-> `npm run check` passa (53 testes, build). Ver "Verificacao pendente" no fim para o detalhe de cada
-> item.
+> 2-5 passaram limpos.** Item 6 resolvido: o fallback `SYNC_CONTROL_TARGET=oms` foi removido do
+> codigo (nao redesenhado) — ver detalhe no item 6. `npm run check` passa. Ver "Verificacao
+> pendente" no fim para o detalhe de cada item.
 
 ## Contexto
 
@@ -54,10 +54,10 @@ Pre-requisito para descongelar producao. Ordem por impacto.
 > drenar `integration.sync_queue`") **quebraria a ingestao**. O unico
 > `INSERT INTO integration.sync_queue` do repositorio esta em `enqueueBackfill`
 > ([core-repository.ts:100](../src/workers/sync/repositories/core-repository.ts#L100)), e ele so
-> roda quando `backfillDays` esta setado. Com `SYNC_CONTROL_TARGET=core` (default), a varredura de
-> janela **e** o unico mecanismo de ingestao: tirar o backfill e so drenar esvaziaria a fila para
-> sempre. O `integration.sync_events` do OMS, alimentado por trigger, so e lido no fallback
-> `SYNC_CONTROL_TARGET=oms`.
+> roda quando `backfillDays` esta setado. A varredura de janela **e** o unico mecanismo de ingestao:
+> tirar o backfill e so drenar esvaziaria a fila para sempre. (Nota posterior: `SYNC_CONTROL_TARGET`
+> e o fallback que liam `integration.sync_events` do OMS foram removidos por completo — ver item 6
+> da "Verificacao pendente" — entao esse mecanismo hoje nem existe mais como opcao.)
 
 O desperdicio nao esta em *descobrir* linhas no ciclo, e sim em **redescobrir sempre as mesmas**.
 A descoberta passou a ser incremental por marca d'agua (`integration.sync_watermark` no CORE,
@@ -352,8 +352,8 @@ mantem `db=up` com os crons religados — a mesma medicao que provou o diagnosti
 
 ## Verificacao pendente da Parte 1
 
-Sao pre-requisitos para descongelar producao. Itens 1-5 rodados contra banco real; item 6 e decisao
-de design, nao execucao.
+Sao pre-requisitos para descongelar producao. Itens 1-5 rodados contra banco real; item 6 resolvido
+por remocao de codigo.
 
 1. **`options` do libpq contra o pooler real do OMS — RODADO, ERA UM BUG REAL, CORRIGIDO.**
    Conectando com `createOmsPool` contra a `OMS_DB_URL` real (Supavisor, sessao em
@@ -377,12 +377,11 @@ de design, nao execucao.
    das chamadas e que o client e sempre liberado, inclusive em erro) — nao repete a escrita contra o
    OMS real; `npm run check` passa (53 testes, build, lint, typecheck, boundaries, contracts).
 
-   **Nota lateral:** os metodos de fallback (`acquireExecutionLock`/`releaseExecutionLock`/etc.,
-   usados apenas quando `SYNC_CONTROL_TARGET=oms`) agora pegam uma conexao fisica nova a cada
+   **Nota lateral (superada):** os metodos de fallback (`acquireExecutionLock`/`releaseExecutionLock`/
+   etc., usados apenas quando `SYNC_CONTROL_TARGET=oms`) pegavam uma conexao fisica nova a cada
    chamada, entao um lock adquirido numa chamada nao seria liberavel pela mesma sessao numa chamada
-   seguinte. Nao corrigido de proposito: esse caminho ja quebra antes disso, em
-   `ensureInfrastructure` (ver item 6) — e a correcao daquele caminho depende da decisao de design
-   ainda em aberto, nao faz sentido polir um fallback que pode ser removido.
+   seguinte. Deixou de ser relevante: esses metodos foram removidos por completo do
+   `OmsRepository` (ver item 6) em vez de corrigidos, ja que o caminho inteiro era descartavel.
 
 2. **Inicializacao da marca d'agua — RODADO, OK.** `npm run worker:sync:once` logou
    `sync_watermark_initialized` com `derivedFrom: "mirror_max"` (`sortAt: 2026-08-11T19:46:00.848Z`,
@@ -410,13 +409,27 @@ de design, nao execucao.
    "completed"`, `runs: 1`, `backfill_window_days: 30`, `last_error: null`, `summary.processed: 100`
    — confirma que `ALTER TABLE integration.worker_sync_jobs ADD COLUMN IF NOT EXISTS
    backfill_window_days` aplicou sem erro contra a tabela ja existente em producao.
-6. **`SYNC_CONTROL_TARGET=oms` agora falha de proposito — confirmado, nao so hipotetico.** Antes da
-   correcao do item 1, isso nao era garantido (a garantia read-only nem funcionava). Com o `SET`
-   explicito agora em vigor, `ensureInfrastructure()` do `OmsRepository` (`CREATE SCHEMA`/`ALTER
-   TABLE`) vai falhar mesmo, na primeira chamada, com "read-only transaction" — nao precisa rodar
-   contra banco para confirmar, e o design ja garante isso. Decisao pendente: **remover o fallback
-   morto** (simplifica, ja que nao funciona e o hardening o tornou desnecessario) ou redesenhar para
-   um modo que nunca tente escrever no OMS. Nao decidido ainda.
+6. **`SYNC_CONTROL_TARGET=oms` — RESOLVIDO POR REMOCAO, nao redesenho.** Estava estruturalmente
+   quebrado desde a correcao do item 1 (`ensureInfrastructure()` do `OmsRepository` falharia com
+   "read-only transaction" na primeira chamada). Em vez de deixar o flag existir como codigo morto
+   atras de um default seguro, a capacidade foi eliminada em camadas que se reforcam:
+   - `SYNC_CONTROL_TARGET` deixou de existir em `WorkerEnv` ([config.ts](../src/workers/sync/config.ts))
+     — nao ha mais como selecionar "oms", nem por engano de configuracao.
+   - `OmsRepository` perdeu todos os metodos de controle (`ensureInfrastructure`,
+     `acquireExecutionLock`, `releaseExecutionLock`, `enqueueBackfill`, `findPendingEvents`,
+     `markSynced`, `markFailed`, `moveToDeadLetter`) e o `implements SyncControlStore`
+     ([oms-repository.ts](../src/workers/sync/repositories/oms-repository.ts)) — sobram so os dois
+     metodos de leitura. Nenhum codigo futuro consegue voltar a usar essa classe como armazenamento
+     de controle sem reescrever a capacidade do zero: a garantia agora e do compilador, nao so do
+     Postgres em runtime.
+   - `service.ts` passou a usar `coreRepository` incondicionalmente como `controlStore`, sem
+     ramificacao.
+
+   Complementar (fora do codigo desta aplicacao, acao manual de DBA): `scripts/sql/oms-readonly-grant.sql`
+   ja existe para revogar `INSERT/UPDATE/DELETE/TRUNCATE/CREATE` do usuario tecnico no Postgres do
+   OMS — isso mata a escrita tambem no nivel de permissao do banco, mais forte que qualquer guard em
+   codigo. Nao foi executado aqui; e uma acao de infraestrutura que so quem administra o OMS pode
+   aplicar.
 
 ## Pendencias operacionais fora do plano
 

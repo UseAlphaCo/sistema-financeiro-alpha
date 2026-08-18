@@ -192,8 +192,14 @@ nao escreve mais no OMS:
 3. OMS permanece apenas como fonte de leitura de `raw_payloads`.
 
 A `sync_queue` no CORE e EFEMERA (linha removida no sucesso) e a DLQ tem retencao
-(`DLQ_RETENTION_DAYS`), garantindo que o CORE nao infle. O caminho legado de escrita em OMS
-segue disponivel apenas como fallback de emergencia via `SYNC_CONTROL_TARGET=oms`.
+(`DLQ_RETENTION_DAYS`), garantindo que o CORE nao infle.
+
+Atualizacao 2026-08-18: o fallback `SYNC_CONTROL_TARGET=oms` foi **removido do codigo**, nao so
+desativado por default. `WorkerEnv` nao tem mais esse campo, e `OmsRepository` nao tem mais nenhum
+metodo de escrita/controle (`ensureInfrastructure`, locks, fila, retry, DLQ) — so os dois metodos de
+leitura de `raw_payloads`. O CORE e o unico alvo de controle tecnico possivel, garantido pelo
+compilador (a classe nem implementa mais a interface de controle), nao so por configuracao. Ver item
+6 de "Verificacao pendente da Parte 1" em `docs/PLAN-CORRECAO-CONSUMO-E-MATERIALIZACAO.md`.
 
 Pendente (governanca): permissao SELECT-only no OMS, migracao de historico legado para
 auditoria e limpeza das tabelas `OMS.integration.*`.

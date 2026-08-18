@@ -6,8 +6,9 @@
 -- que nao pertence a este repositorio.
 --
 -- Pre-requisito: rodar scripts/reconcile-oms-core-sync.ts e confirmar que
--- nao ha divergencias, e que o codigo da aplicacao ja opera com
--- SYNC_CONTROL_TARGET=core havera algum tempo (nenhuma escrita tecnica no OMS).
+-- nao ha divergencias. O codigo da aplicacao ja nao tem nenhum caminho de
+-- escrita no OMS (o fallback SYNC_CONTROL_TARGET=oms foi removido em
+-- 2026-08-18), entao este REVOKE nao deve derrubar nada em funcionamento.
 --
 -- Ajuste <sync_user> para o nome real do usuario/role tecnico usado na
 -- connection string OMS_DB_URL.

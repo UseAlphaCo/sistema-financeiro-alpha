@@ -18,6 +18,11 @@ Aplicada a correcao focada que elimina a escrita tecnica em OMS no fluxo padrao:
 - [x] Fila EFEMERA: no sucesso a linha e removida (`markSynced` = DELETE), evitando inflar o CORE.
   A verdade de "foi sincronizado" e o proprio `mirror.raw_payloads`.
 - [x] Flag `SYNC_CONTROL_TARGET` (core|oms, default core) para rollback de emergencia.
+  - **Revertido em 2026-08-18: o flag e o modo `oms` foram removidos do codigo.** O rollback nunca
+    teria funcionado uma vez que o read-only do OMS passou a ser aplicado de verdade (o `options` do
+    libpq era ignorado pelo Supavisor; a correcao com `SET` explicito quebrou o fallback por
+    completo). Mante-lo so preservava uma capacidade de escrita no OMS que nao devia existir. Junto
+    com o flag sairam todos os metodos de controle do `OmsRepository`.
 - [x] DLQ com `DLQ_RETENTION_DAYS` (default 90) e purga por ciclo.
 - [x] Scripts (`backlog-stats`, `process-backlog`) e UI/.env.example atualizados para a fila no CORE.
 - [ ] Governanca (Fase 4/6/7): migracao de historico legado para auditoria, permissao SELECT-only
