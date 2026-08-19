@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 
-import { runSyncOnce } from "@/workers/sync/service";
+import { getWorkerEnv } from "@/workers/sync/config";
+import { createCorePool } from "@/workers/sync/db";
+import { CoreRepository, type SweepStatus } from "@/workers/sync/repositories/core-repository";
+import { runSyncOnce, SYNC_STREAM } from "@/workers/sync/service";
 import {
   ensureJobsTable,
   insertJob,
@@ -166,13 +169,15 @@ async function executeWorkerJob(jobId: string): Promise<void> {
       // Antes, run === 1 passava backfillDays incondicionalmente: com o cron
       // em */5, era uma varredura de 30 dias 288 vezes por dia sobre as
       // mesmas linhas.
-      const cycle = await runSyncOnce({
-        discovery: windowBackfill
-          ? run === 1
-            ? { mode: "window", days: windowBackfill }
-            : { mode: "none" }
-          : { mode: "incremental" },
-      });
+      // Sem pedido explicito de janela (o caso do cron), a descoberta segue o
+      // SYNC_DISCOVERY_MODE — hoje "ctid", a varredura por cursor fisico.
+      // Deixar runSyncOnce resolver o padrao evita que este ponto fixe
+      // "incremental" e mascare a configuracao, como acontecia antes.
+      const cycle = await runSyncOnce(
+        windowBackfill
+          ? { discovery: run === 1 ? { mode: "window", days: windowBackfill } : { mode: "none" } }
+          : {}
+      );
 
       currentSummary = mergeSummary(currentSummary, cycle);
 
@@ -282,6 +287,25 @@ export async function getCurrentWorkerSyncJob(): Promise<WorkerSyncJob | null> {
   if (!running) return null;
 
   return mapPersistedJob(running);
+}
+
+/**
+ * Estado da varredura fisica do heap do OMS. Nao depende de job nenhum: e o que
+ * responde "o mirror esta completo?" e "o ciclo esta vivo?" quando nada esta
+ * rodando -- exatamente o cenario de 11/08 a 18/08, em que a tela ficou muda.
+ *
+ * Abre e fecha um pool proprio porque e um caminho de leitura pontual, disparado
+ * pela tela, e nao parte do ciclo do worker.
+ */
+export async function getSyncSweepStatus(): Promise<SweepStatus> {
+  const env = getWorkerEnv();
+  const pool = createCorePool(env);
+
+  try {
+    return await new CoreRepository(pool).getSweepStatus(SYNC_STREAM);
+  } finally {
+    await pool.end();
+  }
 }
 
 export type { WorkerSyncJob, WorkerSyncJobStatus };

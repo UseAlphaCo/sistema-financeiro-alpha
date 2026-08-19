@@ -4,6 +4,7 @@ import { logError, logInfo } from "../../core/observability/logger";
 
 import { getWorkerEnv, type WorkerEnv } from "./config";
 import { createCorePool, createOmsPool } from "./db";
+import { sweepByPageCursor } from "./page-cursor-sync";
 import { CoreRepository } from "./repositories/core-repository";
 import { OmsRepository } from "./repositories/oms-repository";
 import type { SyncControlStore, WorkerSummary } from "./types";
@@ -12,7 +13,7 @@ import { mapPayloadToRawPayloadRecord, validateSyncEvent } from "./validation";
 const WORKER_LOCK_KEY = 9382201;
 
 /** Unico stream hoje: raw_payloads do OMS -> mirror do CORE. */
-const SYNC_STREAM = "oms_raw_payloads";
+export const SYNC_STREAM = "oms_raw_payloads";
 
 /**
  * Como o ciclo descobre o que precisa entrar na fila.
@@ -23,14 +24,20 @@ const SYNC_STREAM = "oms_raw_payloads";
  *   /integracoes ou scripts/trigger-backfill.ts), para fechar lacunas.
  * - "none": nao descobre nada, apenas drena a fila. Usado nas execucoes
  *   seguintes de um job de backfill, que ja enfileirou tudo na primeira.
+ * - "ctid": varredura por cursor fisico de pagina (cauda + auditoria). E o
+ *   padrao do ciclo automatico desde 2026-08-18, porque "incremental" depende
+ *   de um indice que o OMS nao tem e nao pode ganhar. Ver page-cursor-sync.ts.
  */
 type SyncDiscovery =
   | { mode: "incremental" }
   | { mode: "window"; days: 30 | 60 | 90; limit?: number }
+  | { mode: "ctid" }
   | { mode: "none" };
 
 type RunSyncOptions = {
   discovery?: SyncDiscovery;
+  /** Quem disparou o ciclo, para o heartbeat: 'cron' | 'manual' | 'script'. */
+  triggerSource?: string;
 };
 
 type DiscoveryResult = { candidates: number; missing: number; queued: number };
@@ -172,7 +179,8 @@ export async function runSyncOnce(options: RunSyncOptions = {}): Promise<WorkerS
     lockSkipped: false,
   };
 
-  const discovery: SyncDiscovery = options.discovery ?? { mode: "incremental" };
+  const discovery: SyncDiscovery =
+    options.discovery ?? (env.SYNC_DISCOVERY_MODE === "ctid" ? { mode: "ctid" } : { mode: "incremental" });
 
   logInfo("sync_started", {
     cycleId,
@@ -198,7 +206,45 @@ export async function runSyncOnce(options: RunSyncOptions = {}): Promise<WorkerS
       logInfo("sync_dlq_purged", { cycleId, purged, retentionDays: env.DLQ_RETENTION_DAYS });
     }
 
-    if (discovery.mode === "incremental") {
+    if (discovery.mode === "ctid") {
+      // O heartbeat e gravado sempre, inclusive quando o ciclo falha: e o unico
+      // registro que responde "o cron esta vivo?". Em 11/08 o cron morreu e
+      // nada no banco guardou esse fato -- a ausencia de execucao nao deixava
+      // rastro, e foi assim que 51% de buraco passou meses sem alarme.
+      const logId = await coreRepository.startCycleLog(SYNC_STREAM, cycleId, options.triggerSource ?? "cron");
+
+      try {
+        const sweep = await sweepByPageCursor(omsRepository, coreRepository, env, cycleId, SYNC_STREAM);
+        summary.processed += sweep.rowsRepaired;
+
+        await coreRepository.finishCycleLog(logId, sweep.deadlineHit ? "deadline" : "ok", {
+          tailBlocks: sweep.passes.find((p) => p.pass === "tail")?.blocksScanned ?? 0,
+          auditBlocks: sweep.passes.find((p) => p.pass === "audit")?.blocksScanned ?? 0,
+          rowsSeen: sweep.rowsSeen,
+          rowsMissing: sweep.rowsMissing,
+          rowsRepaired: sweep.rowsRepaired,
+          omsMs: 0,
+          coreMs: Date.now() - startedAt,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await coreRepository
+          .finishCycleLog(logId, "error", {
+            tailBlocks: 0,
+            auditBlocks: 0,
+            rowsSeen: 0,
+            rowsMissing: 0,
+            rowsRepaired: 0,
+            omsMs: 0,
+            coreMs: Date.now() - startedAt,
+            errorMessage: message,
+          })
+          .catch(() => {
+            // Nao mascarar o erro original se o proprio log falhar.
+          });
+        throw error;
+      }
+    } else if (discovery.mode === "incremental") {
       await discoverIncremental(cycleId, omsRepository, coreRepository, controlStore, env);
     } else if (discovery.mode === "window") {
       await discoverWindow(cycleId, discovery, omsRepository, coreRepository, controlStore, env);

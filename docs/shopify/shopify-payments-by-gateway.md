@@ -2,6 +2,17 @@
 
 Este documento explica como reconciliar venda bruta, reembolsos e pagamento líquido por gateway Shopify no Vision360 OMS, respeitando pedidos com pagamento dividido entre crédito em loja, Pix e Appmax.
 
+> **Nota de 2026-08-18 — a metodologia continua válida; a recomendação de data warehouse não.**
+> A divergência entre o sistema e a Shopify foi medida contra 11 dias de dados reais
+> (R$ 4,23M em pedidos pagos) e o resultado está em
+> [DIAGNOSTICO-PARIDADE-SHOPIFY-2026-08.md](../DIAGNOSTICO-PARIDADE-SHOPIFY-2026-08.md).
+> Em resumo: o erro de rateio de split é de **0,294%** no total (mas **+11,58%** em
+> `shopify_store_credit`), a fonte do valor e a base de data já estão corretas, e a tabela
+> `shopify_payment_transactions` recomendada em [Data Warehouse](#data-warehouse) **não será
+> construída** para o escopo de faturamento bruto — o rateio completo já é calculado e descartado
+> por `resolveDominantPaymentMethod`, e persistí-lo resolve 100% do erro medido. Ler o
+> diagnóstico antes de agir sobre este documento.
+
 ## Objetivo
 
 Reproduzir o relatório Shopify:
@@ -323,6 +334,14 @@ Pagamentos processados na Shopify
 ```
 
 ### Data Warehouse
+
+> **SUPERADO para o escopo de faturamento bruto (2026-08-18).** A medição em
+> [DIAGNOSTICO-PARIDADE-SHOPIFY-2026-08.md](../DIAGNOSTICO-PARIDADE-SHOPIFY-2026-08.md) mostrou que
+> esta tabela não se paga: o erro que ela corrigiria é de 0,294% e tem uma correção muito mais
+> barata (persistir o mapa por gateway que o job de resolução já monta). O modelo abaixo segue
+> sendo o desenho certo **se e quando** reembolso/líquido entrar em escopo — o que hoje está
+> bloqueado a montante, porque o mirror recebe apenas os tópicos `orders/create` e `orders/paid`,
+> e portanto nenhuma tabela derivada dele veria um reembolso.
 
 Modelo recomendado:
 

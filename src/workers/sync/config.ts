@@ -16,6 +16,27 @@ const envSchema = z.object({
   // O custo e reler essa janela curta por ciclo; a dedup por
   // findExistingRawPayloadIds impede reenfileiramento.
   SYNC_WATERMARK_GRACE_SECONDS: z.coerce.number().int().min(0).max(86_400).default(300),
+  // Como o ciclo automatico descobre o que falta no mirror.
+  //
+  // "ctid"      varredura por cursor fisico de pagina. Padrao. Nao depende de
+  //             indice no OMS, e o unico modo que funciona hoje.
+  // "watermark" keyset por tempo (o modo antigo). Mantido so como rollback:
+  //             exige um indice em (COALESCE(received_at, processed_at), id)
+  //             que o OMS nao tem, entao estoura o statement_timeout de 30 s.
+  //             Trocar aqui reverte o desenho inteiro sem deploy.
+  SYNC_DISCOVERY_MODE: z.enum(["ctid", "watermark"]).default("ctid"),
+  // Paginas de heap por chunk de descoberta.
+  //
+  // 5.000 paginas ~ 65k linhas. O Tid Range Scan em si custa ~2 s (medido: 4 s
+  // para 10.000 paginas), mas o chunk inteiro inclui anti-join e
+  // enfileiramento; a 10.000 paginas um chunk levou 36 s contra producao e
+  // consumia o orcamento de descoberta sozinho. Chunk menor tambem encurta a
+  // janela em que inserts concorrentes ficam invisiveis ao snapshot do
+  // statement.
+  SYNC_CHUNK_BLOCKS: z.coerce.number().int().min(500).max(50_000).default(5_000),
+  // Orcamento de tempo do ciclo. Fica abaixo do maxDuration de 60 s da rota de
+  // cron para o ciclo terminar limpo em vez de ser morto no meio de um chunk.
+  SYNC_CYCLE_BUDGET_MS: z.coerce.number().int().min(5_000).max(600_000).default(45_000),
 });
 
 export type WorkerEnv = z.infer<typeof envSchema>;

@@ -39,6 +39,18 @@ export function logInfo(message: string, payload?: unknown) {
   );
 }
 
+export function logWarn(message: string, payload?: unknown) {
+  const safePayload = redactValue(payload);
+  console.warn(
+    JSON.stringify({
+      level: "warn",
+      message,
+      payload: safePayload,
+      timestamp: new Date().toISOString(),
+    })
+  );
+}
+
 export function logError(message: string, payload?: unknown) {
   const safePayload = redactValue(payload);
   console.error(

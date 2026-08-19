@@ -1,6 +1,23 @@
 import type { Pool, QueryResult, QueryResultRow } from "pg";
 
-import type { RawPayloadCandidate } from "../types";
+import type { OmsHeapState, RawPayloadCandidate, RawPayloadKey } from "../types";
+
+/**
+ * Colunas completas de raw_payloads. Usado so na busca por PK dos ausentes --
+ * a descoberta usa RAW_PAYLOAD_KEY_COLUMNS, que nao toca no TOAST.
+ */
+const RAW_PAYLOAD_FULL_COLUMNS = `
+  rp.id,
+  rp.source,
+  rp.external_order_id,
+  rp.event_type,
+  rp.payload_json,
+  rp.headers_json,
+  rp.received_at,
+  rp.processed_at,
+  rp.processing_status,
+  rp.error_message
+`;
 
 /**
  * OMS: fonte de leitura de raw_payloads, e nada mais. Nao ha mais metodo de
@@ -34,6 +51,132 @@ export class OmsRepository {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Estado fisico do heap: identidade do arquivo e tamanho real.
+   *
+   * `pg_relation_size` le o tamanho do arquivo (exato); `pg_class.relpages` e
+   * estimativa que so e atualizada por VACUUM/ANALYZE -- em 2026-08-18 estava
+   * 1.370 paginas atras (199.528 contra 200.898), o que faria a cauda parar
+   * antes do fim do heap e perder o que chegou nesse intervalo.
+   */
+  async getHeapState(): Promise<OmsHeapState> {
+    const result = await this.query<{ relfilenode: string; heap_blocks: string }>(
+      `
+        SELECT c.relfilenode::text AS relfilenode,
+               (pg_relation_size(c.oid) / current_setting('block_size')::bigint)::text AS heap_blocks
+        FROM pg_class c
+        WHERE c.oid = 'public.raw_payloads'::regclass
+      `
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error("public.raw_payloads nao encontrada no OMS");
+    }
+
+    return { relfilenode: row.relfilenode, heapBlocks: Number(row.heap_blocks) };
+  }
+
+  /**
+   * Descoberta por faixa fisica de paginas: [fromBlock, toBlock).
+   *
+   * Por que ctid e nao received_at: o OMS nao tem indice em received_at nem em
+   * processed_at, e nao podemos criar (read-only). O keyset temporal vira
+   * Parallel Seq Scan de ~80 s contra um statement_timeout de 30 s, ou seja
+   * falha sempre. O ctid e o unico caminho de acesso que existe sem DDL --
+   * PG 17 resolve esta faixa com Tid Range Scan (medido: 10.000 paginas =
+   * 108.461 linhas em 4,0 s, ja sob o timeout de 30 s).
+   *
+   * Confirmado por EXPLAIN que o planner mantem o Tid Range Scan com os
+   * limites vindo como parametro ($1/$2), entao nao ha necessidade de
+   * interpolar literais.
+   *
+   * NUNCA acrescentar LIMIT aqui. A fronteira de um chunk e sempre uma pagina
+   * inteira; um LIMIT seguido do avanco do cursor descartaria o resto da faixa
+   * em silencio -- exatamente a classe de buraco que este desenho existe para
+   * eliminar.
+   */
+  async findKeysInPageRange(fromBlock: number, toBlock: number): Promise<RawPayloadKey[]> {
+    const from = Math.max(Math.floor(fromBlock), 0);
+    const to = Math.max(Math.floor(toBlock), from);
+
+    if (to === from) {
+      return [];
+    }
+
+    const result = await this.query<{
+      id: string;
+      source: string | null;
+      received_at: Date | null;
+      processed_at: Date | null;
+      processing_status: string | null;
+    }>(
+      `
+        SELECT rp.id, rp.source, rp.received_at, rp.processed_at, rp.processing_status
+        FROM raw_payloads rp
+        WHERE rp.ctid >= $1::tid AND rp.ctid < $2::tid
+      `,
+      [`(${from},0)`, `(${to},0)`]
+    );
+
+    return result.rows.map((row) => ({
+      id: row.id,
+      source: row.source,
+      receivedAt: row.received_at,
+      processedAt: row.processed_at,
+      processingStatus: row.processing_status,
+    }));
+  }
+
+  /**
+   * Busca alvo dos ausentes, por chave primaria. E o unico ponto que paga o
+   * custo do TOAST: medido em ~330 linhas/s, limitado por banda e nao por
+   * concorrencia (4 conexoes em paralelo deram 317 linhas/s -- paralelizar so
+   * sobrecarrega o OMS sem ganho).
+   *
+   * Pode devolver MENOS linhas que ids pedidos, quando a linha foi apagada no
+   * OMS entre a descoberta e a busca. Quem chama tem de tratar o residuo
+   * explicitamente, nunca descartar em silencio.
+   */
+  async findRawPayloadsByIds(ids: string[]): Promise<RawPayloadCandidate[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const result = await this.query<{
+      id: string;
+      source: string | null;
+      external_order_id: string | null;
+      event_type: string | null;
+      payload_json: unknown;
+      headers_json: unknown;
+      received_at: Date | null;
+      processed_at: Date | null;
+      processing_status: string | null;
+      error_message: string | null;
+    }>(
+      `
+        SELECT ${RAW_PAYLOAD_FULL_COLUMNS}
+        FROM raw_payloads rp
+        WHERE rp.id = ANY($1::uuid[])
+      `,
+      [ids]
+    );
+
+    return result.rows.map((row) => ({
+      id: row.id,
+      source: row.source,
+      externalOrderId: row.external_order_id,
+      eventType: row.event_type,
+      payloadJson: row.payload_json,
+      headersJson: row.headers_json,
+      receivedAt: row.received_at,
+      processedAt: row.processed_at,
+      processingStatus: row.processing_status,
+      errorMessage: row.error_message,
+    }));
   }
 
   /**
