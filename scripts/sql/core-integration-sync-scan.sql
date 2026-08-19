@@ -138,7 +138,31 @@ CREATE INDEX IF NOT EXISTS idx_sync_cycle_log_started_at
 
 
 -- ============================================================================
--- 3. CONSULTAS DE OPERACAO
+-- 3. COLUNA block_hint EM integration.sync_queue
+-- ============================================================================
+--
+-- A varredura enfileira apenas ids (~50 bytes/linha, contra ~20 KB se levasse o
+-- payload). block_hint guarda a pagina do heap do OMS onde a linha foi
+-- descoberta, para que a drenagem busque os payloads em ordem FISICA.
+--
+-- payload_json vive no TOAST, preenchido na ordem de insercao e portanto
+-- correlacionado com o ctid: buscar um lote da mesma vizinhanca de paginas
+-- transforma acesso aleatorio ao heap E ao TOAST em quase sequencial.
+--
+-- Medido ponta a ponta contra producao: 32 -> 67 linhas/s so com a ordem
+-- fisica, e 141 linhas/s combinada com lote de 2.000 (ver FETCH_BATCH_ROWS em
+-- src/workers/sync/page-cursor-sync.ts).
+
+ALTER TABLE integration.sync_queue
+  ADD COLUMN IF NOT EXISTS block_hint BIGINT;
+
+CREATE INDEX IF NOT EXISTS idx_sync_queue_fetch_block
+  ON integration.sync_queue(block_hint, id)
+  WHERE operation = 'FETCH';
+
+
+-- ============================================================================
+-- 4. CONSULTAS DE OPERACAO
 -- ============================================================================
 
 -- Progresso da volta de auditoria.

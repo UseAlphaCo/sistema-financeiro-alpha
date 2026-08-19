@@ -51,14 +51,31 @@ import type { OmsHeapState, RawPayloadCandidate, ScanCursor, ScanPass } from "./
 /** Paginas relidas atras do cursor de cauda a cada ciclo. */
 const TAIL_LOOKBACK_BLOCKS = 500;
 
-/** Linhas por lote de busca de payload. ~330 linhas/s, entao ~1,5 s por lote. */
-const FETCH_BATCH_ROWS = 500;
+/**
+ * Linhas por lote de busca de payload.
+ *
+ * O tamanho do lote e a alavanca dominante de throughput -- mais que a ordem
+ * fisica dos ids. Medido contra producao, ponta a ponta (leitura no OMS +
+ * upsert no mirror):
+ *
+ *    500 linhas/lote ->  67 linhas/s
+ *   2000 linhas/lote -> 141 linhas/s   <- escolhido
+ *   4000 linhas/lote -> 122 linhas/s
+ *
+ * Sobe por amortizacao (cada lote paga round-trip, planejamento e o SET de
+ * read-only na conexao do OMS) e volta a cair em 4.000, quando a escrita no
+ * mirror degrada de forma superlinear: 7,0 s para 2.000 linhas contra 19,6 s
+ * para 4.000. O otimo e o joelho dessas duas curvas.
+ *
+ * Teto absoluto em 6.500 pelo limite de 65.535 parametros do upsert multi-row.
+ */
+const FETCH_BATCH_ROWS = 2_000;
 
 /**
  * Fracao do orcamento reservada a descoberta; o resto vai para a drenagem.
  *
- * A descoberta e barata (~10 s por chunk de 10.000 paginas, incluindo o
- * anti-join) e a drenagem e cara (~330 linhas/s). Sem esta divisao, uma volta
+ * A descoberta e barata (~8 s por chunk de 5.000 paginas, incluindo anti-join e
+ * enfileiramento) e a drenagem e cara (~141 linhas/s). Sem esta divisao, uma volta
  * de auditoria com muito backlog consumiria o ciclo inteiro descobrindo e nada
  * seria reparado -- ou, no sentido oposto, a drenagem de um backlog grande
  * impediria o cursor de andar. Cada lado tem um pedaco garantido.
@@ -281,7 +298,10 @@ async function runPass(
 
     // Enfileira e so entao avanca. A fila e durable e guarda so ids, entao
     // este passo custa um round-trip qualquer que seja o tamanho do buraco.
-    const queued = await coreRepository.enqueueMissingIds(missingIds);
+    //
+    // `from` vai junto como block_hint: e o que permite a drenagem buscar os
+    // payloads em ordem fisica e nao por id espalhado (8x de diferenca medida).
+    const queued = await coreRepository.enqueueMissingIds(missingIds, from);
     rowsQueued += queued;
 
     cursor.nextBlock = to;

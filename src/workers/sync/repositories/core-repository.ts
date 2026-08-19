@@ -104,6 +104,25 @@ export class CoreRepository implements SyncControlStore {
         ON integration.sync_queue(table_name, record_id)
     `);
 
+    // Pagina do heap do OMS onde a linha foi descoberta.
+    //
+    // Serve para drenar em ordem FISICA em vez de por id espalhado. Medido:
+    // buscar 500 payloads por ids de uma faixa continua de paginas rende
+    // ~330 linhas/s, contra ~42 linhas/s por ids espalhados -- 8x. A causa e o
+    // TOAST: payload_json vive fora da tabela, preenchido na ordem de insercao,
+    // portanto correlacionado com o ctid. Buscar em ordem de pagina transforma
+    // acesso aleatorio ao heap E ao TOAST em acesso quase sequencial.
+    await this.pool.query(`
+      ALTER TABLE integration.sync_queue
+        ADD COLUMN IF NOT EXISTS block_hint BIGINT
+    `);
+
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_sync_queue_fetch_block
+        ON integration.sync_queue(block_hint, id)
+        WHERE operation = 'FETCH'
+    `);
+
     await this.pool.query(`
       CREATE INDEX IF NOT EXISTS idx_sync_queue_next_retry_at
         ON integration.sync_queue(next_retry_at)
@@ -276,7 +295,7 @@ export class CoreRepository implements SyncControlStore {
    * descoberta varre milhares de paginas por ciclo e a drenagem consome no
    * ritmo que a banda permitir.
    */
-  async enqueueMissingIds(ids: string[]): Promise<number> {
+  async enqueueMissingIds(ids: string[], blockHint: number): Promise<number> {
     if (ids.length === 0) {
       return 0;
     }
@@ -290,12 +309,12 @@ export class CoreRepository implements SyncControlStore {
       const result = await this.pool.query(
         `
           INSERT INTO integration.sync_queue
-            (table_name, record_id, operation, payload, retries, created_at, next_retry_at)
-          SELECT 'raw_payloads', u.id::text, 'FETCH', NULL, 0, NOW(), NULL
+            (table_name, record_id, operation, payload, retries, created_at, next_retry_at, block_hint)
+          SELECT 'raw_payloads', u.id::text, 'FETCH', NULL, 0, NOW(), NULL, $2::bigint
           FROM unnest($1::uuid[]) AS u(id)
           ON CONFLICT (table_name, record_id) DO NOTHING
         `,
-        [slice]
+        [slice, blockHint]
       );
       inserted += result.rowCount ?? 0;
     }
@@ -304,12 +323,17 @@ export class CoreRepository implements SyncControlStore {
   }
 
   /**
-   * Proximos ids a reparar.
+   * Proximos ids a reparar, em ordem FISICA de pagina do OMS.
    *
-   * ORDER BY id (FIFO pela PK) e nao `retries DESC, id` como findPendingEvents:
-   * com centenas de milhares de linhas na fila, ordenar por retries forca um
-   * sort do conjunto inteiro a cada ciclo. Por id, o indice da PK atende e o
-   * plano para no limite.
+   * ORDER BY block_hint e a alavanca de throughput da recuperacao: o payload
+   * vive no TOAST, preenchido na ordem de insercao e portanto correlacionado
+   * com o ctid. Buscar um lote cujas linhas estao na mesma vizinhanca de
+   * paginas rende ~330 linhas/s, contra ~42 linhas/s por ids espalhados
+   * (medido contra producao).
+   *
+   * E nao `retries DESC` como findPendingEvents: com centenas de milhares de
+   * linhas na fila, ordenar por retries forca um sort do conjunto inteiro a
+   * cada ciclo.
    */
   async findPendingFetchIds(limit: number, maxRetries: number): Promise<{ queueId: number; recordId: string }[]> {
     const result = await this.pool.query<{ id: string; record_id: string }>(
@@ -319,7 +343,7 @@ export class CoreRepository implements SyncControlStore {
         WHERE operation = 'FETCH'
           AND retries < $1
           AND (next_retry_at IS NULL OR next_retry_at <= NOW())
-        ORDER BY id ASC
+        ORDER BY block_hint ASC NULLS LAST, id ASC
         LIMIT $2
       `,
       [maxRetries, limit]
