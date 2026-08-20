@@ -34,6 +34,10 @@
 > - **§1.5 sai do caminho critico** — vira a etapa 9, depois de producao estavel.
 > - **§1.3 = `0 * * * *` reafirmado** pelo usuario apos apresentada a folga real de 1,4x no pico.
 >   Risco aceito, com controle compensatorio recomendado em §1.3 (indicador de defasagem visivel).
+>
+> **2026-08-20 — backup proprio de `raw_payloads` de agosto/2026 concluido** (520.939 linhas, 438 MB,
+> verificado): ver "Pendencias operacionais fora do plano". Nao desbloqueia nem bloqueia nada deste
+> plano; reduz a exposicao da janela que ele mais mexe.
 
 ## Contexto
 
@@ -375,6 +379,13 @@ O backup completo da Fase 1 do runbook foi **deliberadamente pulado**, com justi
 la: nao escrevemos nada no OMS, e no CORE o UPSERT e reparo de um read model derivado, nao perda de
 dado.
 
+> **Atualizacao 2026-08-20 — a lacuna de backup foi fechada, por outro caminho.** Existe agora copia
+> propria de `public.raw_payloads` de agosto/2026: **520.939 linhas, 438 MB**, em
+> `/Volumes/externo-ugreen/backup-oms-2026-08-20260820-1551`, verificada contra o banco. Procedimento
+> e evidencias em [RUNBOOK-BACKUP-OMS-SUPABASE-CLI.md](RUNBOOK-BACKUP-OMS-SUPABASE-CLI.md).
+> Nao muda a decisao acima (o UPSERT segue sendo reparo, nao perda) — muda a exposicao: a janela que
+> este plano mais mexe passou a ter copia independente dos backups gerenciados da Supabase.
+
 **Duas correcoes aplicadas ao script antes de usa-lo** (ele existia como `backfill-june-mirror.ts` e
 foi renomeado, porque virou ferramenta geral):
 
@@ -645,6 +656,16 @@ por remocao de codigo.
    aplicar.
 
 ## Pendencias operacionais fora do plano
+
+- **CONCLUIDO 2026-08-20 — backup proprio de `public.raw_payloads` de agosto/2026.** 520.939 linhas,
+  438 MB, em fatias semanais `.csv.gz` no disco externo, com `SHA256SUMS.txt`; conferido contra o
+  banco (as duas semanas fechadas bateram exato). Ver
+  [RUNBOOK-BACKUP-OMS-SUPABASE-CLI.md](RUNBOOK-BACKUP-OMS-SUPABASE-CLI.md), que traz tambem tres
+  achados reaproveitaveis por qualquer trabalho contra o OMS: o **pooler descarta `PGOPTIONS`** (so
+  `SET` por `-c` pega), o **`statement_timeout` do papel `postgres` e 2 min**, e **nao ha indice em
+  `received_at`** — o que reconfirma a "Causa raiz" deste plano por um caminho independente.
+  **Cobertura: 01/08 ate ~17:33 de 20/08.** Fechar o mes exige reexecutar depois de 01/09 apagando as
+  fatias da cauda — a retomada do loop nao as atualiza sozinha.
 
 - **BURACO DE SINCRONIZACAO — 244.691 linhas faltando no mirror na janela 01-18/08, das quais
   R$ 3.345.430,12 em 23.811 pedidos pagos Shopify de 12 a 18/08.** Medido em 2026-08-18 (ver
