@@ -4,6 +4,7 @@ import { logError, logInfo } from "../../core/observability/logger";
 
 import { getWorkerEnv, type WorkerEnv } from "./config";
 import { createCorePool, createOmsPool } from "./db";
+import { partitionByMirrorFloor } from "./mirror-floor";
 import { sweepByPageCursor } from "./page-cursor-sync";
 import { CoreRepository } from "./repositories/core-repository";
 import { OmsRepository } from "./repositories/oms-repository";
@@ -63,14 +64,18 @@ async function discoverIncremental(
   if (!watermark) {
     // Primeira execucao: parte de onde o mirror ja chegou, e nao de NOW(),
     // para nao pular em silencio o que entrou enquanto o sync esteve parado.
+    //
+    // Sem mirror nenhum, o fallback e o PISO e nao a epoca: o mirror comeca em
+    // 01/08/2026 de proposito, entao pedir tudo desde 1970 seria varrer 5,9 GB
+    // no OMS para descartar o resultado no filtro logo abaixo.
     const mirrorMax = await coreRepository.findMirrorMaxSortAt();
-    watermark = { sortAt: mirrorMax ?? new Date(0), recordId: "" };
+    watermark = { sortAt: mirrorMax ?? env.SYNC_MIRROR_FLOOR_AT, recordId: "" };
 
     logInfo("sync_watermark_initialized", {
       cycleId,
       stream: SYNC_STREAM,
       sortAt: watermark.sortAt.toISOString(),
-      derivedFrom: mirrorMax ? "mirror_max" : "epoch",
+      derivedFrom: mirrorMax ? "mirror_max" : "floor",
     });
   }
 
@@ -85,10 +90,13 @@ async function discoverIncremental(
     return { candidates: 0, missing: 0, queued: 0 };
   }
 
+  // O recuo pela folga pode cair abaixo do piso; o piso decide o que entra.
+  const withinFloor = partitionByMirrorFloor(candidates, env.SYNC_MIRROR_FLOOR_AT);
+
   const existingIds = await coreRepository.findExistingRawPayloadIds(
-    candidates.map((item) => item.id)
+    withinFloor.eligible.map((item) => item.id)
   );
-  const missing = candidates.filter((item) => !existingIds.has(item.id));
+  const missing = withinFloor.eligible.filter((item) => !existingIds.has(item.id));
   const queued = await controlStore.enqueueBackfill(missing);
 
   // Avanca ate o ultimo item LIDO, nao o ultimo enfileirado: os que ja
@@ -105,7 +113,10 @@ async function discoverIncremental(
     stream: SYNC_STREAM,
     fromSortAt: cursor.sortAt.toISOString(),
     toSortAt: lastSortAt ? lastSortAt.toISOString() : null,
+    floorAt: env.SYNC_MIRROR_FLOOR_AT.toISOString(),
     candidates: candidates.length,
+    belowFloor: withinFloor.belowFloor,
+    undated: withinFloor.undated,
     missing: missing.length,
     queued,
     // Lote cheio significa que ha mais para ler; o proximo ciclo continua.
@@ -119,6 +130,11 @@ async function discoverIncremental(
  * Backfill por janela de dias. Fica fora do ciclo automatico de proposito —
  * so roda quando alguem pede explicitamente, pela tela /integracoes ou por
  * scripts/trigger-backfill.ts.
+ *
+ * O piso vale aqui tambem, e aqui e onde mais importa: este e o unico caminho
+ * de reimportacao disparavel por um clique na UI, e `days: 90` pediria junho e
+ * julho ao OMS -- justamente as 604.418 linhas que o truncate de 2026-08-21
+ * tirou de proposito. Sem o filtro, um clique desfaz a decisao.
  */
 async function discoverWindow(
   cycleId: string,
@@ -135,16 +151,21 @@ async function discoverWindow(
     return { candidates: 0, missing: 0, queued: 0 };
   }
 
+  const withinFloor = partitionByMirrorFloor(candidates, env.SYNC_MIRROR_FLOOR_AT);
+
   const existingIds = await coreRepository.findExistingRawPayloadIds(
-    candidates.map((item) => item.id)
+    withinFloor.eligible.map((item) => item.id)
   );
-  const missing = candidates.filter((item) => !existingIds.has(item.id));
+  const missing = withinFloor.eligible.filter((item) => !existingIds.has(item.id));
   const queued = await controlStore.enqueueBackfill(missing);
 
   logInfo("sync_backfill_enqueued", {
     cycleId,
     days: discovery.days,
+    floorAt: env.SYNC_MIRROR_FLOOR_AT.toISOString(),
     candidates: candidates.length,
+    belowFloor: withinFloor.belowFloor,
+    undated: withinFloor.undated,
     missing: missing.length,
     queued,
   });

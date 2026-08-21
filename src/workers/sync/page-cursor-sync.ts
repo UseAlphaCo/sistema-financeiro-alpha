@@ -1,6 +1,7 @@
 import { logError, logInfo, logWarn } from "../../core/observability/logger";
 
 import type { WorkerEnv } from "./config";
+import { partitionByMirrorFloor } from "./mirror-floor";
 import type { CoreRepository } from "./repositories/core-repository";
 import type { OmsRepository } from "./repositories/oms-repository";
 import type { OmsHeapState, RawPayloadCandidate, ScanCursor, ScanPass } from "./types";
@@ -43,9 +44,20 @@ import type { OmsHeapState, RawPayloadCandidate, ScanCursor, ScanPass } from "./
  * MVCC -- uma linha ainda nao commitada quando passamos pela pagina dela e
  * invisivel, e o cursor segue em frente. Ambos se resolvem na volta seguinte.
  * Por isso a garantia honesta e a REGRA DAS DUAS VOLTAS: duas voltas
- * consecutivas sem troca de relfilenode provam completude ate o inicio da
- * primeira. Nao escreva "sincronizado" em lugar nenhum a partir de uma volta
- * so.
+ * consecutivas sem troca de relfilenode provam completude DA JANELA
+ * `sort_at >= SYNC_MIRROR_FLOOR_AT` ate o inicio da primeira. Nao escreva
+ * "sincronizado" em lugar nenhum a partir de uma volta so, e nao leia a regra
+ * como completude da tabela: desde 2026-08-21 o mirror e recorte, nao copia.
+ *
+ * O PISO NAO ALTERA A COBERTURA DE BLOCOS
+ * ---------------------------------------
+ * A varredura continua passando por todas as paginas do heap; o piso filtra o
+ * CONJUNTO que vai ao anti-join, nao a faixa varrida. E deliberado: linhas
+ * migram de pagina, entao nao existe faixa de blocos que corresponda a uma
+ * faixa de datas, e pular blocos "antigos" perderia linha nova em pagina velha
+ * -- o caso que a auditoria existe para pegar. O custo de varrer as faixas
+ * antigas cai, porque o anti-join e o enfileiramento passam a receber conjunto
+ * vazio; o que nao cai e o Tid Range Scan, e ele nunca foi o gargalo.
  */
 
 /** Paginas relidas atras do cursor de cauda a cada ciclo. */
@@ -85,7 +97,19 @@ const DISCOVERY_BUDGET_RATIO = 0.4;
 export type SweepPassResult = {
   pass: ScanPass;
   blocksScanned: number;
+  /**
+   * Linhas vistas no heap, ANTES do piso de data.
+   *
+   * Conta tudo de proposito: e o unico numero comparavel com o count(*) do OMS,
+   * e portanto o unico jeito de afirmar que uma volta cobriu a tabela. Se
+   * passasse a contar so o que sobra do piso, "a volta viu 2,1M linhas" viraria
+   * uma afirmacao sobre o recorte e a completude ficaria inauditavel.
+   */
   rowsSeen: number;
+  /** Descartadas por serem anteriores a SYNC_MIRROR_FLOOR_AT. */
+  rowsBelowFloor: number;
+  /** Descartadas por nao terem received_at nem processed_at. */
+  rowsUndated: number;
   rowsMissing: number;
   rowsQueued: number;
   lapClosed: boolean;
@@ -98,6 +122,8 @@ export type SweepResult = {
   rowsRepaired: number;
   rowsMissing: number;
   rowsSeen: number;
+  rowsBelowFloor: number;
+  rowsUndated: number;
   rowsQueued: number;
   pendingRepair: number;
   vanished: number;
@@ -172,19 +198,42 @@ async function drainRepairQueue(
       const rows = await omsRepository.findRawPayloadsByIds(ids);
       const readMs = Date.now() - readStartedAt;
 
+      // Segunda barreira do piso, na escrita. A descoberta ja filtra, mas a
+      // fila e durable: entradas enfileiradas ANTES do piso existir (eram
+      // 467.142 em 2026-08-21, quase todas de abril a julho) chegariam aqui e
+      // rebaixariam o que o truncate acabou de tirar. Filtrar tambem aqui torna
+      // o piso independente de quando a linha entrou na fila.
+      const withinFloor = partitionByMirrorFloor(rows, env.SYNC_MIRROR_FLOOR_AT);
+      const dropped = withinFloor.belowFloor + withinFloor.undated;
+
       const writeStartedAt = Date.now();
-      if (rows.length > 0) {
-        repaired += await coreRepository.upsertRawPayloadsBatch(rows.map(toRecord));
+      if (withinFloor.eligible.length > 0) {
+        repaired += await coreRepository.upsertRawPayloadsBatch(withinFloor.eligible.map(toRecord));
       }
       const writeMs = Date.now() - writeStartedAt;
 
       logInfo("sync_repair_batch", {
         cycleId,
         rows: rows.length,
+        written: withinFloor.eligible.length,
+        belowFloor: withinFloor.belowFloor,
+        undated: withinFloor.undated,
         readMs,
         writeMs,
         rowsPerSec: Math.round((rows.length / Math.max(readMs + writeMs, 1)) * 1000),
       });
+
+      if (dropped > 0) {
+        // Nao e erro, mas tambem nao pode ser silencioso: e fila legada sendo
+        // drenada contra um mirror que mudou de escopo. Se aparecer depois da
+        // fila ter sido zerada, a descoberta esta enfileirando sem piso.
+        logWarn("sync_repair_below_floor", {
+          cycleId,
+          requested: ids.length,
+          dropped,
+          floorAt: env.SYNC_MIRROR_FLOOR_AT.toISOString(),
+        });
+      }
 
       // Sai da fila tudo que foi pedido: o que voltou porque esta no mirror, e
       // o que nao voltou porque a linha nao existe mais no OMS. Deixar o
@@ -281,6 +330,8 @@ async function runPass(
 
   let blocksScanned = 0;
   let rowsSeen = 0;
+  let rowsBelowFloor = 0;
+  let rowsUndated = 0;
   let rowsMissing = 0;
   let rowsQueued = 0;
   let lapClosed = false;
@@ -293,7 +344,17 @@ async function runPass(
     const keys = await omsRepository.findKeysInPageRange(from, to);
     rowsSeen += keys.length;
 
-    const missingIds = await coreRepository.findMissingRawPayloadIds(keys.map((k) => k.id));
+    // O piso e aplicado AQUI, e nao no repositorio: o repositorio devolve o que
+    // o heap tem, e `rowsSeen` mede o heap. Filtrar la dentro faria `rowsSeen`
+    // mentir sobre a tabela e a regra das duas voltas perderia a base de
+    // comparacao com o count(*) do OMS. Politica de recorte e desta camada.
+    const eligible = partitionByMirrorFloor(keys, env.SYNC_MIRROR_FLOOR_AT);
+    rowsBelowFloor += eligible.belowFloor;
+    rowsUndated += eligible.undated;
+
+    const missingIds = await coreRepository.findMissingRawPayloadIds(
+      eligible.eligible.map((k) => k.id)
+    );
     rowsMissing += missingIds.length;
 
     // Enfileira e so entao avanca. A fila e durable e guarda so ids, entao
@@ -314,6 +375,8 @@ async function runPass(
       fromBlock: from,
       toBlock: to,
       rowsSeen: keys.length,
+      rowsBelowFloor: eligible.belowFloor,
+      rowsUndated: eligible.undated,
       rowsMissing: missingIds.length,
       rowsQueued: queued,
     });
@@ -352,7 +415,16 @@ async function runPass(
   cursor.consecutiveErrors = 0;
   await coreRepository.saveScanCursor(cursor, cursor.nextBlock !== startBlock);
 
-  return { pass, blocksScanned, rowsSeen, rowsMissing, rowsQueued, lapClosed };
+  return {
+    pass,
+    blocksScanned,
+    rowsSeen,
+    rowsBelowFloor,
+    rowsUndated,
+    rowsMissing,
+    rowsQueued,
+    lapClosed,
+  };
 }
 
 /**
@@ -381,6 +453,9 @@ export async function sweepByPageCursor(
     heapBlocks: heap.heapBlocks,
     chunkBlocks: env.SYNC_CHUNK_BLOCKS,
     budgetMs: env.SYNC_CYCLE_BUDGET_MS,
+    // Sem o piso no log, "a volta fechou" e uma afirmacao sobre um recorte que
+    // nao esta registrado em lugar nenhum -- inauditavel depois do fato.
+    floorAt: env.SYNC_MIRROR_FLOOR_AT.toISOString(),
   });
 
   // Fase 1: descoberta (barata). Avanca os cursores e enfileira ids ausentes.
@@ -403,6 +478,8 @@ export async function sweepByPageCursor(
     rowsRepaired: drain.repaired,
     rowsMissing: passes.reduce((acc, p) => acc + p.rowsMissing, 0),
     rowsSeen: passes.reduce((acc, p) => acc + p.rowsSeen, 0),
+    rowsBelowFloor: passes.reduce((acc, p) => acc + p.rowsBelowFloor, 0),
+    rowsUndated: passes.reduce((acc, p) => acc + p.rowsUndated, 0),
     rowsQueued: passes.reduce((acc, p) => acc + p.rowsQueued, 0),
     pendingRepair,
     vanished: drain.vanished,
@@ -411,7 +488,10 @@ export async function sweepByPageCursor(
 
   logInfo("sync_sweep_finished", {
     cycleId,
+    floorAt: env.SYNC_MIRROR_FLOOR_AT.toISOString(),
     rowsSeen: result.rowsSeen,
+    rowsBelowFloor: result.rowsBelowFloor,
+    rowsUndated: result.rowsUndated,
     rowsMissing: result.rowsMissing,
     rowsQueued: result.rowsQueued,
     rowsRepaired: result.rowsRepaired,
@@ -422,6 +502,7 @@ export async function sweepByPageCursor(
       pass: p.pass,
       blocks: p.blocksScanned,
       seen: p.rowsSeen,
+      belowFloor: p.rowsBelowFloor,
       missing: p.rowsMissing,
       lapClosed: p.lapClosed,
     })),

@@ -25,10 +25,16 @@
  *   npx tsx scripts/backfill-mirror-window.ts 2026-08-01 2026-08-18
  *   npx tsx scripts/backfill-mirror-window.ts 2026-08-01 2026-08-18 800 3000
  *
+ * O piso do mirror vale aqui: `startDate` anterior a SYNC_MIRROR_FLOOR_AT
+ * aborta, e so passa com `--allow-below-floor`. Ver MIRROR_FLOOR_AT abaixo.
+ *
  * Variaveis de ambiente necessarias:
  *   OMS_DB_URL   - connection string do banco OMS (fonte, somente leitura)
  *   CORE_DB_URL  - connection string do banco CORE (destino)
  *   DATABASE_URL - fallback para CORE se CORE_DB_URL nao estiver definido
+ *
+ * Opcional:
+ *   SYNC_MIRROR_FLOOR_AT - piso de data do mirror (default 2026-08-01T00:00-03)
  */
 
 import 'dotenv/config';
@@ -53,6 +59,19 @@ const DEFAULT_END = '2026-08-18';
  */
 const DEFAULT_BATCH_SIZE = 5000;
 const MAX_BATCH_SIZE = 6500;
+
+/**
+ * Piso de data do mirror, igual ao SYNC_MIRROR_FLOOR_AT do worker.
+ *
+ * Este script escreve direto em mirror.raw_payloads, por fora do worker, entao
+ * o piso do worker nao o alcanca: `startDate` anterior a 01/08/2026 traria de
+ * volta parte das 604.418 linhas que o truncate de 2026-08-21 tirou de
+ * proposito. O guarda pede confirmacao explicita em vez de recusar, porque
+ * mover o piso e uma decisao legitima -- so nao pode ser acidental.
+ */
+const MIRROR_FLOOR_AT = new Date(
+  process.env.SYNC_MIRROR_FLOOR_AT ?? '2026-08-01T00:00:00-03:00'
+);
 const DEFAULT_BATCH_DELAY_MS = 3000; // 3s de pausa entre batches para dar tempo ao Supabase se recuperar
 
 function sleep(ms: number): Promise<void> {
@@ -268,6 +287,26 @@ async function main() {
 
   if (!Number.isFinite(batchSizePedido) || batchSizePedido < 1) {
     throw new Error(`batchSize invalido: ${positional[2]}`);
+  }
+
+  if (Number.isNaN(MIRROR_FLOOR_AT.getTime())) {
+    throw new Error(`SYNC_MIRROR_FLOOR_AT invalida: ${process.env.SYNC_MIRROR_FLOOR_AT}`);
+  }
+
+  // Comparacao por data de calendario, e nao por instante: o piso e
+  // 2026-08-01T00:00:00-03 (03:00Z) e `startDate` chega como 'YYYY-MM-DD', que
+  // o Postgres resolve na timezone da sessao (UTC no pooler). Comparar
+  // instantes marcaria o proprio 2026-08-01 como abaixo do piso, por tres
+  // horas. Datas ISO em string comparam corretamente por ordem lexicografica.
+  const floorDay = MIRROR_FLOOR_AT.toISOString().slice(0, 10);
+  if (startDate < floorDay && !args.includes('--allow-below-floor')) {
+    throw new Error(
+      `startDate ${startDate} e anterior ao piso do mirror (${floorDay}). ` +
+        `O mirror cobre so a janela a partir do piso desde 2026-08-21; carregar ` +
+        `antes disso desfaz o truncate e traz de volta o consumo que congelou a ` +
+        `producao em 11/08. Se o piso mudou, ajuste SYNC_MIRROR_FLOOR_AT; se e ` +
+        `carga pontual deliberada, repita com --allow-below-floor.`
+    );
   }
   const batchSize = Math.min(batchSizePedido, MAX_BATCH_SIZE);
   if (batchSize !== batchSizePedido) {

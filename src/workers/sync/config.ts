@@ -37,6 +37,23 @@ const envSchema = z.object({
   // Orcamento de tempo do ciclo. Fica abaixo do maxDuration de 60 s da rota de
   // cron para o ciclo terminar limpo em vez de ser morto no meio de um chunk.
   SYNC_CYCLE_BUDGET_MS: z.coerce.number().int().min(5_000).max(600_000).default(45_000),
+  // Piso de data do mirror: nada anterior a isto entra em mirror.raw_payloads.
+  //
+  // O mirror deixou de ser copia integral do OMS em 2026-08-21, quando as
+  // 604.418 linhas de 26/04 a 31/07 foram truncadas de proposito. Sem o piso, a
+  // auditoria por ctid enxerga essas linhas como ausentes e as rebaixa de novo:
+  // o truncate se auto-reverte e o consumo que derrubou o Supabase em 11/08
+  // volta inteiro.
+  //
+  // Vem do ambiente porque o piso e politica e vai se mover. Mas o DEFAULT e o
+  // piso, nao "sem piso": a falha segura, se a variavel faltar, e nao rebaixar
+  // 604 mil linhas. O valor e identico ao literal usado no recorte do CSV de
+  // agosto.
+  //
+  // z.coerce.date() rejeita Invalid Date. Isso importa: um piso NaN faria toda
+  // comparacao ser falsa, nenhuma linha seria elegivel e o mirror pararia de
+  // crescer em silencio -- pior que o problema original, porque nao ha erro.
+  SYNC_MIRROR_FLOOR_AT: z.coerce.date().default(new Date("2026-08-01T00:00:00-03:00")),
 });
 
 export type WorkerEnv = z.infer<typeof envSchema>;
