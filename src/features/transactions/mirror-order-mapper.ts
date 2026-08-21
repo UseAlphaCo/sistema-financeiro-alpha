@@ -166,6 +166,41 @@ function resolveAnymarketFeeCents(payload: MirrorPayload): number {
   }, 0);
 }
 
+/**
+ * Ordem total de recencia entre duas linhas do mesmo pedido. Positivo quando
+ * `left` deve vencer.
+ *
+ * Existe porque o desempate anterior nao era uma ordem total: comparava
+ * `mirror_updated_at ?? received_at` com `>` ESTRITO e, no empate, mantinha a
+ * primeira linha que aparecesse. Como a consulta do mirror nao tem ORDER BY, a
+ * "primeira" era a ordem fisica do heap -- ou seja, o vencedor de um empate
+ * dependia de vacuum, de reescrita de pagina e da ordem em que o backfill
+ * gravou. Duas execucoes da mesma consulta podiam devolver valores diferentes,
+ * e o comentario de dedupeMirrorRows prometia o contrario.
+ *
+ * O empate nao e hipotetico: uma carga em bloco grava milhares de linhas com o
+ * mesmo `mirror_updated_at`, e um reprocessamento de webhook grava o mesmo
+ * evento com o mesmo `received_at`.
+ *
+ * `id` como ultimo critério e arbitrario de proposito -- o que importa e ser
+ * ESTAVEL. Nao se resolve empate de conteudo por sorte de layout de disco.
+ */
+function compareMirrorRecency(left: MirrorRow, right: MirrorRow): number {
+  const leftTime = (left.mirror_updated_at ?? left.received_at)?.getTime() ?? null;
+  const rightTime = (right.mirror_updated_at ?? right.received_at)?.getTime() ?? null;
+
+  if (leftTime !== rightTime) {
+    // Linha sem data nenhuma perde de qualquer linha datada: e o mesmo
+    // tratamento que o piso do sync e findRawPayloadsAfter dao a ela.
+    if (leftTime === null) return -1;
+    if (rightTime === null) return 1;
+    return leftTime > rightTime ? 1 : -1;
+  }
+
+  if (left.id === right.id) return 0;
+  return left.id > right.id ? 1 : -1;
+}
+
 // mirror.raw_payloads guarda 1 linha por evento recebido, nao 1 por pedido —
 // reentregas de webhook/backfill duplicam o mesmo external_order_id. Dedup em
 // JS (nao em SQL, ex.: DISTINCT ON numa CTE) de proposito: a versao em SQL
@@ -181,7 +216,10 @@ function resolveAnymarketFeeCents(payload: MirrorPayload): number {
 // escondia pedidos genuinamente pagos atras do evento de criacao (bug real
 // observado: derrubava a contagem de pedidos pagos do dia em ~60%). Uma vez
 // pago, o pedido continua pago; entre linhas com o mesmo status de pagamento,
-// desempate pela mais recente.
+// desempate pela mais recente, e por `id` quando a recencia tambem empata (ver
+// compareMirrorRecency). O resultado nao depende da ordem de entrada -- e o que
+// permite prometer o mesmo pedido vencedor no caminho de request e na
+// materializacao, que leem as mesmas linhas em ordens diferentes.
 export function dedupeMirrorRows(rows: MirrorRow[]): MirrorRow[] {
   const latestByKey = new Map<string, MirrorRow>();
 
@@ -200,9 +238,7 @@ export function dedupeMirrorRows(rows: MirrorRow[]): MirrorRow[] {
       continue;
     }
 
-    const currentTime = current.mirror_updated_at ?? current.received_at;
-    const rowTime = row.mirror_updated_at ?? row.received_at;
-    if (rowTime && (!currentTime || rowTime > currentTime)) {
+    if (compareMirrorRecency(row, current) > 0) {
       latestByKey.set(key, row);
     }
   }
