@@ -26,25 +26,38 @@ auditoria custar 604 mil anti-joins. A perda **nao e irreversivel** — o OMS co
 ## Ambiente
 
 ```bash
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+ROOT="$(git -C ~/Alpha/dev/sistema-financeiro rev-parse --show-toplevel 2>/dev/null)"
 if [ -z "$ROOT" ]; then
-  echo "ERRO: rode este bloco de dentro do repositorio"
+  echo "ERRO: repositorio nao encontrado"
 else
   cd "$ROOT"
   set -a && . ./.env && set +a
   export PATH="$(brew --prefix libpq)/bin:$PATH"
   export CORE_URL="$CORE_DB_URL"
   export OMS_URL="$OMS_DB_URL"
-  [ -n "$CORE_URL" ] && echo "raiz: $PWD | CORE_URL definida (${#CORE_URL} caracteres)" \
+  [ -n "$CORE_URL" ] && echo "raiz: $PWD | CORE_URL (${#CORE_URL} caracteres) | OMS_URL (${#OMS_URL} caracteres)" \
                      || echo "ERRO: CORE_DB_URL ausente no .env"
   psql --version
 fi
 ```
 
+O `-C` com caminho explicito em vez de `git rev-parse` no diretorio corrente: um shell novo comeca em
+`~`, onde `rev-parse` falha, `ROOT` fica vazio e — sem a guarda — o `.env` nao carrega e o `psql`
+termina tentando um socket local. Confira as duas contagens de caracteres na saida: zero em qualquer
+uma delas significa `.env` nao carregado, e nenhum `psql` deste runbook deve rodar assim.
+
+Cliente `psql` mais novo que o servidor (18.x contra 17.6) esta correto: `\copy` e do lado do
+cliente, nao ha formato de dump envolvido.
+
 ```bash
-export BKP="$(ls -d /Volumes/externo-ugreen/backup-*raw_payloads* 2>/dev/null | tail -1)"
-echo "backup: $BKP" && ls -la "$BKP"
+export BKP="$(find /Volumes/externo-ugreen -maxdepth 1 -type d -name 'backup*' -print -quit)"
+echo "backup: [$BKP]" && ls -la "$BKP" && du -sh "$BKP"
 ```
+
+`find` e nao glob: no zsh um padrao sem correspondencia **aborta a linha inteira** antes de o
+comando rodar (`no matches found`), e o `2>/dev/null` nao ajuda porque o erro e do shell, nao do
+`ls`. E a variavel vem do proprio `find`, nao digitada — o nome tem carimbo de data e transcrever a
+mao erra um digito com facilidade (aconteceu).
 
 Convencoes que nao sao estilo, sao correcao:
 
