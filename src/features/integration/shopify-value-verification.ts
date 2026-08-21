@@ -20,7 +20,7 @@
  */
 
 import { computeCashFlow } from "@/features/cash-flow/service";
-import { getCorePool, withConnectionRetry } from "@/features/transactions/read-model";
+import { getCorePool, withConnectionRetry } from "@/features/transactions/mirror-events-repository";
 
 import { fetchShopifyOrderTransactions, type ShopifyOrderTransaction } from "./shopify-order-transactions";
 import { normalizeShopifyStoreDomain, stripWrappingQuotes } from "./shopify-orders-sync";
