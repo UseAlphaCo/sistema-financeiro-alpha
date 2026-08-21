@@ -13,6 +13,7 @@ import {
 } from "@/features/cash-flow/export-job-repository";
 import { formatPaymentMethod, parseOrderNumber } from "@/features/transactions/format";
 import { listMarketplaceReadModelPaginated } from "@/features/transactions/read-model";
+import { normalizeMarketplaceToken } from "@/features/transactions/read-model-filters";
 import {
   PAYMENT_METHODS,
   type FinancialTransaction,
@@ -88,25 +89,10 @@ function buildSearchSummary(filters: CashFlowExportFilters): CashFlowExportJob["
   };
 }
 
+/** Aceita `unknown` porque a entrada vem do payload cru do job de exportacao. */
 function normalizeMarketplaceFilter(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-
-  const normalized = value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim()
-    .replace(/[\s-]+/g, "_");
-
-  if (!normalized || normalized === "todos" || normalized === "all") {
-    return undefined;
-  }
-
-  if (normalized === "mercadolivre") {
-    return "mercado_livre";
-  }
-
-  return normalized;
+  return normalizeMarketplaceToken(value) ?? undefined;
 }
 
 function normalizeCashFlowExportFilters(raw: unknown): CashFlowExportFilters {

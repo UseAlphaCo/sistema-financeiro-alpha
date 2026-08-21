@@ -1,5 +1,6 @@
 import { getPrismaClient } from "@/core/db/prisma-client";
 import { getPaymentMethodSearchTokens } from "@/features/transactions/payment-method-filter";
+import { normalizeMarketplaceToken } from "@/features/transactions/read-model-filters";
 import { PAYMENT_METHODS, type PaymentMethod } from "@/features/transactions/types";
 import { isMirrorReadModelEnabled } from "@/shared/read-model-config";
 import {
@@ -265,27 +266,6 @@ function shouldUseMirrorReadModel(): boolean {
   return isMirrorReadModelEnabled();
 }
 
-function normalizeMarketplaceFilter(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-
-  const normalized = value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim()
-    .replace(/[\s-]+/g, "_");
-
-  if (!normalized || normalized === "todos" || normalized === "all") {
-    return undefined;
-  }
-
-  if (normalized === "mercadolivre") {
-    return "mercado_livre";
-  }
-
-  return normalized;
-}
-
 function summarizeTransactions(items: Array<{
   marketplace: string | null;
   externalSource: string | null;
@@ -398,7 +378,9 @@ export async function computeCashFlow(
 
   const periodDays = Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1;
   const prevRange = getPreviousPeriodRange(start, periodDays);
-  const marketplace = normalizeMarketplaceFilter(filters.marketplace);
+  // `?? undefined` porque o read model devolve null para "sem filtro" ("todos",
+  // "all", vazio) e o resto deste modulo trata ausencia como undefined.
+  const marketplace = normalizeMarketplaceToken(filters.marketplace) ?? undefined;
 
   const extraFilters = {
     source: filters.source,
