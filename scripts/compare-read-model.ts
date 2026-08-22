@@ -203,16 +203,36 @@ async function compararPaginacao(inicio: Date, fim: Date): Promise<number> {
   return legado.items.length - iguais;
 }
 
+/**
+ * Aceita `YYYY-MM-DD` ou timestamp ISO completo.
+ *
+ * O timestamp existe por necessidade, nao por conveniencia: o caminho LEGADO
+ * nao consegue mais servir um dia inteiro. Medido em 2026-08-22, com o mirror
+ * completo, uma consulta de um dia falhou por statement timeout apos 490 s --
+ * sao ~30 mil eventos de 7 KB por dia atravessando a rede para dedupar em
+ * memoria. Comparar exige uma janela que o lado lento aguente.
+ */
+function parseLimite(valor: string | undefined, padrao: string, fimDeDia: boolean): Date {
+  const bruto = valor ?? padrao;
+  const texto = /^\d{4}-\d{2}-\d{2}$/.test(bruto)
+    ? `${bruto}T${fimDeDia ? "23:59:59" : "00:00:00"}-03:00`
+    : bruto;
+
+  const data = new Date(texto);
+  if (Number.isNaN(data.getTime())) {
+    throw new Error(`data invalida: ${bruto} (esperado YYYY-MM-DD ou ISO completo)`);
+  }
+  return data;
+}
+
 async function main() {
   const args = process.argv.slice(2).filter((arg) => !arg.startsWith("--"));
-  const inicio = new Date(`${args[0] ?? "2026-08-01"}T00:00:00-03:00`);
-  const fim = new Date(`${args[1] ?? "2026-08-20"}T23:59:59-03:00`);
+  const inicio = parseLimite(args[0], "2026-08-18T00:00:00-03:00", false);
+  const fim = parseLimite(args[1], "2026-08-18T02:00:00-03:00", true);
 
-  if (Number.isNaN(inicio.getTime()) || Number.isNaN(fim.getTime())) {
-    throw new Error("datas invalidas (esperado YYYY-MM-DD YYYY-MM-DD)");
-  }
-
-  console.log(`=== Comparacao dos dois caminhos: ${args[0] ?? "2026-08-01"} a ${args[1] ?? "2026-08-20"}\n`);
+  console.log(
+    `=== Comparacao dos dois caminhos: ${inicio.toISOString()} a ${fim.toISOString()}\n`
+  );
 
   const todas: Divergencia[] = [];
   try {
