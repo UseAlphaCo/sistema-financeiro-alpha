@@ -667,6 +667,52 @@ por remocao de codigo.
   **Cobertura: 01/08 ate ~17:33 de 20/08.** Fechar o mes exige reexecutar depois de 01/09 apagando as
   fatias da cauda — a retomada do loop nao as atualiza sozinha.
 
+- **CONCLUIDO 2026-08-22 — Parte 2 implementada e janela de agosto materializada.** Sete commits em
+  `ops/freeze-core-fin`. Numeros medidos, nao estimados:
+
+  | item | valor |
+  |---|---|
+  | mirror apos o reset | 520.939 linhas carregadas do backup + 18.394 reparadas pelo sync |
+  | conferencia contra o OMS | **20 dias identicos**, dia a dia, no mesmo literal de fuso |
+  | `integration.financial_orders` | **91.640 pedidos**, 79 MB |
+  | por fonte | shopify 60.730 (R$ 8.921.212,36) · anymarket 30.910 (R$ 3.122.517,99) |
+  | carga inicial | 103.834 chaves, 208 lotes, **50,6 min**, zero retentativas |
+  | leitura de um dia | **1.492 ms** pela materializada contra **falha em 490 s** pelo mirror |
+
+  **Decomposicao da diferenca** (15/08, janela de 5 dias): 35.557 chaves, 33.584 pedidos, 1.973
+  rejeitadas — **todas** por `nao_pago`, e zero por `sem_payload`, `sem_source`, `sem_data` ou
+  `valor_nao_positivo`. O unico motivo de um candidato nao virar pedido e a regra de negocio. Na
+  reexecucao, `alteradas: 0` sobre 33.584 pedidos: a idempotencia do guard de `content_hash` esta
+  medida, nao presumida.
+
+  **Quatro correcoes a especificacao deste plano**, cada uma verificada contra o codigo ou o banco:
+
+  1. **Nenhum indice novo em `mirror.raw_payloads` e necessario** — ao contrario do que a §2.1 pede.
+     `idx_raw_payloads_received_at` **ja existe**. Medido: o passo 1 e Index Scan nesse indice
+     (63.359 linhas -> 29.108 chaves em 4,1 s) e o passo 2 e Index Scan em
+     `idx_raw_payloads_external_order_id` (500 chaves -> 2.460 eventos em 131 ms).
+     `(source, external_order_id)` nao muda o plano porque `external_order_id` ja e quase unico por
+     pedido, e `(mirror_updated_at)` so serviria ao modo incremental por watermark, que nao existe.
+     **Nao ha `CREATE INDEX CONCURRENTLY` a rodar.**
+  2. **O motivo alegado para `ensureFinancialOrdersTable()` e falso.** `DATABASE_URL` e `CORE_DB_URL`
+     sao o mesmo banco em portas diferentes, entao uma migration chegaria ao CORE. O motivo real e que
+     `vercel.json` roda apenas `prisma generate && next build` — nao existe `prisma migrate deploy`
+     no pipeline.
+  3. **Faltavam tres colunas na lista da §2.1**: `mirror_row_id` (o id do evento vencedor, que vira
+     `FinancialTransaction.id` na UI), `external_id` (distinto de `order_key`) e `search_text`.
+  4. **A clausula "cai no caminho legado" da §2.4 deixou de funcionar.** Com o mirror truncado, o
+     legado e `FinancialTransaction`, com zero linhas: cair no legado **e** o zero silencioso. No
+     lugar dela, piso de cobertura explicito (`full`/`partial`/`none`) com clamp. Justificou-se com
+     dado real: 2.191 pedidos materializados tem `occurred_at` **antes** do piso — pedidos de julho
+     cujo evento chegou em agosto, amostra enviesada que sem o clamp apareceria como periodo completo.
+
+- **CONCLUIDO 2026-08-22 — BURACO DE SINCRONIZACAO fechado.** O backup local de agosto foi carregado
+  em `mirror.raw_payloads` (ver [RUNBOOK-RESET-MIRROR-AGOSTO-2026.md](RUNBOOK-RESET-MIRROR-AGOSTO-2026.md))
+  e a varredura por ctid com piso de data fechou o resto: 18.616 linhas ausentes descobertas, 18.394
+  enfileiradas e todas reparadas, com a fila terminando vazia. Os dias 12 a 16/08, que estavam
+  **inteiramente vazios**, hoje tem 26.434 · 31.068 · 35.457 · 19.152 · 16.124 linhas, e a contagem
+  diaria bate exatamente com o OMS nos 20 dias. Registro original abaixo, preservado como historico:
+
 - **BURACO DE SINCRONIZACAO — 244.691 linhas faltando no mirror na janela 01-18/08, das quais
   R$ 3.345.430,12 em 23.811 pedidos pagos Shopify de 12 a 18/08.** Medido em 2026-08-18 (ver
   [DIAGNOSTICO-PARIDADE-SHOPIFY-2026-08.md](DIAGNOSTICO-PARIDADE-SHOPIFY-2026-08.md), secao "Achado
