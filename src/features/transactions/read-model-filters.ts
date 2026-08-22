@@ -32,6 +32,51 @@ export type MirrorRow = {
 
 export type MirrorPayload = Record<string, unknown>;
 
+/**
+ * Pedido materializado, na forma em que e gravado em
+ * integration.financial_orders.
+ *
+ * Mora aqui, no modulo folha, e nao no repositorio: quem PRODUZ este objeto e o
+ * mapeador puro, que nao pode depender de um modulo que importa `pg` nem que
+ * seja so para o tipo.
+ */
+export type MaterializedOrder = {
+  source: string;
+  /** COALESCE(external_order_id, id::text) -- a mesma chave do dedup. */
+  orderKey: string;
+  /** id do EVENTO vencedor do dedup; vira FinancialTransaction.id na UI. */
+  mirrorRowId: string | null;
+  externalId: string | null;
+  occurredAt: string;
+  marketplace: string | null;
+  marketplaceKey: string | null;
+  sourceKey: string | null;
+  sourceBucket: string | null;
+  orderNumber: string | null;
+  description: string | null;
+  paymentMethodRaw: string | null;
+  paymentMethodNormalized: string | null;
+  amountCents: number;
+  shippingCents: number;
+  discountCents: number;
+  taxCents: number;
+  feeCents: number;
+  liquidCents: number;
+  currency: string;
+  type: string;
+  txSource: string;
+  status: string;
+  receivedAt: string | null;
+  sourceUpdatedAt: string | null;
+  searchText: string | null;
+  contentHash: string;
+};
+
+export type MaterializedOrderKey = {
+  source: string;
+  orderKey: string;
+};
+
 export type ReadModelFilters = Omit<
   ListTransactionsFilters,
   "page" | "limit" | "source" | "sources"

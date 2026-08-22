@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { resolveShopifyPaymentMethod as resolveShopifyPaymentMethodFull } from "@/features/integration/payment-method";
 import {
   resolveShopifyDiscountCents,
@@ -6,7 +8,12 @@ import {
 import type { DominantPaymentMethodResult } from "@/features/integration/shopify-order-transactions";
 import type { ShopifyOrderPayload } from "@/features/integration/types";
 import { classifyPaymentMethod } from "@/features/transactions/payment-method-filter";
-import type { MirrorPayload, MirrorRow } from "@/features/transactions/read-model-filters";
+import {
+  normalizeMarketplaceToken,
+  type MaterializedOrder,
+  type MirrorPayload,
+  type MirrorRow,
+} from "@/features/transactions/read-model-filters";
 import type { FinancialTransaction, TransactionSource } from "@/features/transactions/types";
 
 /**
@@ -361,4 +368,141 @@ export function mapMirrorRow(row: MirrorRow): FinancialTransaction | null {
     updatedAt,
     deletedAt: null,
   };
+}
+
+/**
+ * Texto de busca pre-normalizado.
+ *
+ * Paridade byte a byte com o haystack de filterTransactions: os mesmos quatro
+ * campos, na mesma ordem, `filter(Boolean)`, unidos por um espaco e em
+ * minusculas. Se divergir, buscar pela tela e buscar pela tabela materializada
+ * passam a devolver conjuntos diferentes -- e a diferenca so apareceria como
+ * "nao acho esse pedido", nunca como erro.
+ */
+export function buildSearchText(order: {
+  description: string | null;
+  externalId: string | null;
+  orderNumber: string | null;
+  marketplace: string | null;
+}): string | null {
+  const haystack = [order.description, order.externalId, order.orderNumber, order.marketplace]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return haystack ? haystack : null;
+}
+
+/**
+ * Normaliza o termo digitado do mesmo jeito que buildSearchText normaliza o
+ * texto indexado. Par obrigatorio: quem escreve em minusculas tem de procurar
+ * em minusculas.
+ */
+export function normalizeSearchTerm(term: string): string {
+  return term.trim().toLowerCase();
+}
+
+/**
+ * Campos que entram no hash de conteudo, em ordem FIXA.
+ *
+ * received_at e source_updated_at ficam DE FORA de proposito: sao metadados de
+ * quando a linha chegou, nao do que o pedido diz. Incluir faria toda recarga do
+ * mirror (como a da Fase A) invalidar todas as linhas materializadas de uma vez
+ * -- exatamente o oposto do que o guard de no-op existe para fazer.
+ *
+ * A ordem e fixa e o separador e 0x1f (unit separator), que nao ocorre nos
+ * dados: com um separador comum, dois pedidos diferentes poderiam produzir a
+ * mesma concatenacao e o guard veria como "sem mudanca".
+ */
+function contentHashParts(order: Omit<MaterializedOrder, "contentHash">): string[] {
+  return [
+    order.source,
+    order.orderKey,
+    order.mirrorRowId ?? "",
+    order.externalId ?? "",
+    order.occurredAt,
+    order.marketplace ?? "",
+    order.marketplaceKey ?? "",
+    order.sourceKey ?? "",
+    order.sourceBucket ?? "",
+    order.orderNumber ?? "",
+    order.description ?? "",
+    order.paymentMethodRaw ?? "",
+    order.paymentMethodNormalized ?? "",
+    String(order.amountCents),
+    String(order.shippingCents),
+    String(order.discountCents),
+    String(order.taxCents),
+    String(order.feeCents),
+    String(order.liquidCents),
+    order.currency,
+    order.type,
+    order.txSource,
+    order.status,
+    order.searchText ?? "",
+  ];
+}
+
+export function buildContentHash(order: Omit<MaterializedOrder, "contentHash">): string {
+  return createHash("sha256").update(contentHashParts(order).join("\u001f")).digest("hex");
+}
+
+/**
+ * Evento vencedor do dedup -> linha materializada.
+ *
+ * Delega a mapMirrorRow em vez de reimplementar: e o que garante que a
+ * materializacao e o caminho de request concordem por construcao, e nao por
+ * disciplina. Devolve null exatamente nos mesmos casos que mapMirrorRow (nao
+ * pago, sem data, valor <= 0), e o chamador usa esse null para APAGAR a chave
+ * -- senao pedido estornado soma para sempre.
+ */
+export function toMaterializedOrder(row: MirrorRow): MaterializedOrder | null {
+  const transaction = mapMirrorRow(row);
+  if (!transaction || !row.source) return null;
+
+  const payload = asRecord(row.payload_json);
+
+  const base: Omit<MaterializedOrder, "contentHash"> = {
+    source: row.source,
+    orderKey: row.external_order_id ?? row.id,
+    mirrorRowId: row.id,
+    externalId: row.external_order_id,
+    occurredAt: transaction.occurredAt,
+    marketplace: transaction.marketplace,
+    marketplaceKey: normalizeMarketplaceToken(transaction.marketplace),
+    sourceKey: normalizeMarketplaceToken(transaction.externalSource),
+    // marketplace ?? externalSource ?? source, e NAO o
+    // COALESCE(NULLIF(marketplace,''), source) do SQL legado, que ignora
+    // externalSource e por isso agrupa pedido de marketplace sob a origem
+    // tecnica.
+    sourceBucket: transaction.marketplace ?? transaction.externalSource ?? row.source,
+    orderNumber: transaction.orderNumber,
+    description: transaction.description,
+    paymentMethodRaw: transaction.paymentMethodRaw,
+    paymentMethodNormalized: transaction.paymentMethodNormalized,
+    amountCents: transaction.amountCents,
+    shippingCents: transaction.shippingCents,
+    discountCents: transaction.discountCents,
+    taxCents: transaction.taxCents,
+    feeCents: transaction.feeCents,
+    liquidCents: transaction.liquidCents,
+    currency: transaction.currency,
+    type: transaction.type,
+    txSource: transaction.source,
+    status: transaction.status,
+    receivedAt: row.received_at?.toISOString() ?? null,
+    // Data que a ORIGEM diz ter atualizado o pedido, nao a que o mirror gravou:
+    // mirror_updated_at e metadado de infraestrutura e mudaria a cada recarga.
+    sourceUpdatedAt: payload
+      ? resolveStringDate(payload.updated_at, payload.lastUpdate, payload.updatedAt)
+      : null,
+    searchText: buildSearchText({
+      description: transaction.description,
+      externalId: transaction.externalId,
+      orderNumber: transaction.orderNumber,
+      marketplace: transaction.marketplace,
+    }),
+  };
+
+  return { ...base, contentHash: buildContentHash(base) };
 }

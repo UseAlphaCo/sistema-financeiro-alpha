@@ -1,6 +1,10 @@
 import { Pool } from "pg";
 
 import { logWarn } from "@/core/observability/logger";
+import type {
+  MaterializedOrder,
+  MaterializedOrderKey,
+} from "@/features/transactions/read-model-filters";
 import { getCoreConnectionString } from "@/shared/read-model-config";
 
 /**
@@ -45,41 +49,10 @@ function getPool(): Pool | null {
   return globalStore.__financialOrdersPool;
 }
 
-/** Linha materializada, na forma em que e gravada. */
-export type MaterializedOrder = {
-  source: string;
-  orderKey: string;
-  mirrorRowId: string | null;
-  externalId: string | null;
-  occurredAt: string;
-  marketplace: string | null;
-  marketplaceKey: string | null;
-  sourceKey: string | null;
-  sourceBucket: string | null;
-  orderNumber: string | null;
-  description: string | null;
-  paymentMethodRaw: string | null;
-  paymentMethodNormalized: string | null;
-  amountCents: number;
-  shippingCents: number;
-  discountCents: number;
-  taxCents: number;
-  feeCents: number;
-  liquidCents: number;
-  currency: string;
-  type: string;
-  txSource: string;
-  status: string;
-  receivedAt: string | null;
-  sourceUpdatedAt: string | null;
-  searchText: string | null;
-  contentHash: string;
-};
-
-export type MaterializedOrderKey = {
-  source: string;
-  orderKey: string;
-};
+// Os tipos vivem em read-model-filters.ts (modulo folha) porque quem os produz
+// e o mapeador puro, que nao pode depender deste modulo -- que importa `pg`.
+// Reexportados aqui por conveniencia de quem so lida com persistencia.
+export type { MaterializedOrder, MaterializedOrderKey };
 
 /**
  * Colunas do UPSERT, em ordem. Lista unica para o INSERT, para os

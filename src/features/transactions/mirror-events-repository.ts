@@ -134,6 +134,90 @@ export function getCorePool(): Pool | null {
   return corePool;
 }
 
+/**
+ * Chave candidata a materializar. `isExternal` distingue as duas formas de
+ * order_key -- external_order_id ou o proprio id -- porque cada uma tem seu
+ * indice: `rp.id::text = ANY(...)` desperdicaria a PK ao forcar cast.
+ */
+export type CandidateOrderKey = {
+  source: string;
+  orderKey: string;
+  isExternal: boolean;
+};
+
+/**
+ * Passo 1 da materializacao: quais pedidos tiveram evento na janela.
+ *
+ * Recorta por `received_at` (nao por occurred_at) porque e a coluna indexada e a
+ * unica que o mirror controla. O chamador ja aplica folga de dias de cada lado:
+ * um evento que chega hoje pode pertencer a um pedido de anteontem.
+ *
+ * Medido em 2026-08-21 contra 810.637 linhas: Index Scan em
+ * idx_raw_payloads_received_at, 63.359 linhas -> 29.108 chaves em 4,1 s. Nao
+ * traz payload_json, entao nao toca o TOAST.
+ */
+export async function findCandidateOrderKeys(
+  fromReceivedAt: Date,
+  toReceivedAt: Date
+): Promise<CandidateOrderKey[]> {
+  const pool = getCorePool();
+  if (!pool) return [];
+
+  const result = await withConnectionRetry(() =>
+    pool.query<{ source: string; order_key: string; is_external: boolean }>(
+      `
+        SELECT DISTINCT
+               rp.source,
+               COALESCE(rp.external_order_id, rp.id::text) AS order_key,
+               (rp.external_order_id IS NOT NULL)          AS is_external
+        FROM mirror.raw_payloads rp
+        WHERE rp.received_at >= $1
+          AND rp.received_at <  $2
+          AND rp.payload_json IS NOT NULL
+          AND rp.source IN ('shopify', 'anymarket')
+      `,
+      [fromReceivedAt, toReceivedAt]
+    )
+  );
+
+  return result.rows.map((row) => ({
+    source: row.source,
+    orderKey: row.order_key,
+    isExternal: row.is_external,
+  }));
+}
+
+/**
+ * Passo 2: TODOS os eventos das chaves dadas, ja dedupados para um por pedido.
+ *
+ * Busca por chave e nao por data de proposito -- o dedup precisa do conjunto
+ * completo do pedido, e um evento antigo do mesmo pedido pode estar fora da
+ * janela. E por isso que o passo 1 existe separado.
+ *
+ * Chame em lotes: 500 chaves rendem ~2.500 eventos em ~131 ms (medido), e cada
+ * evento carrega payload_json de 10 a 30 KB. Lote grande nao acelera nada e
+ * transforma a consulta em transferencia de centenas de MB.
+ */
+export async function findMirrorRowsByOrderKeys(keys: CandidateOrderKey[]): Promise<MirrorRow[]> {
+  if (keys.length === 0) return [];
+
+  const pool = getCorePool();
+  if (!pool) return [];
+
+  const externalIds = keys.filter((key) => key.isExternal).map((key) => key.orderKey);
+  const rowIds = keys.filter((key) => !key.isExternal).map((key) => key.orderKey);
+
+  const result = await queryMirrorRows(
+    pool,
+    [externalIds, rowIds],
+    `(rp.external_order_id = ANY($1::text[]) OR rp.id = ANY($2::uuid[]))
+       AND rp.payload_json IS NOT NULL
+       AND rp.source IN ('shopify', 'anymarket')`
+  );
+
+  return result.rows;
+}
+
 export async function queryMirrorRows(
   pool: Pool,
   values: unknown[],
