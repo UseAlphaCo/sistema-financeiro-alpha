@@ -456,6 +456,52 @@ export function buildContentHash(order: Omit<MaterializedOrder, "contentHash">):
  * pago, sem data, valor <= 0), e o chamador usa esse null para APAGAR a chave
  * -- senao pedido estornado soma para sempre.
  */
+/** Motivo pelo qual um evento do mirror nao produz pedido financeiro. */
+export type MaterializationRejection =
+  | "sem_payload"
+  | "sem_source"
+  | "nao_pago"
+  | "sem_data"
+  | "valor_nao_positivo";
+
+/**
+ * Por que este evento nao produziu pedido -- ou null se produziu.
+ *
+ * Existe para a verificacao da materializacao ser DECOMPOSTA e nao um numero
+ * agregado: "103.834 chaves geraram 91.640 pedidos" nao diz se os 12.194
+ * restantes sao pedidos nao pagos (esperado) ou uma regressao no mapeamento
+ * (grave). Sem a decomposicao, o comparador dos dois caminhos nao tem linha de
+ * base.
+ *
+ * Reusa as MESMAS funcoes de mapMirrorRow, na mesma ordem. Reimplementar os
+ * testes de rejeicao aqui criaria a divergencia que este modulo existe para
+ * evitar.
+ */
+export function describeMaterializationRejection(row: MirrorRow): MaterializationRejection | null {
+  const payload = asRecord(row.payload_json);
+  if (!payload) return "sem_payload";
+  if (!row.source) return "sem_source";
+  if (!isMirrorOrderPaid(row, payload)) return "nao_pago";
+
+  const order = toMaterializedOrder(row);
+  if (order) return null;
+
+  // Sobrou apenas o que mapMirrorRow rejeita depois do teste de pago: falta de
+  // data utilizavel ou valor nao positivo. A ordem espelha a do mapeador.
+  const occurredAt =
+    row.source === "anymarket"
+      ? resolveStringDate(payload.paymentDate, payload.createdAt, payload.lastUpdate, row.received_at?.toISOString())
+      : resolveStringDate(
+          row.resolved_transaction_processed_at?.toISOString(),
+          payload.processed_at,
+          payload.created_at,
+          payload.updated_at,
+          row.received_at?.toISOString()
+        );
+
+  return occurredAt ? "valor_nao_positivo" : "sem_data";
+}
+
 export function toMaterializedOrder(row: MirrorRow): MaterializedOrder | null {
   const transaction = mapMirrorRow(row);
   if (!transaction || !row.source) return null;

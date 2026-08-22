@@ -25,7 +25,10 @@
 import "dotenv/config";
 
 import { closePool } from "../src/features/transactions/financial-orders-repository";
-import { materializeOrdersForDay } from "../src/features/transactions/materialize-orders-job";
+import {
+  materializeOrdersForDay,
+  materializeOrdersForRange,
+} from "../src/features/transactions/materialize-orders-job";
 
 const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -62,34 +65,77 @@ function expandDays(start: string, end: string): string[] {
 }
 
 async function main() {
-  const args = process.argv.slice(2).filter((arg) => !arg.startsWith("--"));
-  const start = parseDay(args[0] ?? "", "inicio");
-  const end = parseDay(args[1] ?? args[0] ?? "", "fim");
+  const args = process.argv.slice(2);
+  const posicionais = args.filter((arg) => !arg.startsWith("--"));
+  const start = parseDay(posicionais[0] ?? "", "inicio");
+  const end = parseDay(posicionais[1] ?? posicionais[0] ?? "", "fim");
+
+  // Uma passada sobre o intervalo inteiro. E o modo certo para carga inicial: a
+  // folga de descoberta de +-2 dias faz cada invocacao por dia processar 5 dias,
+  // entao 22 dias um a um leriam ~110 dias-equivalentes de evento. Medido: um
+  // unico dia passou de 10 minutos.
+  //
+  // --por-dia forca o modo antigo, util quando um dia especifico precisa ser
+  // reprocessado sozinho.
+  if (!args.includes("--por-dia")) {
+    // Retomada por indice de chave, para nao refazer horas de transferencia
+    // depois de uma queda. O indice sai do campo `fromKey` do ultimo
+    // materialize_orders_chunk que apareceu no log.
+    const retomar = Number(args.find((a) => a.startsWith("--retomar="))?.split("=")[1] ?? 0);
+    if (!Number.isInteger(retomar) || retomar < 0) {
+      throw new Error(`--retomar invalido: precisa ser inteiro >= 0`);
+    }
+
+    console.log(
+      `=== Materializacao em UMA passada: ${start} a ${end}` +
+        (retomar > 0 ? ` (retomando da chave ${retomar})` : "")
+    );
+    const t0 = Date.now();
+    try {
+      const r = await materializeOrdersForRange(start, end, retomar);
+      console.log(
+        `chaves=${r.candidateKeys} pedidos_lidos=${r.dedupedOrders} pedidos=${r.mapped} ` +
+          `alteradas=${r.written} apagadas=${r.deleted} ` +
+          `em ${((Date.now() - t0) / 1000 / 60).toFixed(1)} min`
+      );
+      console.log(
+        `nao viraram pedido: ` +
+          Object.entries(r.rejections)
+            .filter(([, quantas]) => quantas > 0)
+            .map(([motivo, quantas]) => `${motivo}=${quantas}`)
+            .join(" ") || "nenhum"
+      );
+    } finally {
+      await closePool();
+    }
+    return;
+  }
+
   const days = expandDays(start, end);
 
-  console.log(`=== Materializacao de pedidos: ${days.length} dia(s), ${start} a ${end}`);
+  console.log(`=== Materializacao dia a dia: ${days.length} dia(s), ${start} a ${end}`);
 
-  const totals = { candidateKeys: 0, events: 0, mapped: 0, written: 0, deleted: 0 };
+  const totals = { candidateKeys: 0, dedupedOrders: 0, mapped: 0, written: 0, deleted: 0 };
   const t0 = Date.now();
 
   try {
     for (const day of days) {
       const result = await materializeOrdersForDay(day);
       totals.candidateKeys += result.candidateKeys;
-      totals.events += result.events;
+      totals.dedupedOrders += result.dedupedOrders;
       totals.mapped += result.mapped;
       totals.written += result.written;
       totals.deleted += result.deleted;
 
       console.log(
-        `${day}  chaves=${result.candidateKeys}  eventos=${result.events}  ` +
+        `${day}  chaves=${result.candidateKeys}  lidos=${result.dedupedOrders}  ` +
           `pedidos=${result.mapped}  alteradas=${result.written}  apagadas=${result.deleted}  ` +
           `${(result.durationMs / 1000).toFixed(1)}s`
       );
     }
 
     console.log(
-      `=== Total: chaves=${totals.candidateKeys} eventos=${totals.events} ` +
+      `=== Total: chaves=${totals.candidateKeys} lidos=${totals.dedupedOrders} ` +
         `pedidos=${totals.mapped} alteradas=${totals.written} apagadas=${totals.deleted} ` +
         `em ${((Date.now() - t0) / 1000 / 60).toFixed(1)} min`
     );

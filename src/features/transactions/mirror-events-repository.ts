@@ -72,6 +72,13 @@ function isTransientConnectionError(error: unknown): boolean {
   if (typeof err.message === "string" && err.message.includes("Connection terminated unexpectedly")) {
     return true;
   }
+  // Estouro do connectionTimeoutMillis ao ADQUIRIR conexao no pool -- mensagem
+  // diferente da anterior e sem `code`. Aparece quando o link esta saturado:
+  // observado em 2026-08-22 matando uma materializacao de 2 h no 11o lote,
+  // porque nao era reconhecido aqui e portanto nao era retentado.
+  if (typeof err.message === "string" && err.message.includes("Connection terminated due to connection timeout")) {
+    return true;
+  }
   // 57014 (statement timeout) tambem entra aqui: numa conexao recem-aberta
   // (ex.: primeira consulta apos o processo subir), a mesma query que roda
   // em ~300ms isolada as vezes estoura o statement_timeout so por causa da

@@ -1,4 +1,4 @@
-import { logInfo, logWarn } from "@/core/observability/logger";
+import { logError, logInfo, logWarn } from "@/core/observability/logger";
 import {
   deleteFinancialOrders,
   ensureFinancialOrdersTable,
@@ -8,7 +8,11 @@ import {
   findCandidateOrderKeys,
   findMirrorRowsByOrderKeys,
 } from "@/features/transactions/mirror-events-repository";
-import { toMaterializedOrder } from "@/features/transactions/mirror-order-mapper";
+import {
+  describeMaterializationRejection,
+  toMaterializedOrder,
+  type MaterializationRejection,
+} from "@/features/transactions/mirror-order-mapper";
 import type { MaterializedOrder, MaterializedOrderKey } from "@/features/transactions/read-model-filters";
 
 /**
@@ -47,10 +51,17 @@ const DISCOVERY_GRACE_DAYS = 2;
 /**
  * Chaves por lote de leitura do mirror.
  *
- * Medido: 500 chaves -> ~2.500 eventos em ~131 ms. O custo dominante e
- * payload_json (10 a 30 KB por evento), entao lote grande nao acelera -- so
- * transforma uma consulta em transferencia de centenas de MB, com mais chance de
- * o pooler derrubar a conexao no meio.
+ * O gargalo NAO e o banco. Medido em 2026-08-22 contra producao: 500 chaves
+ * rendem ~1.423 eventos (2,85 por pedido), o servidor resolve em 2,7 ms com
+ * BitmapOr sobre os dois indices existentes, e o lote leva ~20 s ponta a ponta.
+ * A diferenca inteira e transferencia: payload_json tem 6.960 bytes de media
+ * (maximo 22 kB), entao o lote traz ~10 MB e o `pg_stat_activity` mostra a
+ * conexao em Client/ClientRead -- o servidor terminou e espera o cliente ler.
+ *
+ * Consequencia pratica: aumentar o lote nao compra tempo (a banda e a mesma) e
+ * aumenta a janela em que uma queda do pooler custa mais trabalho refeito.
+ * Rodando dentro da Vercel, na mesma regiao do banco, este custo cai de forma
+ * que nao vale otimizar aqui.
  */
 const KEY_CHUNK = 500;
 
@@ -58,8 +69,21 @@ export type MaterializeDayResult = {
   /** Dia processado, em YYYY-MM-DD (fuso America/Sao_Paulo). */
   day: string;
   candidateKeys: number;
-  events: number;
+  /**
+   * Pedidos distintos lidos do mirror -- NAO eventos.
+   * findMirrorRowsByOrderKeys ja devolve dedupado (uma linha por pedido), entao
+   * a contagem de eventos crus nao passa por aqui. Medido em 2026-08-22: cada
+   * pedido tem ~2,85 eventos, e sao esses eventos que pagam a transferencia.
+   */
+  dedupedOrders: number;
   mapped: number;
+  /**
+   * Por que os candidatos que NAO viraram pedido nao viraram.
+   *
+   * Sem isto, "103.834 chaves geraram 91.640 pedidos" nao distingue pedido nao
+   * pago (esperado) de regressao no mapeamento (grave).
+   */
+  rejections: Record<MaterializationRejection, number>;
   /** Linhas efetivamente alteradas -- o guard de hash exclui as no-op. */
   written: number;
   deleted: number;
@@ -94,39 +118,126 @@ function keyOf(item: MaterializedOrderKey): string {
 
 /** Materializa um dia. Ver o docblock do modulo para os cinco passos. */
 export async function materializeOrdersForDay(day: string): Promise<MaterializeDayResult> {
-  const startedAt = Date.now();
   const { from, to } = resolveDayWindow(day);
+  return materializeWindow(day, from, to);
+}
+
+/**
+ * Materializa um INTERVALO numa unica passada.
+ *
+ * Existe porque a folga de descoberta faz cada invocacao por dia processar 5
+ * dias: rodar 22 dias um a um le ~110 dias-equivalentes de evento, 5x de
+ * trabalho redundante. Medido em 2026-08-22, um unico dia levou mais de 10
+ * minutos -- o mes inteiro assim passaria de 4 horas.
+ *
+ * A folga esta CERTA para o job diario, onde ela captura o evento que chegou
+ * atrasado. Esta errada para carga inicial, onde o intervalo ja e largo. Aqui a
+ * folga e aplicada uma vez, nas duas pontas do intervalo, e nao por dia.
+ *
+ * O resultado e identico ao de rodar dia a dia -- os mesmos cinco passos sobre a
+ * uniao dos mesmos candidatos.
+ */
+export async function materializeOrdersForRange(
+  startDay: string,
+  endDay: string,
+  resumeFromKey = 0
+): Promise<MaterializeDayResult> {
+  const inicio = resolveDayWindow(startDay);
+  const fim = resolveDayWindow(endDay);
+
+  if (fim.to < inicio.from) {
+    throw new Error(`intervalo invertido: ${startDay} a ${endDay}`);
+  }
+
+  return materializeWindow(`${startDay}..${endDay}`, inicio.from, fim.to, resumeFromKey);
+}
+
+/**
+ * Tentativas por lote antes de desistir.
+ *
+ * Existe porque uma carga inicial leva horas contra um link domestico, e uma
+ * queda de conexao no meio nao pode custar a corrida inteira -- foi o que
+ * aconteceu em 2026-08-22, no 11o lote. Cada lote e independente (le por chave,
+ * grava por UPSERT idempotente), entao repetir e sempre seguro.
+ */
+const CHUNK_ATTEMPTS = 4;
+
+async function comRetentativa<T>(rotulo: string, run: () => Promise<T>): Promise<T> {
+  for (let tentativa = 1; ; tentativa++) {
+    try {
+      return await run();
+    } catch (error) {
+      const mensagem = error instanceof Error ? error.message : String(error);
+      if (tentativa >= CHUNK_ATTEMPTS) {
+        logError("materialize_orders_chunk_failed", { rotulo, tentativa, error: mensagem });
+        throw error;
+      }
+
+      // Espera crescente: se o link esta saturado, tentar de novo na hora so
+      // reproduz a falha.
+      const esperaMs = 2_000 * tentativa;
+      logWarn("materialize_orders_chunk_retry", { rotulo, tentativa, esperaMs, error: mensagem });
+      await new Promise((resolve) => setTimeout(resolve, esperaMs));
+    }
+  }
+}
+
+async function materializeWindow(
+  rotulo: string,
+  from: Date,
+  to: Date,
+  resumeFromKey = 0
+): Promise<MaterializeDayResult> {
+  const startedAt = Date.now();
+  const day = rotulo;
 
   await ensureFinancialOrdersTable();
 
-  const candidates = await findCandidateOrderKeys(from, to);
+  const candidates = await comRetentativa("candidatos", () => findCandidateOrderKeys(from, to));
 
-  let events = 0;
+  let dedupedOrders = 0;
   let mapped = 0;
   let written = 0;
+  const rejections: Record<MaterializationRejection, number> = {
+    sem_payload: 0,
+    sem_source: 0,
+    nao_pago: 0,
+    sem_data: 0,
+    valor_nao_positivo: 0,
+  };
   const produced = new Set<string>();
 
-  for (let start = 0; start < candidates.length; start += KEY_CHUNK) {
+  // A ordem de `candidates` vem do DISTINCT do passo 1 e nao e garantida entre
+  // execucoes, entao ordenar aqui e o que torna `resumeFromKey` significativo:
+  // sem isso, retomar do lote 11 pularia um conjunto arbitrario de chaves.
+  candidates.sort((a, b) => (a.source === b.source ? a.orderKey.localeCompare(b.orderKey) : a.source.localeCompare(b.source)));
+
+  for (let start = resumeFromKey; start < candidates.length; start += KEY_CHUNK) {
     const chunk = candidates.slice(start, start + KEY_CHUNK);
-    const rows = await findMirrorRowsByOrderKeys(chunk);
-    events += rows.length;
+    const rows = await comRetentativa(`lote ${start}`, () => findMirrorRowsByOrderKeys(chunk));
+    dedupedOrders += rows.length;
 
     const orders: MaterializedOrder[] = [];
     for (const row of rows) {
       const order = toMaterializedOrder(row);
-      if (!order) continue;
+      if (!order) {
+        const motivo = describeMaterializationRejection(row);
+        if (motivo) rejections[motivo] += 1;
+        continue;
+      }
       orders.push(order);
       produced.add(keyOf(order));
     }
 
     mapped += orders.length;
-    written += await upsertFinancialOrders(orders);
+    written += await comRetentativa(`gravacao ${start}`, () => upsertFinancialOrders(orders));
 
     logInfo("materialize_orders_chunk", {
       day,
       fromKey: start,
+      restantes: candidates.length - start - chunk.length,
       keys: chunk.length,
-      events: rows.length,
+      dedupedOrders: rows.length,
       mapped: orders.length,
     });
   }
@@ -134,17 +245,22 @@ export async function materializeOrdersForDay(day: string): Promise<MaterializeD
   // Passo 5. So chaves DESTE conjunto candidato entram no DELETE -- nunca um
   // "apague tudo que nao esta no resultado", que apagaria a tabela inteira
   // sempre que a janela fosse pequena.
+  // So apaga as chaves que ESTA execucao processou. Numa corrida retomada, as
+  // chaves anteriores a resumeFromKey nao foram lidas: trata-las como "nao
+  // produziram pedido" apagaria linhas corretas.
   const toDelete = candidates
+    .slice(resumeFromKey)
     .map((candidate) => ({ source: candidate.source, orderKey: candidate.orderKey }))
     .filter((candidate) => !produced.has(keyOf(candidate)));
 
-  const deleted = await deleteFinancialOrders(toDelete);
+  const deleted = await comRetentativa("delete", () => deleteFinancialOrders(toDelete));
 
   const result: MaterializeDayResult = {
     day,
     candidateKeys: candidates.length,
-    events,
+    dedupedOrders,
     mapped,
+    rejections,
     written,
     deleted,
     durationMs: Date.now() - startedAt,
@@ -159,7 +275,7 @@ export async function materializeOrdersForDay(day: string): Promise<MaterializeD
     logWarn("materialize_orders_day_empty", {
       day,
       candidateKeys: candidates.length,
-      events,
+      dedupedOrders,
     });
   }
 

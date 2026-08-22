@@ -42,8 +42,20 @@ const conn = process.env.CORE_DB_URL ?? process.env.DATABASE_URL;
 
 // Fonte inexistente de proposito: o teste roda contra o banco real (mesmo
 // padrao de worker-job-repository.test.ts) e nao pode se confundir com pedido
-// de verdade nem sobreviver ao fim do teste.
+// de verdade.
 const TEST_SOURCE = "vitest-financial-orders";
+
+/**
+ * Chaves FIXAS, nao aleatorias.
+ *
+ * Com chave aleatoria, uma execucao morta antes do `finally` (timeout do
+ * vitest, Ctrl-C) deixa residuo que nenhuma execucao futura sabe apagar --
+ * aconteceu em 2026-08-22 e duas linhas de teste de R$ 100 marcadas como
+ * Shopify ficaram na tabela de producao, visiveis nas telas. Com chave fixa, a
+ * limpeza do inicio remove o residuo de qualquer execucao anterior.
+ */
+const KEY_A = "vitest-A";
+const KEY_B = "vitest-B";
 
 function order(overrides: Partial<MaterializedOrder> & { orderKey: string }): MaterializedOrder {
   return {
@@ -85,15 +97,21 @@ describe("financial-orders-repository (integration)", () => {
     return;
   }
 
-  it("grava, respeita o guard de content_hash e apaga", async () => {
+  // 30 s, nao os 5 s do default: sao seis idas e voltas a um Postgres remoto
+  // (us-east-1) e o teste roda em paralelo com o que mais estiver usando o link.
+  // Falhar por contencao de banda nao e informacao sobre o codigo.
+  it("grava, respeita o guard de content_hash e apaga", { timeout: 30_000 }, async () => {
     await ensureFinancialOrdersTable();
 
-    const keyA = `A-${randomUUID()}`;
-    const keyB = `B-${randomUUID()}`;
+    const keyA = KEY_A;
+    const keyB = KEY_B;
     const keys = [
       { source: TEST_SOURCE, orderKey: keyA },
       { source: TEST_SOURCE, orderKey: keyB },
     ];
+
+    // Limpeza de entrada: apaga residuo de execucao anterior interrompida.
+    await deleteFinancialOrders(keys);
 
     try {
       expect(await upsertFinancialOrders([order({ orderKey: keyA }), order({ orderKey: keyB })])).toBe(2);
