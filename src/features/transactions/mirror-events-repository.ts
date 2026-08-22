@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 
+import { queryWithTimeout } from "@/core/db/pg-session";
 import { dedupeMirrorRows } from "@/features/transactions/mirror-order-mapper";
 import type { MirrorRow } from "@/features/transactions/read-model-filters";
 import { getCoreConnectionString } from "@/shared/read-model-config";
@@ -40,6 +41,15 @@ const MIRROR_ROW_COLUMNS_FALLBACK = `
 `;
 
 const MIRROR_ROW_JOIN_FALLBACK = `FROM mirror.raw_payloads rp`;
+
+/** Limite do caminho de request. Aplicado por SET, nao pelo construtor do Pool. */
+const READ_TIMEOUT_MS = 20_000;
+
+/**
+ * Limite da descoberta de candidatos da materializacao: e um scan de indice
+ * sobre a janela inteira, medido em 4,1 s para 5 dias, e roda fora de request.
+ */
+const DISCOVERY_TIMEOUT_MS = 120_000;
 
 let resolutionTableKnownMissing = false;
 
@@ -136,6 +146,10 @@ export function getCorePool(): Pool | null {
       keepAliveInitialDelayMillis: 5_000,
       idleTimeoutMillis: 15_000,
     });
+
+    // O `statement_timeout` acima NAO CHEGA AO SERVIDOR -- o Supavisor descarta
+    // parametros de startup. Quem o aplica de verdade e queryWithTimeout, com
+    // SET explicito na conexao. Ver src/core/db/pg-session.ts.
   }
 
   return corePool;
@@ -171,7 +185,9 @@ export async function findCandidateOrderKeys(
   if (!pool) return [];
 
   const result = await withConnectionRetry(() =>
-    pool.query<{ source: string; order_key: string; is_external: boolean }>(
+    queryWithTimeout<{ source: string; order_key: string; is_external: boolean }>(
+      pool,
+      DISCOVERY_TIMEOUT_MS,
       `
         SELECT DISTINCT
                rp.source,
@@ -234,7 +250,12 @@ export async function queryMirrorRows(
   if (!resolutionTableKnownMissing) {
     try {
       const result = await withConnectionRetry(() =>
-        pool.query<MirrorRow>(buildMirrorQuery(MIRROR_ROW_COLUMNS, MIRROR_ROW_JOIN, whereSql, tailSql), values)
+        queryWithTimeout<MirrorRow>(
+          pool,
+          READ_TIMEOUT_MS,
+          buildMirrorQuery(MIRROR_ROW_COLUMNS, MIRROR_ROW_JOIN, whereSql, tailSql),
+          values
+        )
       );
       return { rows: dedupeMirrorRows(result.rows) };
     } catch (error) {
@@ -246,7 +267,12 @@ export async function queryMirrorRows(
   }
 
   const result = await withConnectionRetry(() =>
-    pool.query<MirrorRow>(buildMirrorQuery(MIRROR_ROW_COLUMNS_FALLBACK, MIRROR_ROW_JOIN_FALLBACK, whereSql, tailSql), values)
+    queryWithTimeout<MirrorRow>(
+      pool,
+      READ_TIMEOUT_MS,
+      buildMirrorQuery(MIRROR_ROW_COLUMNS_FALLBACK, MIRROR_ROW_JOIN_FALLBACK, whereSql, tailSql),
+      values
+    )
   );
   return { rows: dedupeMirrorRows(result.rows) };
 }

@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 
+import { queryWithTimeout } from "@/core/db/pg-session";
 import { logWarn } from "@/core/observability/logger";
 import type {
   MaterializedOrder,
@@ -44,6 +45,9 @@ function getPool(): Pool | null {
       keepAliveInitialDelayMillis: 5_000,
       idleTimeoutMillis: 15_000,
     });
+
+    // O statement_timeout do construtor nao chega ao servidor (o Supavisor
+    // descarta o startup packet). Quem o aplica e queryWithTimeout.
   }
 
   return globalStore.__financialOrdersPool;
@@ -102,6 +106,13 @@ const UPSERT_COLUMNS = [
  * 30 KB por evento --, nao a escrita, entao subir este numero nao compra tempo.
  */
 export const UPSERT_BATCH_ROWS = 1_000;
+
+/**
+ * Limite das operacoes desta tabela. Maior que os 20 s do caminho de request de
+ * proposito: quem chama e o job, gravando lotes de mil linhas. Aplicado por SET
+ * -- ver src/core/db/pg-session.ts.
+ */
+const WRITE_TIMEOUT_MS = 120_000;
 
 function toValues(order: MaterializedOrder): unknown[] {
   return [
@@ -514,7 +525,9 @@ export async function listMaterializedOrders(
     paginationSql = `LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`;
   }
 
-  const result = await pool.query<FinancialOrderRow>(
+  const result = await queryWithTimeout<FinancialOrderRow>(
+    pool,
+    WRITE_TIMEOUT_MS,
     `
       SELECT fo.source, fo.order_key, fo.mirror_row_id, fo.external_id, fo.occurred_at,
              fo.marketplace, fo.marketplace_key, fo.source_key, fo.source_bucket,

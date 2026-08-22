@@ -10,6 +10,13 @@ vi.mock("pg", () => ({
     query = queryMock;
     on = vi.fn();
     end = vi.fn();
+    // `connect` existe porque as consultas passam por queryWithTimeout, que
+    // pega uma conexao para aplicar `SET statement_timeout` -- o parametro do
+    // construtor do Pool nao chega ao servidor atras do Supavisor. O SET cai no
+    // mesmo queryMock, entao os testes de curto-circuito continuam contando
+    // apenas as consultas que importam: o SET so aparece SE alguma consulta
+    // acontecer, que e exatamente o que estes testes verificam.
+    connect = vi.fn().mockResolvedValue({ query: queryMock, release: vi.fn() });
   },
 }));
 
