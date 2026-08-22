@@ -1,10 +1,16 @@
 import { getPrismaClient } from "@/core/db/prisma-client";
+import {
+  listMaterializedOrders,
+  type FinancialOrderRow,
+} from "@/features/transactions/financial-orders-repository";
 import { getCorePool, queryMirrorRows } from "@/features/transactions/mirror-events-repository";
-import { mapMirrorRow } from "@/features/transactions/mirror-order-mapper";
+import { mapMirrorRow, normalizeSearchTerm } from "@/features/transactions/mirror-order-mapper";
+import { resolveCoverage } from "@/features/transactions/read-model-coverage";
 import {
   filterTransactions,
   MIRROR_SOURCES,
   mirrorCannotContribute,
+  normalizeMarketplaceToken,
   parseFilterDate,
   type MarketplaceReadModelFilters,
   type ReadModelFilters,
@@ -13,7 +19,9 @@ import type {
   FinancialTransaction,
   ListTransactionsFilters,
   PaginatedTransactions,
+  PaymentMethod,
 } from "@/features/transactions/types";
+import { isMaterializedReadModelEnabled } from "@/shared/read-model-config";
 
 /**
  * Read model financeiro: uniao do mirror (pedidos de marketplace) com
@@ -72,6 +80,93 @@ async function listMirrorTransactions(filters: ReadModelFilters): Promise<Financ
       .filter((item): item is FinancialTransaction => Boolean(item)),
     filters
   );
+}
+
+/**
+ * Linha materializada -> FinancialTransaction, o objeto que as telas ja
+ * consomem.
+ *
+ * `id` vem de mirror_row_id e cai em `source:order_key` quando nulo: a UI usa
+ * esse campo como chave de lista, e chave nula ou repetida quebra a
+ * reconciliacao de React sem erro visivel.
+ *
+ * Number() nos centavos mesmo com `::int` na consulta: o cast protege a query
+ * (bigint volta como string no driver `pg`), o Number() protege quem consome se
+ * alguem trocar o cast depois.
+ */
+function fromFinancialOrderRow(row: FinancialOrderRow): FinancialTransaction {
+  const createdAt = (row.received_at ?? row.occurred_at).toISOString();
+
+  return {
+    id: row.mirror_row_id ?? `${row.source}:${row.order_key}`,
+    externalSource: row.source,
+    externalId: row.external_id,
+    marketplace: row.marketplace,
+    orderNumber: row.order_number,
+    paymentMethodRaw: row.payment_method_raw,
+    paymentMethodNormalized: row.payment_method_normalized as PaymentMethod | null,
+    shippingCents: Number(row.shipping_cents),
+    discountCents: Number(row.discount_cents),
+    taxCents: Number(row.tax_cents),
+    feeCents: Number(row.fee_cents),
+    liquidCents: Number(row.liquid_cents),
+    type: row.type as FinancialTransaction["type"],
+    categoryId: null,
+    amountCents: Number(row.amount_cents),
+    currency: row.currency,
+    occurredAt: row.occurred_at.toISOString(),
+    description: row.description,
+    source: row.tx_source as FinancialTransaction["source"],
+    status: row.status as FinancialTransaction["status"],
+    createdBy: null,
+    updatedBy: null,
+    changeReason: null,
+    createdAt,
+    updatedAt: (row.source_updated_at ?? row.received_at ?? row.occurred_at).toISOString(),
+    deletedAt: null,
+  };
+}
+
+/**
+ * Leitura pela tabela materializada. WHERE, ORDER BY, LIMIT e OFFSET sao do
+ * banco -- e a diferenca em relacao ao caminho do mirror, que traz a janela
+ * inteira de eventos e pagina em memoria.
+ *
+ * O piso de cobertura recorta o inicio e, em `none`, nem abre conexao: nao ha o
+ * que consultar antes da data em que o dado comeca.
+ */
+async function listMaterializedTransactions(
+  filters: ReadModelFilters,
+  pagination?: { page: number; limit: number }
+): Promise<{ items: FinancialTransaction[]; total: number }> {
+  // Mesmo curto-circuito por filtros do caminho legado: as invariantes do
+  // mapeamento (type income, categoryId null, source webhook/integration) valem
+  // igual na tabela materializada.
+  if (mirrorCannotContribute(filters)) {
+    return { items: [], total: 0 };
+  }
+
+  const coverage = resolveCoverage(parseFilterDate(filters.startDate), parseFilterDate(filters.endDate));
+  if (coverage.status === "none") {
+    return { items: [], total: 0 };
+  }
+
+  const { rows, total } = await listMaterializedOrders({
+    page: pagination?.page,
+    limit: pagination?.limit ?? null,
+    type: filters.type,
+    status: filters.status,
+    source: filters.source,
+    sources: filters.sources,
+    marketplace: normalizeMarketplaceToken(filters.marketplace) ?? undefined,
+    paymentMethod: filters.paymentMethod,
+    categoryId: filters.categoryId,
+    startDate: coverage.start,
+    endDate: coverage.end,
+    search: filters.search ? normalizeSearchTerm(filters.search) : undefined,
+  });
+
+  return { items: rows.map(fromFinancialOrderRow), total };
 }
 
 async function listPrismaTransactions(filters: ReadModelFilters): Promise<FinancialTransaction[]> {
@@ -170,15 +265,27 @@ async function listPrismaTransactions(filters: ReadModelFilters): Promise<Financ
   return filterTransactions(mapped, filters);
 }
 
+/**
+ * Todas as linhas do periodo, sem paginacao. Alimenta a agregacao do fluxo de
+ * caixa, que hoje soma em JS.
+ *
+ * Com a flag ligada, a fonte passa a ser a tabela materializada: 26 colunas
+ * pequenas por PEDIDO, em vez de payload_json de 10 a 30 KB por EVENTO. A
+ * agregacao continua em JS de proposito nesta etapa -- move-la para SQL (secao
+ * 2.6 do plano) e a etapa seguinte, e misturar as duas mudancas tornaria
+ * impossivel saber qual delas causou uma divergencia de numero.
+ */
 export async function listFinancialReadModelTransactions(
   filters: ReadModelFilters
 ): Promise<FinancialTransaction[]> {
-  const [mirrorItems, prismaItems] = await Promise.all([
-    listMirrorTransactions(filters),
+  const [coreItems, prismaItems] = await Promise.all([
+    isMaterializedReadModelEnabled()
+      ? listMaterializedTransactions(filters).then((result) => result.items)
+      : listMirrorTransactions(filters),
     listPrismaTransactions(filters),
   ]);
 
-  return [...mirrorItems, ...prismaItems].sort((left, right) =>
+  return [...coreItems, ...prismaItems].sort((left, right) =>
     right.occurredAt.localeCompare(left.occurredAt)
   );
 }
@@ -186,17 +293,46 @@ export async function listFinancialReadModelTransactions(
 export async function listFinancialReadModelPaginated(
   filters: ListTransactionsFilters
 ): Promise<PaginatedTransactions> {
-  const items = await listFinancialReadModelTransactions(filters);
+  if (!isMaterializedReadModelEnabled()) {
+    const items = await listFinancialReadModelTransactions(filters);
+    const offset = (filters.page - 1) * filters.limit;
+    const pageItems = items.slice(offset, offset + filters.limit);
+
+    return {
+      items: pageItems,
+      pagination: {
+        page: filters.page,
+        limit: filters.limit,
+        total: items.length,
+        hasNext: offset + filters.limit < items.length,
+      },
+    };
+  }
+
   const offset = (filters.page - 1) * filters.limit;
-  const pageItems = items.slice(offset, offset + filters.limit);
+
+  // Busca `offset + limit` de cada lado e recorta depois do merge. Nao da para
+  // pedir `limit` de cada um: a pagina 2 do resultado unido pode ser toda de um
+  // lado so. Ainda assim e limitado -- ao contrario do findMany sem `take` de
+  // hoje, que traz a tabela inteira.
+  const [core, prismaItems] = await Promise.all([
+    listMaterializedTransactions(filters, { page: 1, limit: offset + filters.limit }),
+    listPrismaTransactions(filters),
+  ]);
+
+  const merged = [...core.items, ...prismaItems].sort((left, right) =>
+    right.occurredAt.localeCompare(left.occurredAt)
+  );
+
+  const total = core.total + prismaItems.length;
 
   return {
-    items: pageItems,
+    items: merged.slice(offset, offset + filters.limit),
     pagination: {
       page: filters.page,
       limit: filters.limit,
-      total: items.length,
-      hasNext: offset + filters.limit < items.length,
+      total,
+      hasNext: offset + filters.limit < total,
     },
   };
 }
@@ -212,6 +348,26 @@ export async function listMarketplaceReadModelPaginated(
     startDate: filters.startDate,
     endDate: filters.endDate,
   };
+
+  // Caminho materializado: a paginacao inteira e do banco. Esta e a tela que
+  // mais ganha, porque e a unica que realmente pagina -- hoje ela traz o periodo
+  // completo do mirror a cada troca de pagina.
+  if (isMaterializedReadModelEnabled()) {
+    const { items, total } = await listMaterializedTransactions(readModelFilters, {
+      page: filters.page,
+      limit: filters.limit,
+    });
+
+    return {
+      items,
+      pagination: {
+        page: filters.page,
+        limit: filters.limit,
+        total,
+        hasNext: filters.page * filters.limit < total,
+      },
+    };
+  }
 
   // Mesma fonte usada por "POR ORIGEM" (via listFinancialReadModelTransactions),
   // ja validada: busca completa do periodo (pre-filtrada por received_at) +

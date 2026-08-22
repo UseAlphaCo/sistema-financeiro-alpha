@@ -374,6 +374,176 @@ export async function getMaterializedLag(): Promise<{
   }
 }
 
+/**
+ * Escapa um termo de busca para `LIKE ... ESCAPE '\'`.
+ *
+ * Existe porque o caminho legado usa String.includes, onde `%` e `_` sao
+ * caracteres COMUNS. Sem escapar, buscar "50%" viraria "qualquer coisa que
+ * comece com 50" no SQL e devolveria um conjunto diferente do que a tela
+ * devolve hoje -- divergencia silenciosa entre os dois caminhos, que e
+ * exatamente o que esta migracao nao pode introduzir.
+ *
+ * A barra vem primeiro: escapar `%` antes de `\` faria o proprio escape ser
+ * escapado depois.
+ */
+export function escapeLikeTerm(term: string): string {
+  return term.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
+export type ListMaterializedFilters = {
+  /**
+   * Pagina e limite. `limit: null` traz TUDO que casa, sem LIMIT/OFFSET -- e o
+   * que a agregacao (fluxo de caixa) precisa, e continua sendo ordens de
+   * magnitude mais barato que o caminho atual: 26 colunas pequenas por PEDIDO
+   * em vez de payload_json de 10 a 30 KB por EVENTO.
+   */
+  page?: number;
+  limit?: number | null;
+  type?: string;
+  status?: string;
+  source?: string;
+  sources?: string[];
+  marketplace?: string;
+  paymentMethod?: string;
+  categoryId?: string;
+  /** Datas ja recortadas no piso de cobertura pelo chamador. */
+  startDate?: Date | null;
+  endDate?: Date | null;
+  /** Termo ja normalizado (minusculo, sem espaco nas pontas). */
+  search?: string;
+};
+
+export type FinancialOrderRow = {
+  source: string;
+  order_key: string;
+  mirror_row_id: string | null;
+  external_id: string | null;
+  occurred_at: Date;
+  marketplace: string | null;
+  marketplace_key: string | null;
+  source_key: string | null;
+  source_bucket: string | null;
+  order_number: string | null;
+  description: string | null;
+  payment_method_raw: string | null;
+  payment_method_normalized: string | null;
+  amount_cents: number;
+  shipping_cents: number;
+  discount_cents: number;
+  tax_cents: number;
+  fee_cents: number;
+  liquid_cents: number;
+  currency: string;
+  type: string;
+  tx_source: string;
+  status: string;
+  received_at: Date | null;
+  source_updated_at: Date | null;
+  total_count: number;
+};
+
+/**
+ * Listagem paginada de pedidos materializados.
+ *
+ * Diferenca central em relacao ao caminho atual: WHERE, ORDER BY, LIMIT e
+ * OFFSET sao do BANCO. Hoje a paginacao acontece em memoria depois de trazer a
+ * janela inteira, com payload_json de 10 a 30 KB por evento.
+ *
+ * A ordem inclui a chave primaria inteira (occurred_at DESC, source, order_key)
+ * porque occurred_at empata aos milhares, e OFFSET sobre ordem instavel repete
+ * ou pula linha entre paginas.
+ *
+ * `count(*) OVER ()` traz o total na mesma varredura, com `::int` para nao voltar
+ * como string (o driver `pg` entrega bigint como string) -- o mapeador ainda
+ * aplica Number() por cima, porque `::int` protege a query e Number() protege
+ * quem consome.
+ */
+export async function listMaterializedOrders(
+  filters: ListMaterializedFilters
+): Promise<{ rows: FinancialOrderRow[]; total: number }> {
+  const pool = getPool();
+  if (!pool) return { rows: [], total: 0 };
+
+  // Pedido materializado tem categoryId sempre null (invariante do mapeamento),
+  // entao qualquer filtro por categoria elimina o conjunto todo -- sem abrir
+  // consulta. Espelha mirrorCannotContribute do caminho legado.
+  if (filters.categoryId) return { rows: [], total: 0 };
+
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+
+  const push = (sql: (placeholder: string) => string, value: unknown) => {
+    values.push(value);
+    conditions.push(sql(`$${values.length}`));
+  };
+
+  if (filters.type) push((p) => `fo.type = ${p}`, filters.type);
+  // status NAO e filtrado por omissao: linhas 'rejected' somam hoje, e excluir
+  // aqui mudaria os totais das telas.
+  if (filters.status) push((p) => `fo.status = ${p}`, filters.status);
+  if (filters.source) push((p) => `fo.tx_source = ${p}`, filters.source);
+  if (filters.sources && filters.sources.length > 0) {
+    push((p) => `fo.tx_source = ANY(${p}::text[])`, filters.sources);
+  }
+  // Marketplace casa contra marketplace_key OU source_key -- as duas colunas
+  // existem por isso. Comparar so uma perderia metade dos pedidos.
+  if (filters.marketplace) {
+    push((p) => `(fo.marketplace_key = ${p} OR fo.source_key = ${p})`, filters.marketplace);
+  }
+  // Igualdade exata, nao ILIKE: para linha do mirror classifyPaymentMethod
+  // sempre devolve um PaymentMethod valido, entao o fallback textual do caminho
+  // legado nunca dispara.
+  if (filters.paymentMethod) {
+    push((p) => `fo.payment_method_normalized = ${p}`, filters.paymentMethod);
+  }
+  if (filters.startDate) push((p) => `fo.occurred_at >= ${p}`, filters.startDate);
+  if (filters.endDate) push((p) => `fo.occurred_at <= ${p}`, filters.endDate);
+  if (filters.search) {
+    push((p) => `fo.search_text LIKE ${p} ESCAPE '\\'`, `%${escapeLikeTerm(filters.search)}%`);
+  }
+
+  const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  let paginationSql = "";
+  if (typeof filters.limit === "number") {
+    const offset = Math.max(((filters.page ?? 1) - 1) * filters.limit, 0);
+    values.push(filters.limit);
+    const limitPlaceholder = `$${values.length}`;
+    values.push(offset);
+    const offsetPlaceholder = `$${values.length}`;
+    paginationSql = `LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`;
+  }
+
+  const result = await pool.query<FinancialOrderRow>(
+    `
+      SELECT fo.source, fo.order_key, fo.mirror_row_id, fo.external_id, fo.occurred_at,
+             fo.marketplace, fo.marketplace_key, fo.source_key, fo.source_bucket,
+             fo.order_number, fo.description, fo.payment_method_raw,
+             fo.payment_method_normalized,
+             fo.amount_cents::int   AS amount_cents,
+             fo.shipping_cents::int AS shipping_cents,
+             fo.discount_cents::int AS discount_cents,
+             fo.tax_cents::int      AS tax_cents,
+             fo.fee_cents::int      AS fee_cents,
+             fo.liquid_cents::int   AS liquid_cents,
+             fo.currency, fo.type, fo.tx_source, fo.status,
+             fo.received_at, fo.source_updated_at,
+             count(*) OVER ()::int  AS total_count
+      FROM integration.financial_orders fo
+      ${whereSql}
+      ORDER BY fo.occurred_at DESC, fo.source, fo.order_key
+      ${paginationSql}
+    `,
+    values
+  );
+
+  // Sem linhas, count(*) OVER () nao produz linha nenhuma -- o total tem de vir
+  // de zero, e nao de undefined virando NaN adiante.
+  const total = result.rows.length > 0 ? Number(result.rows[0].total_count) : 0;
+
+  return { rows: result.rows, total };
+}
+
 export async function closePool(): Promise<void> {
   if (globalStore.__financialOrdersPool) {
     await globalStore.__financialOrdersPool.end();

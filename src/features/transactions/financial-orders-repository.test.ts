@@ -11,10 +11,32 @@ import {
   closePool,
   deleteFinancialOrders,
   ensureFinancialOrdersTable,
+  escapeLikeTerm,
   getMaterializedLag,
   upsertFinancialOrders,
   type MaterializedOrder,
 } from "./financial-orders-repository";
+
+describe("escapeLikeTerm", () => {
+  it("escapa os curingas do LIKE", () => {
+    // O caminho legado usa String.includes, onde % e _ sao caracteres comuns.
+    // Sem escapar, buscar "50%" viraria "comeca com 50" no SQL e os dois
+    // caminhos devolveriam conjuntos diferentes, sem erro nenhum.
+    expect(escapeLikeTerm("50%")).toBe("50\\%");
+    expect(escapeLikeTerm("a_b")).toBe("a\\_b");
+  });
+
+  it("escapa a barra ANTES dos curingas", () => {
+    // Ordem importa: escapar % antes de \ faria o proprio escape ser escapado
+    // depois, e o termo procurado deixaria de ser o digitado.
+    expect(escapeLikeTerm("a\\b")).toBe("a\\\\b");
+    expect(escapeLikeTerm("100\\%")).toBe("100\\\\\\%");
+  });
+
+  it("nao mexe em termo comum", () => {
+    expect(escapeLikeTerm("#1439 shopify")).toBe("#1439 shopify");
+  });
+});
 
 const conn = process.env.CORE_DB_URL ?? process.env.DATABASE_URL;
 

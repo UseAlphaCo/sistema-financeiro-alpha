@@ -24,6 +24,11 @@ vi.mock("@/core/db/prisma-client", () => ({
 vi.mock("@/shared/read-model-config", () => ({
   getCoreConnectionString: () => "postgresql://core-de-teste",
   isMirrorReadModelEnabled: () => true,
+  // Desligada: estes testes cobrem o curto-circuito do caminho do MIRROR. Com a
+  // flag ligada o curto-circuito tambem vale, mas por outro caminho -- ver
+  // listMaterializedTransactions, que chama o mesmo mirrorCannotContribute.
+  isMaterializedReadModelEnabled: () => false,
+  getMaterializedFloorDate: () => new Date("2026-08-01T00:00:00-03:00"),
 }));
 
 import {
