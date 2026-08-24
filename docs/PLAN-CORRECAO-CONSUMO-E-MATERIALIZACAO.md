@@ -555,7 +555,7 @@ abaixo; a etapa 8 trata apenas do cutover do caminho legado.
 | 3 | Migration + `ensureFinancialOrdersTable` + upsert (§2.1) | Teste de integracao no padrao de [worker-job-repository.test.ts](../src/features/integration/worker-job-repository.test.ts) (skip sem `CORE_DB_URL`): ensure 2x idempotente, upsert com mesmo hash nao muda `materialized_at` |
 | 4 | Job diario + rota de cron (§2.3) | `curl` autenticado na rota para um dia; comparar `count(*)`/`sum(amount_cents)` contra o `/fluxo-de-caixa` do mesmo dia |
 | 5 | Materializacao da janela (§2.4 Passo 2) — a carga do mirror ja aconteceu na etapa 1a | Contagem por dia vs pedidos distintos no mirror — a diferenca deve ser so os nao pagos, quantificada |
-| 6 | Leitura atras da flag + piso de data (§2.5, §2.4) | `compare-read-model.ts` zerado de 2026-08-01 em diante; periodo anterior ao piso cai no legado, nao em zero; paginacao paginas 1 e 2 sem sobreposicao |
+| 6 | ~~Leitura atras da flag + piso de data (§2.5, §2.4)~~ **feito e verificado** (2026-08-24) | `compare-read-model.ts --chave` zerado em 7.811 chaves de 01 a 22/08; paginacao sem sobreposicao; periodo anterior ao piso passou a devolver `null` em vez de zero (era um defeito real — ver "Pendencias operacionais"). **Falta o teste de regressao da correcao do periodo anterior** |
 | 7 | `computeCashFlow` em SQL (§2.6) | Teste puro do fold; `verify:shopify` para D-1 |
 | 8 | Cutover: remover caminho legado, flag e `RECEIVED_AT_GRACE_MS` | So depois de o piso alcancar o inicio do historico. `npm run check`. **Nao envolve descongelar** — isso ja aconteceu na etapa 1c |
 | 9 | §1.5 (session -> transaction mode), isolado | Ver §1.5. Maior risco do conjunto; revalidar o read-only do OMS contra o pooler novo |
@@ -705,6 +705,79 @@ por remocao de codigo.
      lugar dela, piso de cobertura explicito (`full`/`partial`/`none`) com clamp. Justificou-se com
      dado real: 2.191 pedidos materializados tem `occurred_at` **antes** do piso — pedidos de julho
      cujo evento chegou em agosto, amostra enviesada que sem o clamp apareceria como periodo completo.
+
+- **CONCLUIDO 2026-08-24 — etapa 6 verificada: comparacao dos dois caminhos zerada.** A verificacao
+  ficou bloqueada em 22/08 porque o comparador **nao era executavel desta maquina**: o pre-filtro do
+  legado usa `received_at >= inicio AND received_at <= fim + 21 dias` (`RECEIVED_AT_GRACE_MS`), entao
+  qualquer janela e alargada em 21 dias e falha por statement timeout — uma janela de 90 minutos
+  falhou igual a de um dia. Resolvido **mudando a forma da comparacao**, nao a janela.
+
+  `scripts/compare-read-model.ts` ganhou um segundo modo (`--chave`, agora o padrao) que compara por
+  **amostra de chaves**: os eventos de um pedido sao buscados por `external_order_id = ANY(...)`,
+  que e Index Scan, em vez de por janela de data, que arrasta a tabela. O modo `--janela` continua
+  existindo para rodar de onde a banda esta.
+
+  | medida | valor |
+  |---|---|
+  | janela conferida | 2026-08-01 a 2026-08-22 |
+  | pedidos na materializada no periodo | 89.449 (= 91.640 menos os 2.191 anteriores ao piso) |
+  | chaves amostradas | **7.811 de 103.834 (7,5%)**, deterministicas e estratificadas por fonte |
+  | divergencias de mapeamento | **0** |
+  | divergencias de filtro (9 combinacoes) | **0** |
+  | paginacao paginas 1 e 2 | 0 sobrepostas, ordem decrescente ok |
+  | tempo total | 4 min |
+
+  O modo chave confere quatro coisas: mapeamento e dedup campo a campo (pelas MESMAS funcoes do
+  caminho legado, `dedupeMirrorRows` + `mapMirrorRow`), **omissao** (chaves amostradas do lado do
+  mirror que viram pedido no periodo e nao estao na materializada), paridade de filtro (a SQL da
+  materializada contra o predicado em memoria `filterTransactions`) e paginacao. Amostra dos **dois
+  lados** de proposito: so do lado materializado nao detectaria pedido que existe no mirror e nunca
+  foi materializado, que e o defeito mais grave possivel aqui.
+
+  **O que ele deliberadamente NAO compara:** o pre-filtro por `received_at` do legado. Ele e defeito
+  do legado, nao da materializacao — faz o vencedor do dedup depender da janela consultada, ou seja
+  um pedido muda de valor porque alguem escolheu um periodo mais curto. Excluir o pre-filtro e
+  comparar contra a semantica CORRETA do legado, e nao contra o bug dele.
+
+  **Medicao lateral, decisiva para a etapa 8:** `computeCashFlow` pela materializada serve a janela
+  inteira de 22 dias em **3,1 s**, com a comparacao de periodo anterior junto; pelo mirror **falha por
+  statement timeout mesmo para um unico dia** (66 s ate o erro). O caminho legado nao esta lento, esta
+  **inviavel** — o que muda a natureza da etapa 8 de "remover codigo morto" para "remover um fallback
+  que nao funciona mais".
+
+- **CORRIGIDO 2026-08-24 — a comparacao com o periodo anterior fabricava uma base zero.**
+  Encontrado ao medir o `computeCashFlow` acima: para 01-22/08 ele devolvia
+  `previousPeriod.totalIncomeCents = 0` contra R$ 11.881.851,28 do periodo atual. O periodo anterior
+  (10-31/07) esta **inteiro abaixo do piso de cobertura**, entao a consulta volta vazia — e a tela
+  renderiza `"— vs periodo anterior"` **em verde**, porque `deltaPercent` devolve `"—"` quando
+  `previous === 0` e `deltaClass` pinta de verde qualquer `current >= previous`.
+
+  `read-model-coverage.ts` ja tinha sido escrito prevendo exatamente isto (`canCompare`,
+  `describeCoverage`, e o proprio docstring: *"o deltaPercent viraria '—', que a UI le como 'sem
+  variacao' e nao como 'sem base'"*) — mas **as duas funcoes nunca foram chamadas por ninguem**. So
+  `resolveCoverage` estava ligado, e apenas para recortar a consulta do periodo atual.
+
+  Nao e caso de borda: o piso e 01/08 e `getPreviousPeriodRange` cai inteiro abaixo dele para
+  qualquer periodo acima de ~10 dias, **incluindo o preset default do dashboard**.
+
+  Correcao em [cash-flow/service.ts](../src/features/cash-flow/service.ts): `previousPeriod` passa a
+  ser `null` quando o periodo anterior nao esta INTEIRO acima do piso, e a consulta desse periodo nem
+  chega a ser feita. A UI ja tratava `null` corretamente em todos os pontos (`previousPeriod ? ... :
+  null`, `previousCents ?? null`) — a linha de comparacao simplesmente nao e renderizada. `partial`
+  tambem nao compara, de proposito: 4 dias de dado contra 5 dias de periodo inventa uma queda, que e
+  pior que a ausencia do numero porque parece informacao. Aplicado so no ramo do mirror — o piso
+  descreve quando o dado do mirror comeca, e o outro ramo agrega `FinancialTransaction`, cujo
+  historico e independente do truncamento.
+
+  Verificado contra banco real: 01-22/08 passou a devolver `anterior=null`, e 18/08 **manteve** a
+  comparacao (`anterior=481.558,76`), porque 17/08 esta acima do piso.
+
+  **Falta cobertura de teste desta correcao** — o teste de regressao foi escrito e nao entrou.
+
+- **ABERTO — `describeCoverage` continua sem ser chamado.** A outra metade do mesmo problema: quando
+  o periodo ATUAL e `partial` (preset `d30` hoje comeca antes de 01/08), a tela mostra um numero
+  correto para os dias que tem, mas rotulado com o periodo pedido. A frase existe pronta em
+  `describeCoverage`; falta leva-la ate `CashFlowSummary` e as duas paginas.
 
 - **CONCLUIDO 2026-08-22 — BURACO DE SINCRONIZACAO fechado.** O backup local de agosto foi carregado
   em `mirror.raw_payloads` (ver [RUNBOOK-RESET-MIRROR-AGOSTO-2026.md](RUNBOOK-RESET-MIRROR-AGOSTO-2026.md))
