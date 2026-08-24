@@ -1,5 +1,6 @@
 import { getPrismaClient } from "@/core/db/prisma-client";
 import { getPaymentMethodSearchTokens } from "@/features/transactions/payment-method-filter";
+import { canCompare, resolveCoverage } from "@/features/transactions/read-model-coverage";
 import { normalizeMarketplaceToken } from "@/features/transactions/read-model-filters";
 import { PAYMENT_METHODS, type PaymentMethod } from "@/features/transactions/types";
 import { isMirrorReadModelEnabled } from "@/shared/read-model-config";
@@ -408,16 +409,32 @@ export async function computeCashFlow(
       startDate: start.toISOString(),
       endDate: end.toISOString(),
     });
-    const previousItems = await listFinancialReadModelTransactions({
-      ...extraFilters,
-      ...mirrorSourceFilters,
-      marketplace,
-      startDate: prevRange.start.toISOString(),
-      endDate: prevRange.end.toISOString(),
-    });
+
+    // Base de comparacao so existe se o periodo anterior estiver INTEIRO acima
+    // do piso de cobertura. Sem este teste o periodo anterior devolve zero e a
+    // tela mostra "— vs periodo anterior" em verde: um zero fabricado que se le
+    // como "sem variacao", e nao como "sem base". Nao e caso de borda -- o piso
+    // e 01/08 e getPreviousPeriodRange cai inteiro abaixo dele para qualquer
+    // periodo acima de ~10 dias, incluindo o preset default do dashboard.
+    // Medido em 2026-08-24: 01-22/08 devolvia previousPeriod.totalIncomeCents=0
+    // contra R$ 11.881.851,28 do periodo atual.
+    //
+    // So neste ramo: o piso descreve quando o dado do mirror comeca, e o ramo
+    // de baixo agrega FinancialTransaction, cujo historico e independente do
+    // truncamento do mirror.
+    const previousCoverage = resolveCoverage(prevRange.start, prevRange.end);
+    const previousItems = canCompare(previousCoverage)
+      ? await listFinancialReadModelTransactions({
+          ...extraFilters,
+          ...mirrorSourceFilters,
+          marketplace,
+          startDate: prevRange.start.toISOString(),
+          endDate: prevRange.end.toISOString(),
+        })
+      : null;
 
     const current = summarizeTransactions(currentItems);
-    const previous = summarizeTransactions(previousItems);
+    const previous = previousItems ? summarizeTransactions(previousItems) : null;
 
     const period: CashFlowPeriod = {
       startDate: start.toISOString(),
@@ -435,14 +452,16 @@ export async function computeCashFlow(
       totalTaxCents: current.totalTaxCents,
       bySource: current.bySource,
       byPaymentMethod: current.byPaymentMethod,
-      previousPeriod: {
-        totalIncomeCents: previous.totalIncomeCents,
-        totalExpenseCents: previous.totalExpenseCents,
-        totalDiscountCents: previous.totalDiscountCents,
-        totalShippingCents: previous.totalShippingCents,
-        totalTaxCents: previous.totalTaxCents,
-        byPaymentMethod: previous.byPaymentMethod,
-      },
+      previousPeriod: previous
+        ? {
+            totalIncomeCents: previous.totalIncomeCents,
+            totalExpenseCents: previous.totalExpenseCents,
+            totalDiscountCents: previous.totalDiscountCents,
+            totalShippingCents: previous.totalShippingCents,
+            totalTaxCents: previous.totalTaxCents,
+            byPaymentMethod: previous.byPaymentMethod,
+          }
+        : null,
     };
   }
 
