@@ -4,18 +4,33 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-06-09",
   "triggers": {
-    // FREEZE TEMPORARIO CORE FIN — crons desativados.
-    // O array vazio e obrigatorio: remover a chave "triggers" NAO apaga os
-    // cron triggers ja registrados no Cloudflare; so "crons": [] os remove
-    // no deploy.
+    // ATENCAO: o array e a fonte de verdade no deploy. Remover a chave
+    // "triggers" NAO apaga os cron triggers ja registrados no Cloudflare;
+    // so o array explicito os substitui.
     //
-    // Valor original, a restaurar na retomada:
-    //   "crons": ["*/5 * * * *", "*/20 * * * *", "0 * * * *"]
-    // */5: sync OMS->mirror (worker-sync). */20: resolucao de gateway titular
-    // Shopify (batch pequeno, escopado aos ultimos dias — nao o backlog
-    // historico inteiro). "0 * * * *": verificacao horaria Sistema x Shopify
-    // (sempre D-1, com auto-alinhamento se a divergencia for um alerta real).
-    "crons": []
+    // ATENCAO 2: as expressoes tambem sao a chave do switch em src/index.ts.
+    // Mudar aqui sem mudar la faz o cron cair no `default` e so lancar erro.
+    //
+    // ATENCAO 3: /api/internal esta em FROZEN_API_PREFIXES (src/proxy.ts), entao
+    // este deploy so pode vir DEPOIS de MAINTENANCE_MODE=false estar no ar --
+    // antes disso todo cron aqui coleciona 503.
+    "crons": [
+      // Sync OMS->mirror por cursor fisico de pagina (cauda + auditoria).
+      // Uma volta completa de auditoria leva ~3,5 h nesta cadencia, e a regra
+      // das duas voltas pede ~7 h antes de declarar completude.
+      "*/15 * * * *",
+      // Resolucao de gateway titular Shopify: batch pequeno, escopado aos
+      // ultimos dias — nao o backlog historico inteiro.
+      "*/20 * * * *",
+      // Verificacao horaria Sistema x Shopify, sempre D-1, com auto-alinhamento
+      // se a divergencia for um alerta real.
+      "0 * * * *",
+      // Materializacao, um dia por invocacao (D-0, D-1, D-2). 02:00 UTC =
+      // 23:00 BRT, com D-0 ja praticamente fechado.
+      "0 2 * * *",
+      "15 2 * * *",
+      "30 2 * * *"
+    ]
   },
   "vars": {
     "APP_BASE_URL": "https://phi.usealphaco.com.br",

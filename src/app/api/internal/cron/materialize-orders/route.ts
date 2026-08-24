@@ -6,13 +6,25 @@ import { createApiError, createApiSuccess } from "@/shared/api/envelope";
 export const runtime = "nodejs";
 
 /**
+ * Sem isto vale o default curto da plataforma e um dia cortado no meio some
+ * sem registro -- mesmo motivo ja documentado em worker-sync/route.ts.
+ *
+ * Dimensionado para UM dia por invocacao, e e por isso que o cron dispara tres
+ * horarios (D-0, D-1, D-2) em vez de uma chamada com os tres dias: a folga de
+ * +-2 dias faz cada dia varrer uma janela de 5 dias, medido em 32.266 chaves
+ * candidatas = 65 lotes de KEY_CHUNK. Tres dias numa chamada nao cabem aqui.
+ */
+export const maxDuration = 300;
+
+/**
  * Materializacao diaria de pedidos.
  *
- * ATENCAO: durante o congelamento esta rota devolve 503 antes do handler --
- * /api/internal esta em FROZEN_API_PREFIXES (src/proxy.ts:42), justamente porque
- * as rotas de cron abrem pools contra o CORE. Para rodar agora, use
- * `npx tsx scripts/materialize-orders-window.ts` (precedente:
- * scripts/trigger-backfill.ts).
+ * ATENCAO: enquanto MAINTENANCE_MODE estiver ligado esta rota devolve 503 antes
+ * do handler -- /api/internal esta em FROZEN_API_PREFIXES (src/proxy.ts:42),
+ * justamente porque as rotas de cron abrem pools contra o CORE. Por isso o
+ * `wrangler deploy` dos crons so pode vir DEPOIS do descongelamento; antes
+ * disso o cron so coleciona 503. Para rodar fora do cron, use
+ * `npx tsx scripts/materialize-orders-window.ts`.
  *
  * Copia estrutural de shopify-payment-resolution/route.ts: runtime nodejs, auth
  * por CRON_SECRET e envelope padrao.

@@ -296,7 +296,11 @@ export type MaterializeJobResult = {
 
 export type MaterializeJobOptions = {
   /**
-   * Dias explicitos (YYYY-MM-DD). Sem isto, roda D-1 e D-2.
+   * Dias explicitos (YYYY-MM-DD). Sem isto, roda D-0, D-1 e D-2.
+   *
+   * D-0 entra porque sem ele o dia corrente nunca e materializado: com
+   * FINANCIAL_READ_MODEL_MATERIALIZED ligado, "hoje" devolveria R$ 0,00 em
+   * silencio -- read-model-coverage.ts trata o piso, nao o teto.
    *
    * D-2 nao e redundancia: captura o que mudou depois do fechamento do dia --
    * reembolso, cancelamento, resolucao tardia de gateway titular.
@@ -318,7 +322,11 @@ export async function runMaterializeOrdersJob(
   options: MaterializeJobOptions = {}
 ): Promise<MaterializeJobResult> {
   const reference = options.reference ?? new Date();
-  const days = options.days ?? [saoPauloDay(reference, -1), saoPauloDay(reference, -2)];
+  const days = options.days ?? [
+    saoPauloDay(reference, 0),
+    saoPauloDay(reference, -1),
+    saoPauloDay(reference, -2),
+  ];
 
   const results: MaterializeDayResult[] = [];
   for (const day of days) {
