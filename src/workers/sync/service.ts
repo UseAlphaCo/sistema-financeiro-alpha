@@ -19,21 +19,21 @@ export const SYNC_STREAM = "oms_raw_payloads";
 /**
  * Como o ciclo descobre o que precisa entrar na fila.
  *
- * - "incremental": avanca por keyset a partir da marca d'agua. Padrao do
- *   ciclo automatico. Custo proporcional ao que chegou de novo.
- * - "window": varre uma janela de N dias. So por pedido explicito (tela
- *   /integracoes ou scripts/trigger-backfill.ts), para fechar lacunas.
- * - "none": nao descobre nada, apenas drena a fila. Usado nas execucoes
- *   seguintes de um job de backfill, que ja enfileirou tudo na primeira.
  * - "ctid": varredura por cursor fisico de pagina (cauda + auditoria). E o
- *   padrao do ciclo automatico desde 2026-08-18, porque "incremental" depende
- *   de um indice que o OMS nao tem e nao pode ganhar. Ver page-cursor-sync.ts.
+ *   padrao do ciclo automatico desde 2026-08-18, e o unico modo que funciona
+ *   sem indice no OMS. Ver page-cursor-sync.ts.
+ * - "incremental": avanca por keyset a partir da marca d'agua. Depende de um
+ *   indice por (received_at, processed_at) que o OMS nao tem, entao estoura o
+ *   statement_timeout. Mantido so como rollback.
+ * - "none": nao descobre nada, apenas drena a fila.
+ *
+ * O modo "window" foi removido em 2026-08-24. Varria uma janela de N dias com
+ * a mesma dependencia de indice, era disparavel por um clique em /integracoes,
+ * e a query morria no query_timeout deixando o job preso em `running` -- o que
+ * fazia o cron seguinte nao fazer nada por ate 15 min, sem registrar nada.
+ * Reparo por janela de datas agora e scripts/backfill-mirror-window.ts.
  */
-type SyncDiscovery =
-  | { mode: "incremental" }
-  | { mode: "window"; days: 30 | 60 | 90; limit?: number }
-  | { mode: "ctid" }
-  | { mode: "none" };
+type SyncDiscovery = { mode: "incremental" } | { mode: "ctid" } | { mode: "none" };
 
 type RunSyncOptions = {
   discovery?: SyncDiscovery;
@@ -126,53 +126,6 @@ async function discoverIncremental(
   return { candidates: candidates.length, missing: missing.length, queued };
 }
 
-/**
- * Backfill por janela de dias. Fica fora do ciclo automatico de proposito —
- * so roda quando alguem pede explicitamente, pela tela /integracoes ou por
- * scripts/trigger-backfill.ts.
- *
- * O piso vale aqui tambem, e aqui e onde mais importa: este e o unico caminho
- * de reimportacao disparavel por um clique na UI, e `days: 90` pediria junho e
- * julho ao OMS -- justamente as 604.418 linhas que o truncate de 2026-08-21
- * tirou de proposito. Sem o filtro, um clique desfaz a decisao.
- */
-async function discoverWindow(
-  cycleId: string,
-  discovery: { mode: "window"; days: 30 | 60 | 90; limit?: number },
-  omsRepository: OmsRepository,
-  coreRepository: CoreRepository,
-  controlStore: SyncControlStore,
-  env: WorkerEnv
-): Promise<DiscoveryResult> {
-  const backfillLimit = Math.min(Math.max(discovery.limit ?? env.BATCH_SIZE * 2, 1), 5000);
-  const candidates = await omsRepository.findRawPayloadCandidates(discovery.days, backfillLimit);
-
-  if (candidates.length === 0) {
-    return { candidates: 0, missing: 0, queued: 0 };
-  }
-
-  const withinFloor = partitionByMirrorFloor(candidates, env.SYNC_MIRROR_FLOOR_AT);
-
-  const existingIds = await coreRepository.findExistingRawPayloadIds(
-    withinFloor.eligible.map((item) => item.id)
-  );
-  const missing = withinFloor.eligible.filter((item) => !existingIds.has(item.id));
-  const queued = await controlStore.enqueueBackfill(missing);
-
-  logInfo("sync_backfill_enqueued", {
-    cycleId,
-    days: discovery.days,
-    floorAt: env.SYNC_MIRROR_FLOOR_AT.toISOString(),
-    candidates: candidates.length,
-    belowFloor: withinFloor.belowFloor,
-    undated: withinFloor.undated,
-    missing: missing.length,
-    queued,
-  });
-
-  return { candidates: candidates.length, missing: missing.length, queued };
-}
-
 export async function runSyncOnce(options: RunSyncOptions = {}): Promise<WorkerSummary> {
   const cycleId = randomUUID();
   const startedAt = Date.now();
@@ -208,7 +161,6 @@ export async function runSyncOnce(options: RunSyncOptions = {}): Promise<WorkerS
     batchSize: env.BATCH_SIZE,
     maxRetries: env.MAX_RETRIES,
     discoveryMode: discovery.mode,
-    backfillDays: discovery.mode === "window" ? discovery.days : null,
   });
 
   try {
@@ -267,8 +219,6 @@ export async function runSyncOnce(options: RunSyncOptions = {}): Promise<WorkerS
       }
     } else if (discovery.mode === "incremental") {
       await discoverIncremental(cycleId, omsRepository, coreRepository, controlStore, env);
-    } else if (discovery.mode === "window") {
-      await discoverWindow(cycleId, discovery, omsRepository, coreRepository, controlStore, env);
     }
 
     const events = await controlStore.findPendingEvents(env.BATCH_SIZE, env.MAX_RETRIES);

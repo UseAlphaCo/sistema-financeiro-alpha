@@ -184,17 +184,19 @@ export class OmsRepository {
    * em ordem ascendente de (sort_at, id), onde sort_at e
    * COALESCE(received_at, processed_at).
    *
-   * Substitui o rescan de janela fixa no ciclo automatico. Duas diferencas
-   * que importam em relacao a findRawPayloadCandidates:
+   * Substituiu o rescan de janela fixa no ciclo automatico (removido em
+   * 2026-08-24), que ordenava DESC com LIMIT e por isso so enxergava os N mais
+   * recentes -- buracos anteriores a eles eram inalcancaveis por construcao.
+   * Aqui o LIMIT recorta o proximo lote a partir do cursor, entao cada ciclo
+   * processa material novo.
    *
-   * - ASC em vez de DESC: o cursor caminha para frente e nunca deixa uma
-   *   lacuna para tras. O DESC com LIMIT so enxergava os N mais recentes,
-   *   entao buracos anteriores a eles eram inalcancaveis por construcao.
-   * - O LIMIT recorta o proximo lote a partir do cursor, nao os N mais
-   *   recentes de toda a janela — cada ciclo processa material novo.
+   * ATENCAO: depende de um indice por (received_at, processed_at) que o OMS nao
+   * tem, entao na pratica estoura o statement_timeout. Mantido apenas como
+   * rollback do modo ctid; ver a pendencia registrada no plano.
    *
    * Linhas sem received_at e sem processed_at ficam de fora: nao ha por onde
-   * ordena-las de forma estavel. Sao alcancadas pelo backfill por janela.
+   * ordena-las de forma estavel. Sao alcancadas por
+   * scripts/backfill-mirror-window.ts.
    */
   async findRawPayloadsAfter(
     watermark: { sortAt: Date; recordId: string },
@@ -249,52 +251,4 @@ export class OmsRepository {
     }));
   }
 
-  async findRawPayloadCandidates(days: 30 | 60 | 90, limit: number): Promise<RawPayloadCandidate[]> {
-    const boundedLimit = Math.min(Math.max(limit, 1), 5000);
-
-    const result = await this.query<{
-      id: string;
-      source: string | null;
-      external_order_id: string | null;
-      event_type: string | null;
-      payload_json: unknown;
-      headers_json: unknown;
-      received_at: Date | null;
-      processed_at: Date | null;
-      processing_status: string | null;
-      error_message: string | null;
-    }>(
-      `
-        SELECT
-          rp.id,
-          rp.source,
-          rp.external_order_id,
-          rp.event_type,
-          rp.payload_json,
-          rp.headers_json,
-          rp.received_at,
-          rp.processed_at,
-          rp.processing_status,
-          rp.error_message
-        FROM raw_payloads rp
-        WHERE COALESCE(rp.received_at, rp.processed_at, NOW()) >= NOW() - ($1 * INTERVAL '1 day')
-        ORDER BY COALESCE(rp.received_at, rp.processed_at, NOW()) DESC
-        LIMIT $2
-      `,
-      [days, boundedLimit]
-    );
-
-    return result.rows.map((row) => ({
-      id: row.id,
-      source: row.source,
-      externalOrderId: row.external_order_id,
-      eventType: row.event_type,
-      payloadJson: row.payload_json,
-      headersJson: row.headers_json,
-      receivedAt: row.received_at,
-      processedAt: row.processed_at,
-      processingStatus: row.processing_status,
-      errorMessage: row.error_message,
-    }));
-  }
 }

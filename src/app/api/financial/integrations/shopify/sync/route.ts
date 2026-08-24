@@ -10,9 +10,9 @@ export async function POST(request: NextRequest) {
     async ({ requestId }) => {
       return createApiError(
         requestId,
-        "Endpoint legado desativado. Use /api/financial/integrations/worker/start para sincronizacao via Worker.",
+        "Endpoint legado desativado. A sincronizacao roda por cron; acompanhe em /integracoes.",
         410,
-        { replacedBy: "/api/financial/integrations/worker/start" }
+        { replacedBy: "/api/financial/integrations/worker/status" }
       );
     }
   );

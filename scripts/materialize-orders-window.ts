@@ -1,10 +1,9 @@
 /**
  * Materializa uma janela de dias em integration.financial_orders.
  *
- * Existe porque a rota /api/internal/cron/materialize-orders esta atras do 503
- * do congelamento (src/proxy.ts:42) e porque a carga inicial e uma operacao
- * pontual, de dezenas de dias, que nao deve depender de cron. Mesmo precedente
- * de scripts/trigger-backfill.ts.
+ * Existe porque uma carga de dezenas de dias e operacao pontual e nao cabe no
+ * maxDuration da rota de cron, que processa um dia por invocacao. Mesmo
+ * precedente de scripts/backfill-mirror-window.ts.
  *
  * Uso:
  *   npx tsx scripts/materialize-orders-window.ts <inicio> <fim>

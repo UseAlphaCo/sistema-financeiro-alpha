@@ -26,15 +26,6 @@ type TransactionItem = {
   source: string;
 };
 
-type SyncResult = {
-  jobId: string;
-  status: "queued" | "running" | "completed" | "failed";
-  mode: "retroactive";
-  estimatedScopeDays: number;
-  startedAt: string;
-  maxRuns: number;
-};
-
 type WorkerSyncStatus = {
   jobId: string;
   status: "queued" | "running" | "completed" | "failed";
@@ -56,13 +47,6 @@ type WorkerSyncStatus = {
     deadLettered: number;
     lockSkipped: boolean;
   };
-};
-
-type LegacySyncResult = {
-  fetched: number;
-  imported: number;
-  skipped: number;
-  failed: number;
 };
 
 type ApiEnvelope<T> = { success: boolean; data: T | null; error: string | null };
@@ -126,11 +110,7 @@ export default function IntegracoesPage() {
   const [loadingList, setLoadingList] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
 
-  const [syncDays, setSyncDays] = useState<30 | 60 | 90>(30);
-  const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [syncStatus, setSyncStatus] = useState<WorkerSyncStatus | null>(null);
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
 
   const loadEvents = useCallback(async () => {
@@ -156,25 +136,16 @@ export default function IntegracoesPage() {
     setLoadingList(false);
   }, []);
 
-  const loadSyncStatus = useCallback(async (jobId?: string) => {
-    const endpoint = jobId
-      ? `/api/financial/integrations/worker/status?jobId=${encodeURIComponent(jobId)}`
-      : "/api/financial/integrations/worker/status";
-
+  // Sempre o ciclo mais recente: quem cria job agora e o cron, entao a tela
+  // nao tem um jobId proprio para seguir.
+  const loadSyncStatus = useCallback(async () => {
     try {
-      const res = await fetch(endpoint);
+      const res = await fetch("/api/financial/integrations/worker/status");
 
+      // 404 aqui e o estado legitimo "nenhum ciclo registrado ainda", nao erro.
       if (res.status === 404) {
-        if (!jobId) {
-          setSyncStatus(null);
-          setActiveJobId(null);
-          setSyncError(null);
-          return;
-        }
-
         setSyncStatus(null);
-        setActiveJobId(null);
-        setSyncError("Job de importação não encontrado. Inicie uma nova sincronização.");
+        setSyncError(null);
         return;
       }
 
@@ -186,7 +157,6 @@ export default function IntegracoesPage() {
 
       setSyncError(null);
       setSyncStatus(json.data);
-      setActiveJobId(json.data.jobId);
 
       if (json.data.status === "completed") {
         void loadEvents();
@@ -196,39 +166,6 @@ export default function IntegracoesPage() {
     }
   }, [loadEvents]);
 
-  async function handleSync() {
-    setSyncing(true);
-    setSyncResult(null);
-    setSyncStatus(null);
-    setSyncError(null);
-    try {
-      const res = await fetch("/api/financial/integrations/worker/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "retroactive",
-          days: syncDays,
-        }),
-      });
-      const json = (await res.json()) as ApiEnvelope<SyncResult | LegacySyncResult>;
-      if (json.success && json.data) {
-        const started = json.data as SyncResult;
-        if (!started.jobId) {
-          setSyncError("Resposta invalida ao iniciar sincronizacao do worker.");
-        } else {
-          setSyncResult(started);
-          setActiveJobId(started.jobId);
-          void loadSyncStatus(started.jobId);
-        }
-      } else {
-        setSyncError(json.error ?? "Falha na sincronização.");
-      }
-    } catch {
-      setSyncError("Falha ao conectar ao servidor.");
-    }
-    setSyncing(false);
-  }
-
   useEffect(() => {
     const timer = setTimeout(() => {
       void loadSyncStatus();
@@ -237,19 +174,20 @@ export default function IntegracoesPage() {
     return () => clearTimeout(timer);
   }, [loadSyncStatus]);
 
+  // Enquanto houver ciclo em andamento, acompanha. Quem cria o job agora e o
+  // cron, entao nao ha jobId local para seguir: o status sem parametro sempre
+  // devolve o mais recente.
   useEffect(() => {
-    if (!activeJobId) return;
-
-    if (syncStatus?.status === "completed" || syncStatus?.status === "failed") {
+    if (syncStatus?.status !== "running" && syncStatus?.status !== "queued") {
       return;
     }
 
     const intervalId = setInterval(() => {
-      void loadSyncStatus(activeJobId);
+      void loadSyncStatus();
     }, 1500);
 
     return () => clearInterval(intervalId);
-  }, [activeJobId, loadSyncStatus, syncStatus?.status]);
+  }, [loadSyncStatus, syncStatus?.status]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -264,47 +202,19 @@ export default function IntegracoesPage() {
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-gray-900">Integrações</h1>
         <p className="mt-1 text-sm text-gray-500">
-          Dispare o Worker ALP-OMS para carregar retroativo e acompanhe o progresso da sincronizacao.
+          Acompanhe o progresso da sincronizacao ALP-OMS {'->'} mirror.
         </p>
       </div>
 
-      {/* Painel de sincronização manual */}
+      {/* Painel de acompanhamento do ciclo automatico */}
       <section className="mb-8 rounded-lg border border-gray-200 bg-white p-5">
-        <h2 className="mb-1 text-sm font-medium text-gray-700">Sincronizar retroativo ALP-OMS (Worker)</h2>
+        <h2 className="mb-1 text-sm font-medium text-gray-700">Sincronizacao ALP-OMS (Worker)</h2>
         <p className="mb-4 text-xs text-gray-500">
-          Executa o pipeline oficial OMS (leitura) {'->'} sync_queue (CORE) {'->'} Worker {'->'} mirror.raw_payloads.
-          Escopo inicial desta rodada: 90 dias retroativos.
+          Pipeline oficial OMS (leitura) {'->'} sync_queue (CORE) {'->'} Worker {'->'} mirror.raw_payloads.
+          Roda de 15 em 15 minutos por cron, varrendo o heap do OMS por cursor fisico de pagina.
+          Reparo de uma janela de datas especifica e feito por
+          {' '}<code className="rounded bg-gray-100 px-1">scripts/backfill-mirror-window.ts</code>.
         </p>
-
-        <div className="flex items-end gap-3">
-          <div>
-            <label className="mb-1 block text-xs text-gray-600">Período</label>
-            <select
-              value={syncDays}
-              onChange={(e) => setSyncDays(Number(e.target.value) as 30 | 60 | 90)}
-              className="rounded-md border border-gray-300 px-3 py-2 text-sm"
-            >
-              <option value={30}>Últimos 30 dias</option>
-              <option value={60}>Últimos 60 dias</option>
-              <option value={90}>Últimos 90 dias</option>
-            </select>
-          </div>
-
-          <button
-            onClick={() => void handleSync()}
-            disabled={syncing}
-            className="rounded-md bg-gray-900 px-4 py-2 text-sm text-white hover:bg-gray-700 disabled:opacity-50"
-          >
-            {syncing ? "Sincronizando..." : "Sincronizar agora"}
-          </button>
-        </div>
-
-        {syncResult && (
-          <div className="mt-4 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
-            Job iniciado — ID <strong>{syncResult.jobId}</strong>, status inicial {syncResult.status},
-            escopo estimado de {syncResult.estimatedScopeDays} dias.
-          </div>
-        )}
 
         {syncStatus && (
           <div className="mt-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">

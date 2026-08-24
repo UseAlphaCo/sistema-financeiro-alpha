@@ -26,7 +26,7 @@ describe("OmsRepository - guard de read-only", () => {
     const pool = { connect: vi.fn().mockResolvedValue(client) };
     const repo = new OmsRepository(pool as never);
 
-    await repo.findRawPayloadCandidates(30, 10);
+    await repo.findKeysInPageRange(0, 10);
 
     expect(pool.connect).toHaveBeenCalledTimes(1);
     expect(client.query).toHaveBeenNthCalledWith(1, "SET default_transaction_read_only = on");
@@ -56,7 +56,7 @@ describe("OmsRepository - guard de read-only", () => {
     const pool = { connect: vi.fn().mockResolvedValue(client) };
     const repo = new OmsRepository(pool as never);
 
-    await expect(repo.findRawPayloadCandidates(30, 10)).rejects.toThrow("boom");
+    await expect(repo.findKeysInPageRange(0, 10)).rejects.toThrow("boom");
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
@@ -121,8 +121,8 @@ describe("OmsRepository - guard de read-only", () => {
     const pool = { connect: vi.fn().mockResolvedValue(client) };
     const repo = new OmsRepository(pool as never);
 
-    await repo.findRawPayloadCandidates(30, 10);
-    await repo.findRawPayloadCandidates(60, 10);
+    await repo.findKeysInPageRange(0, 10);
+    await repo.findRawPayloadsByIds(["a"]);
 
     expect(pool.connect).toHaveBeenCalledTimes(2);
   });
