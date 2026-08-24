@@ -18,8 +18,15 @@
 > `received_at`/`processed_at`**, entao a consulta de descoberta do sync e um seq scan de ~80s sobre
 > 2,16M linhas / 5,9 GB — acima do `statement_timeout` de 30s do pool. O `Query read timeout` de
 > 11/08 nao foi um incidente isolado: o ciclo falha por construcao. Ver a secao "Causa raiz" logo
-> abaixo do Contexto. **Precede §1.3 e §1.5 na prioridade**, e depende de acao de infraestrutura no
-> OMS ([oms-sync-keyset-index.sql](../scripts/sql/oms-sync-keyset-index.sql)).
+> abaixo do Contexto.
+>
+> **RESOLVIDO em 2026-08-18/24 — o indice deixou de ser dependencia.** O contorno foi construido e
+> e o padrao de producao: `SYNC_DISCOVERY_MODE` tem default `"ctid"` e a descoberta varre o heap
+> por faixa de paginas (`WHERE rp.ctid >= $1::tid AND rp.ctid < $2::tid`), com custo proporcional
+> a paginas varridas e nao ao tamanho da tabela. Provado em producao em 22/08: 18.616 linhas
+> ausentes descobertas, 18.394 enfileiradas, fila terminando vazia. Em **2026-08-24** o ultimo
+> caminho que ainda dependia do indice — o backfill por janela, disparavel por um clique em
+> /integracoes — foi removido. **Nao ha nada a pedir ao time do OMS**; a etapa 1a0 esta aposentada.
 >
 > **Escopo do buraco corrigido:** nao e so Shopify nem so 12-18/08. Sao **244.691 linhas** faltando
 > na janela 01-18/08, em tres fontes — anymarket 147.060, shopify 53.631, eship 44.000 — e a lacuna
@@ -46,9 +53,16 @@ provou a causa: com os crons cortados, o `/api/health` foi de **4 em 6 amostras 
 15 em 15 com `db=up`**. O consumo que derrubava o Supabase e estourava limites na Vercel vinha do
 ciclo de sync, nao de trafego de usuario.
 
-## CAUSA RAIZ ENCONTRADA EM 2026-08-18: falta indice no OMS
+## CAUSA RAIZ ENCONTRADA EM 2026-08-18: falta indice no OMS — CONTORNADA
 
 Isto precede e explica boa parte dos dois problemas descritos abaixo, e **nao estava diagnosticado**.
+
+> **Status em 2026-08-24: diagnostico correto, conclusao superada.** O indice de fato nao existe e
+> nao pode ser criado por nos (DDL e escrita; o OMS e somente-leitura). Mas ele deixou de ser
+> necessario: a descoberta passou a varrer o heap por faixa de paginas via `ctid`
+> (`src/workers/sync/page-cursor-sync.ts`), que nao usa indice nenhum. Tudo o que esta escrito
+> abaixo sobre `findRawPayloadsAfter` continua verdadeiro, e e exatamente por isso que aquele
+> caminho ficou so como rollback. **Nao ha pedido pendente com o time do OMS.**
 
 `public.raw_payloads` no OMS **nao tem indice em `received_at` nem em `processed_at`**. Os unicos
 indices existentes (medidos via `pg_indexes`):
@@ -184,6 +198,12 @@ default da plataforma. Comentario desatualizado ("a cada 30 min") corrigido.
 `*/5` era desproporcional mesmo sem o rescan. Definir a frequencia pelo volume real de pedidos ao
 restaurar `triggers.crons` em [wrangler.jsonc](../cloudflare/worker-sync-cron/wrangler.jsonc).
 
+> **Superado em 2026-08-24: `*/15`.** A aritmetica abaixo vale para a descoberta antiga (200 linhas
+> lidas por ciclo, `BATCH_SIZE` de 100). A varredura por `ctid` tem outra vazao: ~15.000 blocos
+> descobertos e ~4.000 linhas reparadas por invocacao, e a metrica que importa passou a ser o tempo
+> de uma volta de auditoria — ~3,5 h a `*/15`, ou ~7 h para as duas voltas que a regra de
+> completude exige. O risco de 1,4x descrito abaixo deixou de existir nessa forma.
+
 **Decisao (2026-08-18): `0 * * * *`** — 24 invocacoes/dia, o mais barato. Decisao reafirmada pelo
 usuario **depois** de apresentada a aritmetica de folga abaixo.
 
@@ -200,8 +220,8 @@ mirror.
 **Riscos aceitos**, explicitados para nao virarem surpresa:
 - 1,4x de folga num dia de pico. Qualquer ciclo perdido gera debito que so se paga no dia seguinte.
 - O historico e de **nao** dar conta: o anymarket ficou 60% para tras em 06/08 com o cron saudavel
-  (ver "Causa raiz"). A causa era a falta de indice, nao a frequencia — mas a margem escolhida
-  depende de o indice do item 1a0 existir.
+  (ver "Causa raiz"). A causa era a falta de indice, nao a frequencia — e a varredura por `ctid`
+  removeu essa dependencia, entao a margem nao depende mais de nenhuma acao no OMS.
 
 **Controle compensatorio recomendado, dado o 1,4x:** expor a defasagem do mirror
 (`now() - max(received_at)` de `mirror.raw_payloads`, por fonte) em `/integracoes`, com alerta.
@@ -547,9 +567,9 @@ abaixo; a etapa 8 trata apenas do cutover do caminho legado.
 |---|---|---|
 | 0 | ~~Curto-circuito do `/lancamentos` (§2.5)~~ **feito** (`661107c`) | Unit com `pg` mockado: `pool.query` nao e chamado para `{source:"manual"}`, `categoryId`, `type!=income` nem `sources` disjunto — mais 3 controles provando que o caminho normal ainda consulta |
 | 1 | ~~§1.1, §1.2, raiz do §1.4~~ **feito** (`0dfd481`, `edfb908`); falta §1.3 (§1.5 saiu do caminho critico) | `npm run check` verde. **Validado contra banco real, itens 1-5** — ver "Verificacao pendente" |
-| **1a0** | **PEDIR O INDICE NO OMS** ([oms-sync-keyset-index.sql](../scripts/sql/oms-sync-keyset-index.sql)) — acao de infraestrutura, fora deste repo | `EXPLAIN` da consulta de descoberta mostra Index Scan e tempo em ms, nao Parallel Seq Scan de ~80s. **Precede tudo:** sem isso o ciclo de sync falha por `statement_timeout` |
+| ~~**1a0**~~ | ~~PEDIR O INDICE NO OMS~~ **APOSENTADA em 2026-08-24** — substituida pela varredura por `ctid`, que nao usa indice. Nao ha acao de infraestrutura pendente | Um ciclo loga `sync_page_chunk` nas duas passadas (`tail` e `audit`) e `sync_sweep_finished`, sem `statement_timeout` |
 | 1a | **Fechar o buraco de 01-18/08** pela carga em bloco de §2.4 Passo 1 + **Passo 1b (marca d'agua)** | Contagem OMS vs CORE com o mesmo filtro, **por fonte** (a lacuna e de 244.691 linhas em anymarket/eship/shopify, nao so Shopify); e a marca d'agua avancada para perto de `now()`, nao 11/08 |
-| 1b | **§1.3** (`0 * * * *`) + `wrangler deploy` do worker | `triggers.crons` restaurado no arquivo **e** no Cloudflare; um ciclo loga `sync_incremental_enqueued` com `toSortAt` proximo de `now()` |
+| 1b | **Crons** (`*/15` para o sync, mais tres horarios diarios de materializacao) + `wrangler deploy` do worker | `triggers.crons` restaurado no arquivo **e** no Cloudflare; um ciclo loga `sync_page_chunk` e `sync_sweep_finished`. **Deploy so DEPOIS de 1c**: `/api/internal` esta em `FROZEN_API_PREFIXES`, entao cron religado antes do descongelamento so coleciona 503 |
 | 1c | **Descongelar producao** (`MAINTENANCE_MODE`) | `/api/health` com `db=up` em 15 de 15 amostras **com os crons religados** — a mesma medicao que provou o diagnostico. Rollback e religar o gate |
 | 2 | Extrair `mirror-order-mapper.ts` (§2.2) | Vitest sem banco: pago/nao pago, dedup "pago vence recencia", `amountCents<=0`, gateway via `spr` vs heuristica, `search_text` identico ao haystack atual |
 | 3 | Migration + `ensureFinancialOrdersTable` + upsert (§2.1) | Teste de integracao no padrao de [worker-job-repository.test.ts](../src/features/integration/worker-job-repository.test.ts) (skip sem `CORE_DB_URL`): ensure 2x idempotente, upsert com mesmo hash nao muda `materialized_at` |
