@@ -31,13 +31,60 @@ function parseAmountToCents(value: unknown): number {
 const SHOPIFY_FETCH_TIMEOUT_MS = 15_000;
 const SHOPIFY_FETCH_RETRIES = 2;
 
+/**
+ * Tentativas dedicadas a 429 e 5xx, alem das de erro de rede.
+ *
+ * Separadas de proposito: um 429 nao e defeito, e a API pedindo ritmo. Antes
+ * ele caia direto no `throw` de `!response.ok`, o pedido nao virava linha na
+ * tabela de resolucao e -- como a fila ordena por `external_order_id DESC` -- o
+ * MESMO pedido era a primeira coisa da rodada seguinte, batendo no mesmo limite.
+ * O lote inteiro podia queimar assim.
+ */
+const SHOPIFY_RATE_LIMIT_RETRIES = 4;
+const SHOPIFY_RATE_LIMIT_FALLBACK_MS = 2_000;
+
+/**
+ * Espera entre chamadas, por processo.
+ *
+ * O bucket REST da Shopify em plano nao-Plus reabastece a ~2 req/s. A
+ * resolucao dispara com concorrencia 5 sem nenhum freio, o que excede o refill
+ * de forma sustentada e transforma lote grande em sequencia de 429. Este
+ * portao serializa a saida no ritmo do bucket: o paralelismo continua util para
+ * cobrir latencia, mas a taxa media fica dentro do limite.
+ */
+const SHOPIFY_MIN_INTERVAL_MS = 500;
+let proximaChamadaEm = 0;
+
+async function aguardarVezNoBucket(): Promise<void> {
+  const agora = Date.now();
+  const alvo = Math.max(agora, proximaChamadaEm);
+  proximaChamadaEm = alvo + SHOPIFY_MIN_INTERVAL_MS;
+  const espera = alvo - agora;
+  if (espera > 0) {
+    await new Promise((resolve) => setTimeout(resolve, espera));
+  }
+}
+
+/** Segundos pedidos no Retry-After, quando a Shopify manda um. */
+function esperaPedidaPelaApi(response: Response): number {
+  const header = response.headers.get("retry-after");
+  if (!header) return SHOPIFY_RATE_LIMIT_FALLBACK_MS;
+  const segundos = Number(header);
+  if (!Number.isFinite(segundos) || segundos <= 0) return SHOPIFY_RATE_LIMIT_FALLBACK_MS;
+  return Math.min(segundos * 1000, 30_000);
+}
+
 export async function fetchShopifyOrderTransactions(
   storeDomain: string,
   accessToken: string,
   orderId: string | number
 ): Promise<ShopifyOrderTransaction[]> {
   let response: Response;
+  let tentativasDeLimite = 0;
+
   for (let attempt = 0; ; attempt++) {
+    await aguardarVezNoBucket();
+
     try {
       response = await fetch(
         `https://${storeDomain}/admin/api/2024-10/orders/${encodeURIComponent(String(orderId))}/transactions.json`,
@@ -49,13 +96,26 @@ export async function fetchShopifyOrderTransactions(
           signal: AbortSignal.timeout(SHOPIFY_FETCH_TIMEOUT_MS),
         }
       );
-      break;
     } catch (error) {
       // Timeout/erro de rede transitorio — nunca ficar tentando pra sempre
       // (limite fixo de tentativas), mas absorve blips pontuais da rede local.
       if (attempt >= SHOPIFY_FETCH_RETRIES) throw error;
       await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      continue;
     }
+
+    const limiteOuInstabilidade = response.status === 429 || response.status >= 500;
+    if (limiteOuInstabilidade && tentativasDeLimite < SHOPIFY_RATE_LIMIT_RETRIES) {
+      tentativasDeLimite += 1;
+      const espera = esperaPedidaPelaApi(response) * tentativasDeLimite;
+      // Atrasa a fila inteira do processo, nao so esta chamada: se o bucket
+      // estourou, as outras 4 em paralelo estao prestes a estourar tambem.
+      proximaChamadaEm = Math.max(proximaChamadaEm, Date.now() + espera);
+      await new Promise((resolve) => setTimeout(resolve, espera));
+      continue;
+    }
+
+    break;
   }
 
   if (!response.ok) {

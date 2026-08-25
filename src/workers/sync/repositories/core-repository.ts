@@ -20,6 +20,40 @@ const MAX_UPSERT_BATCH = 6_500;
 /** Ids por INSERT ao enfileirar reparo. Ver enqueueMissingIds. */
 const ENQUEUE_SLICE = 10_000;
 
+/**
+ * `mirror_updated_at` so anda quando o CONTEUDO muda.
+ *
+ * Antes o campo era bumpado para NOW() em todo re-upsert, mesmo quando a linha
+ * voltava identica do OMS. Como `raw_payloads` e append-only na pratica, a
+ * varredura de auditoria re-toca as mesmas linhas volta apos volta e o campo
+ * virava "ultima vez que o sync passou por aqui", nao "ultima vez que mudou".
+ *
+ * Isso alimentava uma esteira: a fila de candidatos da resolucao de gateway
+ * Shopify usa `rp.mirror_updated_at > spr.resolved_at` para reabrir pedidos que
+ * mudaram, entao todo pedido re-tocado pelo sync (a cada 15 min, sobre uma
+ * janela de 30 dias) voltava para a fila JA RESOLVIDO. Com lote de 150, o
+ * trabalho util era expulso por reprocessamento -- e a cobertura estacionava em
+ * vez de convergir.
+ *
+ * `synced_at` continua em NOW() de proposito: ele significa "quando o sync
+ * passou", e e assim que se mede frescor de sincronizacao.
+ *
+ * Efeito colateral bem-vindo: o dedup em mirror-order-mapper prefere
+ * `mirror_updated_at` a `received_at` para eleger o evento vencedor de um
+ * pedido. Com o guard, essa preferencia passa a refletir mudanca real de
+ * conteudo em vez da ordem em que a varredura tocou as linhas.
+ */
+const MIRROR_CONTENT_CHANGED = `(
+          raw_payloads.payload_json IS DISTINCT FROM EXCLUDED.payload_json
+          OR raw_payloads.processing_status IS DISTINCT FROM EXCLUDED.processing_status
+          OR raw_payloads.processed_at IS DISTINCT FROM EXCLUDED.processed_at
+          OR raw_payloads.received_at IS DISTINCT FROM EXCLUDED.received_at
+          OR raw_payloads.event_type IS DISTINCT FROM EXCLUDED.event_type
+          OR raw_payloads.error_message IS DISTINCT FROM EXCLUDED.error_message
+          OR raw_payloads.external_order_id IS DISTINCT FROM EXCLUDED.external_order_id
+          OR raw_payloads.source IS DISTINCT FROM EXCLUDED.source
+        )`;
+
 export type SweepStatus = {
   /** Linhas descobertas como ausentes e ainda nao trazidas do OMS. */
   pendingRepair: number;
@@ -618,7 +652,10 @@ export class CoreRepository implements SyncControlStore {
           processing_status = EXCLUDED.processing_status,
           error_message = EXCLUDED.error_message,
           synced_at = NOW(),
-          mirror_updated_at = NOW()
+          mirror_updated_at = CASE
+            WHEN ${MIRROR_CONTENT_CHANGED} THEN NOW()
+            ELSE raw_payloads.mirror_updated_at
+          END
       `,
       values
     );
@@ -876,7 +913,10 @@ export class CoreRepository implements SyncControlStore {
           processing_status = EXCLUDED.processing_status,
           error_message = EXCLUDED.error_message,
           synced_at = NOW(),
-          mirror_updated_at = NOW()
+          mirror_updated_at = CASE
+            WHEN ${MIRROR_CONTENT_CHANGED} THEN NOW()
+            ELSE raw_payloads.mirror_updated_at
+          END
       `,
       [
         data.id,

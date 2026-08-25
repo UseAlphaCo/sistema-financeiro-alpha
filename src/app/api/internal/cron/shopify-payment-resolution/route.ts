@@ -5,6 +5,19 @@ import { createApiError, createApiSuccess } from "@/shared/api/envelope";
 
 export const runtime = "nodejs";
 
+/**
+ * Sem isto valia o default curto da plataforma -- mesmo motivo ja documentado
+ * em worker-sync/route.ts e materialize-orders/route.ts.
+ *
+ * Era a omissao mais cara das tres. Com o portao de ritmo de ~2 req/s do bucket
+ * REST da Shopify, um lote de 150 pedidos leva na casa de 75 s; o default
+ * cortava a invocacao muito antes disso. O trabalho ja feito nao se perdia (o
+ * UPSERT e por pedido, nao em bloco), mas o resumo sumia e o log de conclusao
+ * nunca saia -- entao a rodada parecia funcionar enquanto entregava uma fracao
+ * do lote.
+ */
+export const maxDuration = 300;
+
 const DEFAULT_BATCH_SIZE = 200;
 const MAX_BATCH_SIZE = 500;
 
