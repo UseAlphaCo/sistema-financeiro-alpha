@@ -1,0 +1,8 @@
+# Arquivos que nao vao para o build da Vercel.
+#
+# A CLI NAO le .gitignore para decidir o upload, entao coisas ignoradas pelo git
+# sobem assim mesmo. O deploy de 25/08/2026 falhou por isso: tmp/oms-export
+# tinha 825 MB de dump do OMS e estourou o limite de 100 MB por arquivo.
+tmp/
+.env.local
+*.log
