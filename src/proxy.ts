@@ -16,18 +16,21 @@ const PROTECTED_PAGE_PREFIXES = [
 const PROTECTED_API_PREFIX = "/api/financial";
 
 /**
- * FREEZE TEMPORARIO CORE FIN.
+ * FREEZE TEMPORARIO CORE FIN -- interruptor, agora DESLIGADO por padrao.
  *
  * Derruba as paginas do app com 503, mantendo as APIs (/api/financial,
  * /api/internal, /api/webhooks, /api/health) respondendo normalmente.
  *
- * Ligado por padrao: enquanto este codigo estiver em main, o app fica fora
- * do ar. Para reabrir, escolha um dos dois caminhos:
- *   1. reverter este commit (limpeza definitiva); ou
- *   2. definir MAINTENANCE_MODE="false" nas env vars da Vercel e redeployar
- *      (reabertura rapida, sem mexer no codigo).
+ * Ficou ligado por padrao de 22/08 a 25/08/2026, enquanto o consumo do OMS era
+ * investigado. O motivo acabou: a varredura por ctid substituiu a consulta sem
+ * indice que derrubava o ciclo, e a materializacao passou a ter cron proprio.
+ *
+ * O default inverteu porque "ligado por padrao" tornava o descongelamento
+ * dependente de uma variavel de ambiente na Vercel -- deployar o codigo certo
+ * nao bastava. Agora o deploy reabre, e o freeze continua a um
+ * MAINTENANCE_MODE="true" de distancia se precisar voltar.
  */
-const MAINTENANCE_MODE = process.env.MAINTENANCE_MODE !== "false";
+const MAINTENANCE_MODE = process.env.MAINTENANCE_MODE === "true";
 
 /**
  * Rotas de API congeladas junto com as paginas.

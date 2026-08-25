@@ -19,12 +19,11 @@ export const maxDuration = 300;
 /**
  * Materializacao diaria de pedidos.
  *
- * ATENCAO: enquanto MAINTENANCE_MODE estiver ligado esta rota devolve 503 antes
- * do handler -- /api/internal esta em FROZEN_API_PREFIXES (src/proxy.ts:42),
- * justamente porque as rotas de cron abrem pools contra o CORE. Por isso o
- * `wrangler deploy` dos crons so pode vir DEPOIS do descongelamento; antes
- * disso o cron so coleciona 503. Para rodar fora do cron, use
- * `npx tsx scripts/materialize-orders-window.ts`.
+ * ATENCAO: com MAINTENANCE_MODE="true" esta rota devolve 503 antes do handler
+ * -- /api/internal esta em FROZEN_API_PREFIXES (src/proxy.ts), justamente
+ * porque as rotas de cron abrem pools contra o CORE. Desde 25/08/2026 o freeze
+ * e opt-in, entao no caminho normal a rota responde. Para rodar fora do cron,
+ * use `npx tsx scripts/materialize-orders-window.ts`.
  *
  * Copia estrutural de shopify-payment-resolution/route.ts: runtime nodejs, auth
  * por CRON_SECRET e envelope padrao.

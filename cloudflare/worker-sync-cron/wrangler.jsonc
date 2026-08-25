@@ -12,8 +12,10 @@
     // Mudar aqui sem mudar la faz o cron cair no `default` e so lancar erro.
     //
     // ATENCAO 3: /api/internal esta em FROZEN_API_PREFIXES (src/proxy.ts), entao
-    // este deploy so pode vir DEPOIS de MAINTENANCE_MODE=false estar no ar --
-    // antes disso todo cron aqui coleciona 503.
+    // estes crons so fazem trabalho util com o freeze desligado. Desde 25/08/2026
+    // o default de MAINTENANCE_MODE e "desligado", entao basta a Vercel estar no
+    // ar com esse codigo; se a env var MAINTENANCE_MODE="true" ainda existir la,
+    // todo cron aqui coleciona 503 ate ela sair.
     "crons": [
       // Sync OMS->mirror por cursor fisico de pagina (cauda + auditoria).
       // Uma volta completa de auditoria leva ~3,5 h nesta cadencia, e a regra
