@@ -2,7 +2,8 @@ import type { NextRequest } from "next/server";
 
 import { logError, logInfo } from "@/core/observability/logger";
 import { runShopifyPaymentResolutionJob } from "@/features/integration/shopify-payment-resolution-job";
-import { buildVerificationReport, dayWindowUtc, VERIFICATION_TIMEZONE } from "@/features/integration/shopify-value-verification";
+import { buildVerificationReport, VERIFICATION_TIMEZONE } from "@/features/integration/shopify-value-verification";
+import { dayWindowUtc } from "@/lib/date-utils";
 import { createApiError, createApiSuccess } from "@/shared/api/envelope";
 
 export const runtime = "nodejs";

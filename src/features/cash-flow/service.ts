@@ -5,9 +5,12 @@ import { normalizeMarketplaceToken } from "@/features/transactions/read-model-fi
 import { PAYMENT_METHODS, type PaymentMethod } from "@/features/transactions/types";
 import { isMirrorReadModelEnabled } from "@/shared/read-model-config";
 import {
+  endOfZonedDay,
   getDateRangeForPeriod,
   getDateRangeForPreset,
   getPreviousPeriodRange,
+  startOfZonedDay,
+  zonedDayKey,
 } from "@/lib/date-utils";
 import { listFinancialReadModelTransactions } from "@/features/transactions/read-model";
 import type {
@@ -246,21 +249,35 @@ function sumTotals(rows: AggregateRow[]) {
   return { income, expense };
 }
 
+/**
+ * Fronteira do filtro de data, sempre no dia de calendario de Brasilia.
+ *
+ * Construia a data com `new Date(ano, mes, dia)` + `setHours`, que resolve no
+ * fuso do processo -- correto na maquina local, deslocado em 3 h na Vercel
+ * (UTC). Ver o cabecalho de src/lib/date-utils.ts.
+ *
+ * Aceita as duas formas que o schema de actions.ts permite: `YYYY-MM-DD` e ISO
+ * completo. O caminho ISO existia so no papel -- `"2026-08-24T00:00:00Z"` caia
+ * em `Number("24T00:00:00Z")` = NaN e a funcao lancava.
+ */
 function parseLocalIsoDate(date: string, endOfDay = false): Date {
-  const [year, month, day] = date.split("-").map(Number);
-  const parsed = new Date(year, (month ?? 1) - 1, day ?? 1);
+  const dayKey = /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? date
+    : (() => {
+        const instant = new Date(date);
+        if (Number.isNaN(instant.getTime())) {
+          throw new Error(`invalid local date filter: ${date}`);
+        }
+        return zonedDayKey(instant);
+      })();
 
-  if (Number.isNaN(parsed.getTime())) {
+  const boundary = endOfDay ? endOfZonedDay(dayKey) : startOfZonedDay(dayKey);
+
+  if (Number.isNaN(boundary.getTime())) {
     throw new Error(`invalid local date filter: ${date}`);
   }
 
-  if (endOfDay) {
-    parsed.setHours(23, 59, 59, 999);
-  } else {
-    parsed.setHours(0, 0, 0, 0);
-  }
-
-  return parsed;
+  return boundary;
 }
 
 function shouldUseMirrorReadModel(): boolean {

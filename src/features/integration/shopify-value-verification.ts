@@ -21,6 +21,10 @@
 
 import { computeCashFlow } from "@/features/cash-flow/service";
 import { getCorePool, withConnectionRetry } from "@/features/transactions/mirror-events-repository";
+// dayWindowUtc/zonedDateToUtc nasceram aqui e eram a unica conversao de fuso
+// correta do repo. Foram para @/lib/date-utils para virar a convencao unica do
+// sistema, em vez de conviverem com as fronteiras por fuso de processo.
+import { addDaysToDayKey, dayWindowUtc } from "@/lib/date-utils";
 
 import { fetchShopifyOrderTransactions, type ShopifyOrderTransaction } from "./shopify-order-transactions";
 import { normalizeShopifyStoreDomain, stripWrappingQuotes } from "./shopify-orders-sync";
@@ -347,42 +351,8 @@ export function formatMoney(cents: number): string {
   return (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-export function dayWindowUtc(date: string, timezone: string): { start: Date; end: Date } {
-  return {
-    start: zonedDateToUtc(date, "00:00:00", timezone),
-    end: zonedDateToUtc(nextDate(date), "00:00:00", timezone),
-  };
-}
-
-function zonedDateToUtc(date: string, time: string, timezone: string): Date {
-  const guess = new Date(`${date}T${time}.000Z`);
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(guess);
-  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  const asIfUtc = Date.UTC(
-    Number(value.year),
-    Number(value.month) - 1,
-    Number(value.day),
-    Number(value.hour),
-    Number(value.minute),
-    Number(value.second)
-  );
-  const offset = asIfUtc - guess.getTime();
-  return new Date(guess.getTime() - offset);
-}
-
 function nextDate(date: string): string {
-  const next = new Date(`${date}T00:00:00.000Z`);
-  next.setUTCDate(next.getUTCDate() + 1);
-  return next.toISOString().slice(0, 10);
+  return addDaysToDayKey(date, 1);
 }
 
 export function yesterdayInTimeZone(timezone: string): string {

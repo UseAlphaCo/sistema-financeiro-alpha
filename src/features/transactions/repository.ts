@@ -15,6 +15,12 @@ import {
 import { getDailySnapshot } from "@/core/cache/dailySnapshot";
 import { listFinancialReadModelPaginated } from "@/features/transactions/read-model";
 import { isMirrorReadModelEnabled } from "@/shared/read-model-config";
+import {
+  addDaysToDayKey,
+  endOfZonedDay,
+  startOfZonedDay,
+  zonedDayKey,
+} from "@/lib/date-utils";
 
 type DeleteInput = {
   id: string;
@@ -29,10 +35,19 @@ export interface TransactionsRepository {
   listWithCache?(filters: ListTransactionsFilters): Promise<PaginatedTransactions>;
 }
 
-function toUtcDateKey(value: Date): string {
-  return value.toISOString().slice(0, 10);
-}
-
+/**
+ * Detecta o range "ontem" para servir do snapshot diario em vez do banco.
+ *
+ * Comparava por dia UTC, e isso so funcionava porque o range chegava como
+ * `00:00Z`->`23:59Z` -- dois erros que se cancelavam. Com as fronteiras
+ * corrigidas para Brasilia o range chega como `03:00Z`->`02:59Z` do dia
+ * seguinte, e a comparacao por dia UTC passaria a apontar para o dia errado sem
+ * lancar erro nenhum: o cache serviria dado de outro dia em silencio.
+ *
+ * A chave devolvida continua sendo um instante `00:00:00Z`, porque
+ * normalizeSnapshotDate (core/cache/dailySnapshot.ts) indexa por
+ * `toISOString().slice(0, 10)`. O que mudou e QUAL dia, nao o formato.
+ */
 function isYesterdayRange(startDate?: string, endDate?: string): Date | null {
   if (!startDate || !endDate) return null;
 
@@ -40,13 +55,13 @@ function isYesterdayRange(startDate?: string, endDate?: string): Date | null {
   const end = new Date(endDate);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
 
-  const now = new Date();
-  const yesterdayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
-  const yesterdayKey = toUtcDateKey(yesterdayUtc);
+  const yesterdayKey = addDaysToDayKey(zonedDayKey(new Date()), -1);
 
-  const isStartYesterday = toUtcDateKey(start) === yesterdayKey;
-  const isEndYesterday = toUtcDateKey(end) === yesterdayKey;
-  return isStartYesterday && isEndYesterday ? yesterdayUtc : null;
+  const isStartYesterday = zonedDayKey(start) === yesterdayKey;
+  const isEndYesterday = zonedDayKey(end) === yesterdayKey;
+  return isStartYesterday && isEndYesterday
+    ? new Date(`${yesterdayKey}T00:00:00.000Z`)
+    : null;
 }
 
 class InMemoryTransactionsRepository implements TransactionsRepository {
@@ -499,9 +514,12 @@ export function getTransactionsRepository(): TransactionsRepository {
 // Retorna todas as transações de ontem (para snapshot)
 export async function listTransactionsForYesterday() {
   const prisma = getPrismaClient();
-  const now = new Date();
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0));
-  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 23, 59, 59, 999));
+  // Dia de Brasilia, igual ao que isYesterdayRange procura no cache. Em UTC as
+  // duas pontas discordariam entre 21:00 e 23:59 de Brasilia, e o snapshot
+  // gravado nunca seria encontrado pela leitura.
+  const yesterdayKey = addDaysToDayKey(zonedDayKey(new Date()), -1);
+  const start = startOfZonedDay(yesterdayKey);
+  const end = endOfZonedDay(yesterdayKey);
   const rows = await prisma.financialTransaction.findMany({
     where: {
       deletedAt: null,
