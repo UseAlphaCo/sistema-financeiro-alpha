@@ -7,6 +7,7 @@ import {
 import {
   findCandidateOrderKeys,
   findMirrorRowsByOrderKeys,
+  findOrderKeysWithStaleResolution,
 } from "@/features/transactions/mirror-events-repository";
 import {
   describeMaterializationRejection,
@@ -64,6 +65,19 @@ const DISCOVERY_GRACE_DAYS = 2;
  * que nao vale otimizar aqui.
  */
 const KEY_CHUNK = 500;
+
+/**
+ * Teto de chaves trazidas por resolucao tardia numa invocacao.
+ *
+ * Existe para o cron diario nao tentar engolir um backlog historico inteiro e
+ * estourar o maxDuration de 300 s. 5.000 chaves sao 10 lotes de KEY_CHUNK,
+ * somados aos ~15 mil da janela do dia (medido em producao: 58 s) -- cabe com
+ * folga, e backlog maior converge em algumas rodadas.
+ *
+ * Para carga historica de uma vez, o caminho e
+ * scripts/materialize-orders-window.ts, que nao tem limite de plataforma.
+ */
+const LATE_RESOLUTION_LIMIT = 5_000;
 
 export type MaterializeDayResult = {
   /** Dia processado, em YYYY-MM-DD (fuso America/Sao_Paulo). */
@@ -193,7 +207,29 @@ async function materializeWindow(
 
   await ensureFinancialOrdersTable();
 
-  const candidates = await comRetentativa("candidatos", () => findCandidateOrderKeys(from, to));
+  const daJanela = await comRetentativa("candidatos", () => findCandidateOrderKeys(from, to));
+
+  // Pedidos cuja resolucao de gateway chegou depois da materializacao. Nao sao
+  // alcancaveis pelo recorte por `received_at` -- ver o docblock de
+  // findOrderKeysWithStaleResolution. Sem isto, resolucao tardia corrige o
+  // read-model ao vivo e deixa `occurred_at` errado na tabela para sempre.
+  const porResolucaoTardia = await comRetentativa("resolucao_tardia", () =>
+    findOrderKeysWithStaleResolution(LATE_RESOLUTION_LIMIT)
+  );
+
+  const vistas = new Set(daJanela.map((c) => `${c.source}|${c.orderKey}`));
+  const extras = porResolucaoTardia.filter((c) => !vistas.has(`${c.source}|${c.orderKey}`));
+  const candidates = [...daJanela, ...extras];
+
+  if (extras.length > 0) {
+    logInfo("materialize_orders_resolucao_tardia", {
+      day,
+      chaves: extras.length,
+      // Se bater no teto, sobrou backlog para a proxima rodada -- e o numero
+      // que distingue "convergiu" de "esta engolindo aos poucos".
+      noTeto: porResolucaoTardia.length >= LATE_RESOLUTION_LIMIT,
+    });
+  }
 
   let dedupedOrders = 0;
   let mapped = 0;

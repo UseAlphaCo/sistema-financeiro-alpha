@@ -211,6 +211,67 @@ export async function findCandidateOrderKeys(
 }
 
 /**
+ * Passo 1b: pedidos cuja resolucao de gateway chegou DEPOIS de terem sido
+ * materializados.
+ *
+ * Existe porque a descoberta do passo 1 recorta so por `received_at`, e gravar
+ * em `shopify_order_payment_resolution` nao altera coluna nenhuma de
+ * `mirror.raw_payloads`. Do ponto de vista do passo 1, um pedido que acabou de
+ * ter o gateway resolvido e indistinguivel de um que nao mudou.
+ *
+ * O problema disso: para pedido Shopify, `occurred_at` prefere
+ * `transaction_processed_at` -- a data real do pagamento -- e so cai no
+ * `processed_at` do pedido enquanto a resolucao nao chega. O cron diario cobre
+ * D-0..D-2 com folga de +-2, ou seja `received_at` de D-4 a D+2; resolucao que
+ * chega depois disso NUNCA era aplicada e o `occurred_at` ficava congelado no
+ * fallback para sempre. Medido em 2026-08-25: 65% dos pedidos materializados do
+ * dia ja discordavam da resolucao que existia para eles.
+ *
+ * O criterio e `resolved_at > materialized_at`, e nao uma janela de tempo: e
+ * exatamente o conjunto defasado, ele se esvazia sozinho conforme e processado,
+ * e nao depende de adivinhar quanto tempo a resolucao pode atrasar.
+ *
+ * O `LIMIT` existe para o cron diario nao tentar engolir um backlog inteiro
+ * numa invocacao. Backlog grande converge em algumas rodadas -- ou de uma vez
+ * por scripts/materialize-orders-window.ts, que e o caminho para carga historica.
+ *
+ * O join usa `fo.order_key`, nao `fo.external_id`: order_key e a PK
+ * (source, order_key), e para Shopify vale COALESCE(external_order_id, id), que
+ * e o external_order_id sempre que existe resolucao.
+ */
+export async function findOrderKeysWithStaleResolution(
+  limite: number
+): Promise<CandidateOrderKey[]> {
+  const pool = getCorePool();
+  if (!pool) return [];
+
+  const result = await withConnectionRetry(() =>
+    queryWithTimeout<{ source: string; order_key: string }>(
+      pool,
+      DISCOVERY_TIMEOUT_MS,
+      `
+        SELECT fo.source, fo.order_key
+        FROM integration.shopify_order_payment_resolution res
+        JOIN integration.financial_orders fo
+          ON fo.source = 'shopify'
+         AND fo.order_key = res.external_order_id
+        WHERE res.transaction_processed_at IS NOT NULL
+          AND res.resolved_at > fo.materialized_at
+        ORDER BY res.resolved_at
+        LIMIT $1
+      `,
+      [limite]
+    )
+  );
+
+  return result.rows.map((row) => ({
+    source: row.source,
+    orderKey: row.order_key,
+    isExternal: true,
+  }));
+}
+
+/**
  * Passo 2: TODOS os eventos das chaves dadas, ja dedupados para um por pedido.
  *
  * Busca por chave e nao por data de proposito -- o dedup precisa do conjunto
