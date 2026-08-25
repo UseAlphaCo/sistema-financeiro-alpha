@@ -16,17 +16,28 @@
     // o default de MAINTENANCE_MODE e "desligado", entao basta a Vercel estar no
     // ar com esse codigo; se a env var MAINTENANCE_MODE="true" ainda existir la,
     // todo cron aqui coleciona 503 ate ela sair.
+    // ATENCAO 4: esta cadencia e orcamento de CPU, nao preferencia. Em 25/08/2026
+    // a conta bateu 100% das 4 horas de Fluid Active CPU do plano gratuito no
+    // PRIMEIRO dia com os crons religados. O sync a cada 15 min era o dominante:
+    // 96 invocacoes/dia rodando ate os 60 s inteiros, cada uma fazendo round-trip
+    // de JSON de 56 a 240 MB. Aumentar a frequencia aqui sem antes parar de
+    // trafegar payload_json inteiro (ver mirror-events-repository.ts) volta a
+    // estourar a cota.
     "crons": [
       // Sync OMS->mirror por cursor fisico de pagina (cauda + auditoria).
-      // Uma volta completa de auditoria leva ~3,5 h nesta cadencia, e a regra
-      // das duas voltas pede ~7 h antes de declarar completude.
-      "*/15 * * * *",
-      // Resolucao de gateway titular Shopify: batch pequeno, escopado aos
-      // ultimos dias — nao o backlog historico inteiro.
-      "*/20 * * * *",
-      // Verificacao horaria Sistema x Shopify, sempre D-1, com auto-alinhamento
-      // se a divergencia for um alerta real.
-      "0 * * * *",
+      // A cada 3 horas: e o atraso maximo acordado entre a venda acontecer no
+      // OMS e aparecer no sistema, e ainda entrega o dia fechado a tempo da
+      // materializacao das 23h. Uma volta de auditoria passa a levar ~28 h, e a
+      // regra das duas voltas pede ~56 h antes de declarar completude.
+      "0 */3 * * *",
+      // Resolucao de gateway titular Shopify, escopada aos ultimos dias.
+      // CPU baixa (espera de rede), mas cada rodada segura a funcao por ~75 s
+      // por causa do portao de ritmo do bucket da Shopify.
+      "0 */2 * * *",
+      // Verificacao Sistema x Shopify, 1x/dia as 06:00 BRT, sempre sobre D-1
+      // (dia maduro). Era horaria; cada execucao busca transacoes de ~1.700
+      // pedidos e forca o Postgres a detoastar payload_json da janela inteira.
+      "0 9 * * *",
       // Materializacao, um dia por invocacao (D-0, D-1, D-2). 02:00 UTC =
       // 23:00 BRT, com D-0 ja praticamente fechado.
       "0 2 * * *",

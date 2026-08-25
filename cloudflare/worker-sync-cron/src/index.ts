@@ -11,9 +11,9 @@ export interface Env {
  * wrangler.jsonc caractere a caractere. Divergir nao quebra o deploy: o cron
  * dispara e cai no `default`, que so lanca erro nos logs do Cloudflare.
  */
-const WORKER_SYNC_CRON = "*/15 * * * *";
-const SHOPIFY_RESOLUTION_CRON = "*/20 * * * *";
-const SHOPIFY_VERIFY_CRON = "0 * * * *";
+const WORKER_SYNC_CRON = "0 */3 * * *";
+const SHOPIFY_RESOLUTION_CRON = "0 */2 * * *";
+const SHOPIFY_VERIFY_CRON = "0 9 * * *";
 
 /**
  * Materializacao diaria, um dia por invocacao.
