@@ -57,12 +57,25 @@ const TEST_SOURCE = "vitest-financial-orders";
 const KEY_A = "vitest-A";
 const KEY_B = "vitest-B";
 
+/**
+ * Data do pedido de teste, RELATIVA e nao fixa.
+ *
+ * getMaterializedLag recorta por occurred_at (FRESHNESS_WINDOW_DAYS), entao uma
+ * data fixa sai da janela conforme o tempo passa e o teste deixaria de exercer o
+ * que pretende -- em silencio, porque a assercao passaria a medir dado de
+ * producao em vez do que este teste gravou.
+ *
+ * D-1 e nao "agora": o pedido de teste fica dentro da janela de frescor sem
+ * aparecer no dia corrente das telas caso uma execucao morra antes do `finally`.
+ */
+const TEST_OCCURRED_AT = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
 function order(overrides: Partial<MaterializedOrder> & { orderKey: string }): MaterializedOrder {
   return {
     source: TEST_SOURCE,
     mirrorRowId: randomUUID(),
     externalId: overrides.orderKey,
-    occurredAt: "2026-08-10T12:00:00.000Z",
+    occurredAt: TEST_OCCURRED_AT,
     marketplace: "Shopify",
     marketplaceKey: "shopify",
     sourceKey: "shopify",
@@ -81,7 +94,7 @@ function order(overrides: Partial<MaterializedOrder> & { orderKey: string }): Ma
     type: "income",
     txSource: "webhook",
     status: "approved",
-    receivedAt: "2026-08-10T12:05:00.000Z",
+    receivedAt: TEST_OCCURRED_AT,
     sourceUpdatedAt: null,
     searchText: "pedido #1 shopify",
     contentHash: "hash-1",
@@ -127,11 +140,20 @@ describe("financial-orders-repository (integration)", () => {
 
       const lag = await getMaterializedLag();
       expect(lag).not.toBeNull();
-      expect(lag?.total).toBeGreaterThanOrEqual(2);
-      // `total` vem de count(*), que e bigint: sem Number() viria string do
-      // driver `pg` e qualquer comparacao numerica na tela sairia errada.
-      expect(typeof lag?.total).toBe("number");
+      // As duas linhas gravadas acima estao em D-1, dentro da janela de frescor.
+      expect(lag?.ordersInWindow).toBeGreaterThanOrEqual(2);
+      // `ordersInWindow` vem de count(*), que e bigint: sem Number() viria
+      // string do driver `pg` e qualquer comparacao numerica na tela sairia
+      // errada.
+      expect(typeof lag?.ordersInWindow).toBe("number");
       expect(lag?.maxMaterializedAt).not.toBeNull();
+      // O teto do read model tem de alcancar o que acabou de ser gravado --
+      // e este campo, e nao maxMaterializedAt, que a UI usa para decidir se um
+      // periodo pedido ja tem resposta.
+      expect(lag?.maxOccurredAt).not.toBeNull();
+      expect(new Date(lag!.maxOccurredAt!).getTime()).toBeGreaterThanOrEqual(
+        new Date(TEST_OCCURRED_AT).getTime()
+      );
     } finally {
       expect(await deleteFinancialOrders(keys)).toBe(2);
       await closePool();

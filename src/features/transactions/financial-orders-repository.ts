@@ -108,11 +108,45 @@ const UPSERT_COLUMNS = [
 export const UPSERT_BATCH_ROWS = 1_000;
 
 /**
- * Limite das operacoes desta tabela. Maior que os 20 s do caminho de request de
- * proposito: quem chama e o job, gravando lotes de mil linhas. Aplicado por SET
- * -- ver src/core/db/pg-session.ts.
+ * Limite das ESCRITAS em lote desta tabela (upsert e delete). Maior que o teto
+ * de request de proposito: quem chama e o job, gravando lotes de mil linhas.
+ * Aplicado por SET -- ver src/core/db/pg-session.ts.
+ *
+ * O DDL de ensureFinancialOrdersTable fica de fora e usa o default do servidor:
+ * criacao de indice nao tem duracao previsivel e um teto arbitrario ali
+ * transformaria "demorou" em "falhou".
  */
 const WRITE_TIMEOUT_MS = 120_000;
+
+/**
+ * Limite das LEITURAS desta tabela.
+ *
+ * Mesmo valor do READ_TIMEOUT_MS de mirror-events-repository.ts, e nao por
+ * coincidencia: os dois sao o teto de uma consulta que roda DENTRO de um
+ * request de usuario, e um so teto de request torna o comportamento previsivel
+ * independente de qual fonte esta ligada.
+ *
+ * A separacao existe porque listMaterializedOrders usava o teto de escrita.
+ * Com FINANCIAL_READ_MODEL_MATERIALIZED ligado essa funcao vira o caminho
+ * quente de TODAS as telas, e ali 120 s significa um request travado segurando
+ * dois minutos de Fluid Active CPU -- exatamente o recurso que esta em falta.
+ */
+const READ_TIMEOUT_MS = 20_000;
+
+/**
+ * Janela do calculo de frescor.
+ *
+ * Recorta por occurred_at para cair no idx_financial_orders_occurred_at em vez
+ * de varrer a tabela: sem o recorte o plano era Seq Scan de 101.700 linhas
+ * (medido em 2026-08-25), que cresce junto com a tabela para responder uma
+ * pergunta sobre as ultimas horas.
+ *
+ * 7 dias e folga sobre a cadencia do cron (1x/dia, D-0/D-1/D-2): se a
+ * materializacao parar por dias, a janela ainda contem a ultima execucao e a
+ * tela consegue dizer QUANDO parou. Vazia significa "parada ha mais de uma
+ * semana", que a UI trata como ausencia de frescor conhecido.
+ */
+const FRESHNESS_WINDOW_DAYS = 7;
 
 function toValues(order: MaterializedOrder): unknown[] {
   return [
@@ -295,7 +329,9 @@ export async function upsertFinancialOrders(orders: MaterializedOrder[]): Promis
       (column) => column !== "source" && column !== "order_key"
     ).map((column) => `${column} = EXCLUDED.${column}`);
 
-    const result = await pool.query(
+    const result = await queryWithTimeout(
+      pool,
+      WRITE_TIMEOUT_MS,
       `
         INSERT INTO integration.financial_orders (${UPSERT_COLUMNS.join(", ")})
         VALUES ${tuples.join(", ")}
@@ -328,7 +364,9 @@ export async function deleteFinancialOrders(keys: MaterializedOrderKey[]): Promi
 
   // Dois arrays paralelos em vez de uma lista de tuplas: mantem o numero de
   // parametros em 2, independente da quantidade de chaves.
-  const result = await pool.query(
+  const result = await queryWithTimeout(
+    pool,
+    WRITE_TIMEOUT_MS,
     `
       DELETE FROM integration.financial_orders fo
       USING unnest($1::text[], $2::text[]) AS k(source, order_key)
@@ -340,33 +378,53 @@ export async function deleteFinancialOrders(keys: MaterializedOrderKey[]): Promi
   return result.rowCount ?? 0;
 }
 
+export type MaterializedLag = {
+  /** Quando a materializacao rodou pela ultima vez. */
+  maxMaterializedAt: string | null;
+  /**
+   * Ate quando ha PEDIDO materializado -- o teto do read model.
+   *
+   * E este campo, e nao maxMaterializedAt, que decide se um periodo pedido tem
+   * resposta: uma execucao recente que nao achou nada novo atualiza a primeira
+   * data e nao mexe na segunda.
+   */
+  maxOccurredAt: string | null;
+  /** Pedidos dentro da janela de frescor. NAO e o total da tabela. */
+  ordersInWindow: number;
+};
+
 /**
- * Defasagem da materializacao, para a tela /integracoes.
+ * Defasagem da materializacao, para as telas dizerem ate quando o dado vai.
  *
  * Rodar so uma vez por dia significa que as telas refletem o dado da ultima
- * execucao. Isso e aceitavel, mas nao pode ser silencioso -- daí expor a idade
- * do dado em vez de deixar quem olha supor que e de agora.
+ * execucao. Isso e aceitavel, mas nao pode ser silencioso: sem esta informacao
+ * o preset "Hoje" mostra R$ 0,00 antes das 23 h, e um zero mudo numa tela de
+ * fluxo de caixa le-se como "nao vendeu nada" -- a mesma confusao que o piso de
+ * read-model-coverage.ts existe para impedir, so que na outra ponta.
  */
-export async function getMaterializedLag(): Promise<{
-  maxMaterializedAt: string | null;
-  maxOccurredAt: string | null;
-  total: number;
-} | null> {
+export async function getMaterializedLag(): Promise<MaterializedLag | null> {
   const pool = getPool();
   if (!pool) return null;
 
   try {
-    const result = await pool.query<{
+    // Recorte por occurred_at para usar idx_financial_orders_occurred_at: ver
+    // FRESHNESS_WINDOW_DAYS. O interval vem por parametro, e nao interpolado,
+    // porque `make_interval` aceita bind e a concatenacao nao.
+    const result = await queryWithTimeout<{
       max_materialized_at: Date | null;
       max_occurred_at: Date | null;
-      total: string;
+      orders_in_window: string;
     }>(
+      pool,
+      READ_TIMEOUT_MS,
       `
         SELECT max(materialized_at) AS max_materialized_at,
                max(occurred_at)     AS max_occurred_at,
-               count(*)::text       AS total
+               count(*)::text       AS orders_in_window
         FROM integration.financial_orders
-      `
+        WHERE occurred_at >= now() - make_interval(days => $1::int)
+      `,
+      [FRESHNESS_WINDOW_DAYS]
     );
 
     const row = result.rows[0];
@@ -374,7 +432,7 @@ export async function getMaterializedLag(): Promise<{
       maxMaterializedAt: row?.max_materialized_at?.toISOString() ?? null,
       maxOccurredAt: row?.max_occurred_at?.toISOString() ?? null,
       // count(*) volta como bigint, e bigint chega como string no driver `pg`.
-      total: Number(row?.total ?? 0),
+      ordersInWindow: Number(row?.orders_in_window ?? 0),
     };
   } catch (error) {
     // Tabela ainda nao existe neste ambiente: e ausencia de dado, nao falha da
@@ -527,7 +585,7 @@ export async function listMaterializedOrders(
 
   const result = await queryWithTimeout<FinancialOrderRow>(
     pool,
-    WRITE_TIMEOUT_MS,
+    READ_TIMEOUT_MS,
     `
       SELECT fo.source, fo.order_key, fo.mirror_row_id, fo.external_id, fo.occurred_at,
              fo.marketplace, fo.marketplace_key, fo.source_key, fo.source_bucket,
