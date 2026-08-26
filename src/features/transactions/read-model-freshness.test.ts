@@ -8,6 +8,16 @@ import { resolveFreshness } from "./read-model-freshness";
  */
 const TETO = "2026-08-25T14:55:00.000Z";
 
+/**
+ * "Agora" fixo: 25/08 12:00 BRT, logo depois do teto.
+ *
+ * Fixo e nao `new Date()` porque a classificacao passou a depender de o periodo
+ * ja ter terminado ou nao (`incomplete` x `trailing`). Com relogio real, os
+ * mesmos casos mudariam de status conforme a data em que a suite roda -- o
+ * teste passaria hoje e falharia amanha sem ninguem mexer no codigo.
+ */
+const AGORA = new Date("2026-08-25T15:00:00.000Z");
+
 function lag(maxOccurredAt: string | null, maxMaterializedAt = TETO) {
   return { maxOccurredAt, maxMaterializedAt, ordersInWindow: 1_000 };
 }
@@ -16,7 +26,8 @@ describe("resolveFreshness", () => {
   it("periodo fechado antes do teto nao gera aviso", () => {
     const result = resolveFreshness(
       { startDate: "2026-08-24T03:00:00.000Z", endDate: "2026-08-25T02:59:59.999Z" },
-      lag(TETO)
+      lag(TETO),
+      AGORA
     );
 
     expect(result.status).toBe("fresh");
@@ -30,7 +41,8 @@ describe("resolveFreshness", () => {
     // seguinte para o not_yet de verdade.
     const result = resolveFreshness(
       { startDate: "2026-08-25T03:00:00.000Z", endDate: "2026-08-26T02:59:59.999Z" },
-      lag(TETO)
+      lag(TETO),
+      AGORA
     );
 
     expect(result.status).toBe("trailing");
@@ -43,7 +55,8 @@ describe("resolveFreshness", () => {
     // nao ha uma linha sequer, e os agregados voltariam todos zero.
     const result = resolveFreshness(
       { startDate: "2026-08-25T03:00:00.000Z", endDate: "2026-08-26T02:59:59.999Z" },
-      lag("2026-08-24T20:00:00.000Z")
+      lag("2026-08-24T20:00:00.000Z"),
+      AGORA
     );
 
     expect(result.status).toBe("not_yet");
@@ -53,10 +66,42 @@ describe("resolveFreshness", () => {
     expect(result.message).toContain("ainda nao foi processado");
   });
 
+  it("dia que ja fechou e ficou incompleto avisa que o numero e parcial", () => {
+    // O caso real de 26/08/2026: o preset "Ontem" mostrava 25/08 com 1.365 dos
+    // 1.738 pedidos Shopify, porque a materializacao de D-0 rodou as 23 h sobre
+    // um mirror que ia so ate 20:53. O dia esta fechado e o numero nao esta --
+    // trailing seria brando demais aqui.
+    const result = resolveFreshness(
+      { startDate: "2026-08-25T03:00:00.000Z", endDate: "2026-08-26T02:59:59.999Z" },
+      lag("2026-08-25T23:53:55.000Z", "2026-08-26T02:01:51.000Z"),
+      new Date("2026-08-26T14:00:00.000Z")
+    );
+
+    expect(result.status).toBe("incomplete");
+    // Continua exibindo: o valor e parcial, nao inventado. Suprimir apagaria
+    // dado real.
+    expect(result.canShowTotals).toBe(true);
+    expect(result.message).toContain("ja terminou");
+    expect(result.message).toContain("incompletos");
+  });
+
+  it("periodo em andamento continua trailing, nao incomplete", () => {
+    // Mesmo teto do teste anterior, mas consultado ENQUANTO o dia corre:
+    // faltar as ultimas horas e o esperado, nao uma anomalia.
+    const result = resolveFreshness(
+      { startDate: "2026-08-25T03:00:00.000Z", endDate: "2026-08-26T02:59:59.999Z" },
+      lag("2026-08-25T23:53:55.000Z"),
+      new Date("2026-08-26T01:00:00.000Z")
+    );
+
+    expect(result.status).toBe("trailing");
+  });
+
   it("periodo que atravessa o teto avisa ate onde o dado vai", () => {
     const result = resolveFreshness(
       { startDate: "2026-08-01T03:00:00.000Z", endDate: "2026-08-26T02:59:59.999Z" },
-      lag(TETO)
+      lag(TETO),
+      AGORA
     );
 
     expect(result.status).toBe("trailing");
@@ -67,7 +112,11 @@ describe("resolveFreshness", () => {
   it("fronteira exata conta como coberta", () => {
     // end === teto nao pode virar aviso: o ultimo instante pedido esta
     // materializado.
-    const result = resolveFreshness({ startDate: "2026-08-01T03:00:00.000Z", endDate: TETO }, lag(TETO));
+    const result = resolveFreshness(
+      { startDate: "2026-08-01T03:00:00.000Z", endDate: TETO },
+      lag(TETO),
+      AGORA
+    );
 
     expect(result.status).toBe("fresh");
     expect(result.message).toBeNull();
@@ -76,7 +125,8 @@ describe("resolveFreshness", () => {
   it("sem lag avisa que nao sabe, em vez de afirmar frescor", () => {
     const result = resolveFreshness(
       { startDate: "2026-08-01T03:00:00.000Z", endDate: "2026-08-26T02:59:59.999Z" },
-      null
+      null,
+      AGORA
     );
 
     expect(result.status).toBe("unknown");
@@ -91,14 +141,19 @@ describe("resolveFreshness", () => {
     // de uma semana -- o unico estado em que a tela fica vazia sem explicacao.
     const result = resolveFreshness(
       { startDate: "2026-08-01T03:00:00.000Z", endDate: "2026-08-26T02:59:59.999Z" },
-      { maxOccurredAt: null, maxMaterializedAt: null, ordersInWindow: 0 }
+      { maxOccurredAt: null, maxMaterializedAt: null, ordersInWindow: 0 },
+      AGORA
     );
 
     expect(result.status).toBe("unknown");
   });
 
   it("periodo ilegivel nao acusa a materializacao", () => {
-    const result = resolveFreshness({ startDate: "nao e data", endDate: "tambem nao" }, lag(TETO));
+    const result = resolveFreshness(
+      { startDate: "nao e data", endDate: "tambem nao" },
+      lag(TETO),
+      AGORA
+    );
 
     expect(result.status).toBe("unknown");
     expect(result.message).toBeNull();

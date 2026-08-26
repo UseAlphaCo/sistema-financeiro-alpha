@@ -27,6 +27,17 @@ export type FreshnessStatus =
   | "fresh"
   /** O periodo comecou dentro, mas termina depois do teto (o caso de d7/d30 durante o dia). */
   | "trailing"
+  /**
+   * O periodo JA TERMINOU e mesmo assim nao foi alcancado pela materializacao.
+   *
+   * Diferente de `trailing`, onde faltar as ultimas horas e o esperado porque
+   * elas ainda estao acontecendo. Aqui o dia fechou e o numero continua parcial
+   * -- o que aconteceu em 25/08/2026, quando "Ontem" exibia 1.365 dos 1.738
+   * pedidos Shopify (R$ 207.402,93 de R$ 264.683,09) o dia inteiro. Um numero
+   * fechado que nao esta fechado precisa de aviso mais forte, porque quem le
+   * nao tem como desconfiar dele sozinho.
+   */
+  | "incomplete"
   /** O periodo inteiro esta depois do teto (o caso de "Hoje" antes das 23 h). */
   | "not_yet"
   /** Nao da para saber ate onde o dado vai -- tabela ausente ou materializacao parada. */
@@ -75,7 +86,9 @@ function parseInstant(value: string | null | undefined): Date | null {
  */
 export function resolveFreshness(
   period: { startDate: string; endDate: string },
-  lag: MaterializedLag | null
+  lag: MaterializedLag | null,
+  /** Injetavel para o teste distinguir periodo em andamento de periodo fechado. */
+  now: Date = new Date()
 ): Freshness {
   const materializedThrough = parseInstant(lag?.maxOccurredAt);
   const lastRunAt = parseInstant(lag?.maxMaterializedAt);
@@ -122,6 +135,21 @@ export function resolveFreshness(
         materializedThrough
       )}.`,
       canShowTotals: false,
+    };
+  }
+
+  // Periodo ja encerrado que a materializacao nao alcancou. Os totais continuam
+  // sendo exibidos -- sao parciais, nao inventados --, mas com aviso de peso, ja
+  // que um dia fechado passa a impressao de numero definitivo.
+  if (end <= now) {
+    return {
+      status: "incomplete",
+      materializedThrough,
+      lastRunAt,
+      message: `Este periodo ja terminou, mas os dados so vao ate ${formatMoment(
+        materializedThrough
+      )}. Os valores abaixo estao incompletos.`,
+      canShowTotals: true,
     };
   }
 
