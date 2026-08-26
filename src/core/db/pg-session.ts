@@ -19,12 +19,22 @@ import type { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
  * "client.query() when the client is already executing a query"). Fica exatamente
  * a consulta mais perigosa -- a primeira, com conexao fria -- sem o limite.
  *
- * Aqui o SET e enviado na mesma conexao fisica, antes da consulta, e apenas uma
- * vez por conexao: em modo sessao (porta 5432) o valor persiste, entao repetir a
- * cada consulta seria um round-trip jogado fora. O WeakSet nao impede a coleta
- * do client.
+ * Aqui o SET e enviado na mesma conexao fisica, antes da consulta, e apenas
+ * quando o limite MUDA: em modo sessao (porta 5432) o valor persiste, entao
+ * repetir a cada consulta seria um round-trip jogado fora. O WeakMap nao impede
+ * a coleta do client.
+ *
+ * Por que WeakMap<client, ms> e nao WeakSet<client>: um mesmo pool serve
+ * chamadores com limites diferentes -- mirror-events-repository.ts pede 20 s nas
+ * leituras e 120 s na descoberta, financial-orders-repository.ts pede 20 s nas
+ * telas e 120 s nas gravacoes do job. Com WeakSet, o PRIMEIRO valor a tocar
+ * aquela conexao vencia para sempre e todos os outros eram descartados em
+ * silencio, invertidos nos dois sentidos: a descoberta do job podia herdar os
+ * 20 s de uma tela e falhar, e uma tela podia herdar os 120 s do job e segurar
+ * dois minutos de CPU. Guardar o valor aplicado e comparar e o que faz o
+ * parametro `timeoutMs` significar o que diz.
  */
-const configured = new WeakSet<PoolClient>();
+const applied = new WeakMap<PoolClient, number>();
 
 export async function queryWithTimeout<T extends QueryResultRow = QueryResultRow>(
   pool: Pool,
@@ -34,11 +44,12 @@ export async function queryWithTimeout<T extends QueryResultRow = QueryResultRow
 ): Promise<QueryResult<T>> {
   const client = await pool.connect();
   try {
-    if (!configured.has(client)) {
+    const wanted = Math.floor(timeoutMs);
+    if (applied.get(client) !== wanted) {
       // Literal interpolado e nao parametro: SET nao aceita bind, e o valor vem
       // de constante do codigo, nunca de entrada externa.
-      await client.query(`SET statement_timeout = ${Math.floor(timeoutMs)}`);
-      configured.add(client);
+      await client.query(`SET statement_timeout = ${wanted}`);
+      applied.set(client, wanted);
     }
 
     return await client.query<T>(text, values as unknown[]);
