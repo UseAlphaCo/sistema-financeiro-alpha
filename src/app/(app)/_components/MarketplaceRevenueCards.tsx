@@ -15,19 +15,27 @@ function formatCount(value: number): string {
 type Props = {
   title: string;
   current: CashFlowBySource[];
+  /**
+   * Periodo posterior ao que ja foi materializado (`not_yet` em
+   * read-model-freshness.ts). Muda o estado vazio: "nenhum faturamento
+   * encontrado" afirma que o periodo esta vazio, e ele so nao foi processado.
+   */
+  unavailable?: boolean;
 };
 
-export default function MarketplaceRevenueCards({ title, current }: Props) {
+export default function MarketplaceRevenueCards({ title, current, unavailable = false }: Props) {
   const visible = [...current]
     .filter((item) => item.grossCents > 0)
     .sort((a, b) => b.grossCents - a.grossCents);
 
-  if (visible.length === 0) {
+  if (unavailable || visible.length === 0) {
     return (
       <section className="mt-8">
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">{title}</h2>
         <div className="rounded-lg border border-dashed border-gray-200 bg-white p-6 text-sm text-gray-500">
-          Nenhum faturamento por marketplace encontrado.
+          {unavailable
+            ? "Período ainda não processado — veja o aviso acima."
+            : "Nenhum faturamento por marketplace encontrado."}
         </div>
       </section>
     );

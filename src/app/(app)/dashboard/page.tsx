@@ -1,16 +1,22 @@
 import { unstable_cache } from "next/cache";
 import { computeCashFlow } from "@/features/cash-flow/service";
+import DataFreshnessNotice, { getFreshness } from "../_components/DataFreshnessNotice";
 import PaymentMethodRevenueCards from "../_components/PaymentMethodRevenueCards";
 import MarketplaceRevenueCards from "../_components/MarketplaceRevenueCards";
 import { PERIOD_PRESETS, type PeriodPreset } from "@/lib/date-utils";
 
 export const dynamic = "force-dynamic";
 
-// computeCashFlow bate no mirror.raw_payloads (payload_json inteiro por
-// pedido) e pode demorar de segundos a minutos dependendo da rede ate o
-// Postgres (ver comentario em getCorePool, read-model.ts). Como o preset
-// padrao pos-login e' sempre o mesmo ("yesterday"), cachear por 90s cobre
-// visitas repetidas sem pagar esse custo a cada carregamento.
+// computeCashFlow le a tabela materializada quando
+// FINANCIAL_READ_MODEL_MATERIALIZED esta ligado, e varre mirror.raw_payloads
+// (payload_json inteiro por pedido, de segundos a minutos) quando nao esta.
+// Nos dois casos o custo por visita e alto o bastante para valer cache: como o
+// preset padrao pos-login e' sempre o mesmo ("yesterday"), 90 s cobre visitas
+// repetidas sem pagar o custo a cada carregamento.
+//
+// Os 90 s nao precisam acompanhar a materializacao (1x/dia): cache mais curto
+// que a fonte so significa reler a mesma resposta, nunca mostrar dado mais
+// velho do que a fonte tem.
 const getCachedCashFlow = unstable_cache(computeCashFlow, ["dashboard-cash-flow"], {
   revalidate: 90,
 });
@@ -96,6 +102,15 @@ export default async function DashboardPage({ searchParams }: Props) {
     previousPeriod,
   } = summary;
 
+  const freshness = await getFreshness(period);
+
+  // Em `not_yet` o periodo inteiro esta depois do que foi materializado: todos
+  // os agregados voltam zero por AUSENCIA DE LINHA, e formata-los como dinheiro
+  // afirmaria "nao vendeu nada". O traco diz o que e verdade -- nao temos o
+  // numero ainda --, e o aviso logo acima explica por que.
+  const showTotals = freshness?.canShowTotals ?? true;
+  const money = (cents: number) => (showTotals ? formatBRL(cents) : "—");
+
   return (
     <div className="w-full space-y-8">
       {/* Cabeçalho + seletor de período */}
@@ -123,24 +138,26 @@ export default async function DashboardPage({ searchParams }: Props) {
         </div>
       </div>
 
+      <DataFreshnessNotice period={period} freshness={freshness} />
+
       {/* Cards de resumo */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
         <SummaryCard
           label="Receita bruta"
-          value={formatBRL(totalIncomeCents)}
-          delta={previousPeriod ? deltaPercent(totalIncomeCents, previousPeriod.totalIncomeCents) : null}
+          value={money(totalIncomeCents)}
+          delta={showTotals && previousPeriod ? deltaPercent(totalIncomeCents, previousPeriod.totalIncomeCents) : null}
           deltaClass={previousPeriod ? deltaClass(totalIncomeCents, previousPeriod.totalIncomeCents) : "text-gray-400"}
         />
         <SummaryCard
           label="Despesas"
-          value={formatBRL(totalExpenseCents)}
-          delta={previousPeriod ? deltaPercent(totalExpenseCents, previousPeriod.totalExpenseCents) : null}
+          value={money(totalExpenseCents)}
+          delta={showTotals && previousPeriod ? deltaPercent(totalExpenseCents, previousPeriod.totalExpenseCents) : null}
           deltaClass={previousPeriod ? deltaClass(totalExpenseCents, previousPeriod.totalExpenseCents, true) : "text-gray-400"}
         />
         <SummaryCard
           label="Entrega"
-          value={formatBRL(totalShippingCents)}
-          delta={previousPeriod ? deltaPercent(totalShippingCents, previousPeriod.totalShippingCents) : null}
+          value={money(totalShippingCents)}
+          delta={showTotals && previousPeriod ? deltaPercent(totalShippingCents, previousPeriod.totalShippingCents) : null}
           deltaClass={previousPeriod ? deltaClass(totalShippingCents, previousPeriod.totalShippingCents, true) : "text-gray-400"}
         />
       </div>
@@ -149,12 +166,19 @@ export default async function DashboardPage({ searchParams }: Props) {
         title="Faturamento por forma de pagamento"
         current={byPaymentMethod ?? []}
         previous={previousPeriod?.byPaymentMethod ?? null}
+        unavailable={!showTotals}
       />
 
-      <MarketplaceRevenueCards title="Faturamento por marketplace" current={bySource ?? []} />
+      <MarketplaceRevenueCards
+        title="Faturamento por marketplace"
+        current={bySource ?? []}
+        unavailable={!showTotals}
+      />
 
-      {/* Comparativo de período */}
-      {previousPeriod && (
+      {/* Comparativo de período. Suprimido junto com os totais: comparar um
+          periodo ainda nao processado contra um periodo cheio produz sempre
+          -100%, que e uma queda inventada. */}
+      {showTotals && previousPeriod && (
         <section>
           <h2 className="mb-3 text-sm font-medium text-gray-700">Comparativo — período anterior</h2>
           <div className="grid grid-cols-3 gap-4">
@@ -175,7 +199,10 @@ export default async function DashboardPage({ searchParams }: Props) {
         </section>
       )}
 
-      {bySource.length === 0 && (
+      {/* "Nenhuma transacao encontrada" afirma que o periodo esta vazio. Em
+          `not_yet` o periodo nao esta vazio -- ele ainda nao foi processado, e
+          quem diz isso e o aviso do topo. */}
+      {showTotals && bySource.length === 0 && (
         <div className="rounded-lg border border-dashed border-gray-200 p-10 text-center text-sm text-gray-400">
           Nenhuma transação encontrada no período selecionado.
         </div>

@@ -3,6 +3,7 @@ import { computeCashFlow } from "@/features/cash-flow/service";
 import { formatOriginLabel } from "@/features/cash-flow/source-labels";
 import { listMarketplaceReadModelPaginated } from "@/features/transactions/read-model";
 import ExportControls from "./ExportControls";
+import DataFreshnessNotice, { getFreshness } from "../_components/DataFreshnessNotice";
 import PaymentMethodRevenueCards from "../_components/PaymentMethodRevenueCards";
 import FluxoDeCaixaTable from "./FluxoDeCaixaTable";
 import { PAYMENT_METHOD_LABELS } from "@/features/transactions/format";
@@ -218,6 +219,11 @@ export default async function FluxoDeCaixaPage({
     limit: String(limit),
   };
 
+  const freshness = await getFreshness(period);
+  // Ver o comentario equivalente em dashboard/page.tsx: em `not_yet` os totais
+  // sao zero por ausencia de linha, e exibi-los afirmaria "nao vendeu nada".
+  const showTotals = freshness?.canShowTotals ?? true;
+
   return (
     <div>
       <div className="mb-6 flex items-start justify-between">
@@ -248,6 +254,8 @@ export default async function FluxoDeCaixaPage({
           ))}
         </div>
       </div>
+
+      <DataFreshnessNotice period={period} freshness={freshness} className="mb-6" />
 
       <form method="GET" className="mb-6 grid grid-cols-1 gap-3 rounded-lg border border-gray-200 bg-white p-4 sm:grid-cols-6">
         <input type="hidden" name="preset" value={preset} />
@@ -344,18 +352,21 @@ export default async function FluxoDeCaixaPage({
           label="Receita bruta"
           cents={totalIncomeCents}
           previousCents={previousPeriod?.totalIncomeCents ?? null}
+          unavailable={!showTotals}
         />
         <SummaryCard
           label="Despesas"
           cents={totalExpenseCents}
           previousCents={previousPeriod?.totalExpenseCents ?? null}
           inverseColors
+          unavailable={!showTotals}
         />
         <SummaryCard
           label="Entrega"
           cents={totalShippingCents}
           previousCents={previousPeriod?.totalShippingCents ?? null}
           inverseColors
+          unavailable={!showTotals}
         />
       </div>
 
@@ -363,6 +374,7 @@ export default async function FluxoDeCaixaPage({
         title="Faturamento por forma de pagamento"
         current={byPaymentMethod}
         previous={previousPeriod?.byPaymentMethod ?? []}
+        unavailable={!showTotals}
       />
 
       {listFailed ? (
@@ -382,7 +394,11 @@ export default async function FluxoDeCaixaPage({
 
         {bySource.length === 0 ? (
           <div className="rounded-md border border-dashed border-gray-300 py-12 text-center text-sm text-gray-500">
-            Nenhuma transação aprovada neste período.
+            {/* "Nenhuma transacao aprovada" afirma que o periodo esta vazio. Em
+                `not_yet` ele nao esta -- so nao foi processado ainda. */}
+            {showTotals
+              ? "Nenhuma transação aprovada neste período."
+              : "Período ainda não processado — veja o aviso acima."}
           </div>
         ) : (
           <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
@@ -431,14 +447,21 @@ function SummaryCard({
   previousCents,
   highlight = false,
   inverseColors = false,
+  unavailable = false,
 }: {
   label: string;
   cents: number;
   previousCents: number | null;
   highlight?: boolean;
   inverseColors?: boolean;
+  /**
+   * Periodo ainda nao processado: o valor e zero por ausencia de linha, nao por
+   * ausencia de venda. Mostra um traco e esconde o delta -- ver
+   * read-model-freshness.ts.
+   */
+  unavailable?: boolean;
 }) {
-  const hasPrev = previousCents !== null;
+  const hasPrev = previousCents !== null && !unavailable;
 
   return (
     <div
@@ -458,7 +481,7 @@ function SummaryCard({
           highlight ? "text-white" : "text-gray-900"
         }`}
       >
-        {formatBRL(cents)}
+        {unavailable ? "—" : formatBRL(cents)}
       </p>
       {hasPrev && (
         <p

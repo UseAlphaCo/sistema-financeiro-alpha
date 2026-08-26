@@ -27,9 +27,32 @@ type Props = {
   title: string;
   current: CashFlowByPaymentMethod[];
   previous?: CashFlowByPaymentMethod[] | null;
+  /**
+   * Periodo posterior ao que ja foi materializado (`not_yet` em
+   * read-model-freshness.ts). Sem isto os metodos entram na lista por causa do
+   * PERIODO ANTERIOR, e cada card exibe R$ 0,00 com "-100,0% vs periodo
+   * anterior" -- uma queda inventada por ausencia de linha.
+   */
+  unavailable?: boolean;
 };
 
-export default function PaymentMethodRevenueCards({ title, current, previous }: Props) {
+export default function PaymentMethodRevenueCards({
+  title,
+  current,
+  previous,
+  unavailable = false,
+}: Props) {
+  if (unavailable) {
+    return (
+      <section className="mt-8">
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">{title}</h2>
+        <div className="rounded-lg border border-dashed border-gray-200 bg-white p-6 text-sm text-gray-500">
+          Período ainda não processado — veja o aviso acima.
+        </div>
+      </section>
+    );
+  }
+
   const currentMap = new Map(current.map((item) => [item.paymentMethod, item]));
   const previousMap = new Map((previous ?? []).map((item) => [item.paymentMethod, item]));
   const visibleMethods = PAYMENT_METHODS.filter(
