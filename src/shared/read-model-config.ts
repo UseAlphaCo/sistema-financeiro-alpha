@@ -32,14 +32,24 @@ export function isMirrorReadModelEnabled(): boolean {
  * Le pela tabela materializada (integration.financial_orders) em vez de varrer
  * o mirror a cada request.
  *
- * Default DESLIGADO, ao contrario de isMirrorReadModelEnabled: enquanto os dois
- * caminhos coexistem, ligar por omissao trocaria a fonte de verdade das telas
- * sem ninguem decidir isso. `=== "true"` e nao `!== "false"` de proposito.
+ * Default LIGADO desde 26/08/2026. Nasceu desligado (`=== "true"`) porque com os
+ * dois caminhos coexistindo, ligar por omissao trocaria a fonte de verdade das
+ * telas sem ninguem decidir isso. A decisao foi tomada: a convergencia foi
+ * medida (zero divergencia em campo financeiro sobre 3.145 chaves) e varrer
+ * mirror.raw_payloads a cada visita e o que estourou a cota de Fluid Active CPU
+ * da Vercel.
+ *
+ * O default importa mais que a variavel: e ele que vale num ambiente onde
+ * ninguem lembrou de configurar nada. Deixar o caminho caro como padrao faria
+ * de um esquecimento no painel um incidente de cota.
+ *
+ * `!== "false"` permite voltar ao mirror ao vivo sem redeploy, se a
+ * materializacao parar e a defasagem passar do tolerável.
  */
 export function isMaterializedReadModelEnabled(): boolean {
   return (
     Boolean(getCoreConnectionString()) &&
-    process.env.FINANCIAL_READ_MODEL_MATERIALIZED === "true"
+    process.env.FINANCIAL_READ_MODEL_MATERIALIZED !== "false"
   );
 }
 
