@@ -22,10 +22,22 @@ const SHOPIFY_VERIFY_CRON = "0 9 * * *";
  * uma janela de 5 dias de chaves (folga de +-2) e nao caberia no maxDuration
  * de 300 s da rota. Separado tambem isola a falha: se D-2 estourar, D-0 ja
  * terminou.
+ *
+ * D-1 roda de MANHA (06:30 BRT), e nao junto dos outros as 23 h. O passe D-0
+ * das 23 h le um dia que ainda esta acontecendo: o mirror e alimentado por um
+ * sync de 3 em 3 horas, entao as ultimas horas do dia ainda nao chegaram.
+ * Medido em 25/08/2026: 1.365 dos 1.738 pedidos Shopify do dia, 78,5% -- as
+ * telas mostravam R$ 207.402,93 contra R$ 264.683,09 reais. Com D-1 as 23:15,
+ * a correcao so chegava na noite SEGUINTE, ou seja o dia inteiro em que aquela
+ * data e "Ontem" era exibido incompleto.
+ *
+ * As 06:30 os syncs de 03:00 e 06:00 ja rodaram e o dia anterior esta fechado
+ * ha mais de 6 h. Mesma quantidade de invocacoes: e troca de horario, nao
+ * aumento de cadencia -- nao custa nada na cota de Fluid Active CPU.
  */
 const MATERIALIZE_CRONS: Record<string, number> = {
   "0 2 * * *": 0,
-  "15 2 * * *": -1,
+  "30 9 * * *": -1,
   "30 2 * * *": -2,
 };
 
