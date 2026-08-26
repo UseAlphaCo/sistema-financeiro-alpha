@@ -141,12 +141,30 @@ export function resolveFreshness(
   // Periodo ja encerrado que a materializacao nao alcancou. Os totais continuam
   // sendo exibidos -- sao parciais, nao inventados --, mas com aviso de peso, ja
   // que um dia fechado passa a impressao de numero definitivo.
+  //
+  // Quem decide isso e `lastRunAt`, nao o teto. O teto e o ultimo pedido que
+  // EXISTE, e ele fica naturalmente antes do fim do periodo: em 25/08/2026 o dia
+  // fechou completo com a ultima venda as 23:59:45, 14 segundos antes do fim da
+  // janela. Cobrar que o teto alcance o fim exigiria uma venda no ultimo
+  // segundo de todo dia, e o aviso apareceria sempre -- virando ruido que se
+  // aprende a ignorar, justo no lugar onde ele precisa ser levado a serio.
+  //
+  // Materializacao que rodou DEPOIS do periodo fechar ja viu o dia inteiro; se
+  // ainda falta pedido ali, e assunto do sync, e nao algo que esta tela consiga
+  // afirmar. Rodou ANTES e o caso real: em 25/08 ela correu as 23:01 sobre um
+  // dia que so terminaria as 23:59, e parou em 78,5% dos pedidos.
   if (end <= now) {
+    if (lastRunAt && lastRunAt >= end) {
+      // Dia fechado e processado depois de fechar: o teto aquem do fim e so a
+      // hora da ultima venda. Nada a avisar.
+      return { status: "fresh", materializedThrough, lastRunAt, message: null, canShowTotals: true };
+    }
+
     return {
       status: "incomplete",
       materializedThrough,
       lastRunAt,
-      message: `Este periodo ja terminou, mas os dados so vao ate ${formatMoment(
+      message: `Este periodo ja terminou, mas so foi processado ate ${formatMoment(
         materializedThrough
       )}. Os valores abaixo estao incompletos.`,
       canShowTotals: true,

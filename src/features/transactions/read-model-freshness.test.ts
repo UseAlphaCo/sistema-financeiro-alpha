@@ -68,9 +68,9 @@ describe("resolveFreshness", () => {
 
   it("dia que ja fechou e ficou incompleto avisa que o numero e parcial", () => {
     // O caso real de 26/08/2026: o preset "Ontem" mostrava 25/08 com 1.365 dos
-    // 1.738 pedidos Shopify, porque a materializacao de D-0 rodou as 23 h sobre
-    // um mirror que ia so ate 20:53. O dia esta fechado e o numero nao esta --
-    // trailing seria brando demais aqui.
+    // 1.738 pedidos Shopify, porque a materializacao rodou as 23:01 -- ANTES de
+    // o dia fechar as 23:59 -- sobre um mirror que ia so ate 20:53. O dia esta
+    // fechado e o numero nao esta; trailing seria brando demais aqui.
     const result = resolveFreshness(
       { startDate: "2026-08-25T03:00:00.000Z", endDate: "2026-08-26T02:59:59.999Z" },
       lag("2026-08-25T23:53:55.000Z", "2026-08-26T02:01:51.000Z"),
@@ -83,6 +83,23 @@ describe("resolveFreshness", () => {
     expect(result.canShowTotals).toBe(true);
     expect(result.message).toContain("ja terminou");
     expect(result.message).toContain("incompletos");
+  });
+
+  it("dia fechado e processado depois de fechar nao gera aviso", () => {
+    // Estado real do dia 25 depois do reprocessamento das 11:09 BRT de 26/08:
+    // 1.735 dos 1.738 pedidos. O teto fica em 23:59:45 porque foi a hora da
+    // ULTIMA VENDA, 14 s antes do fim da janela -- exigir que ele alcance o fim
+    // pediria uma venda no ultimo segundo de todo dia, e o aviso apareceria
+    // sempre. Quem decide e lastRunAt: rodou depois do dia fechar, viu o dia
+    // inteiro.
+    const result = resolveFreshness(
+      { startDate: "2026-08-25T03:00:00.000Z", endDate: "2026-08-26T02:59:59.999Z" },
+      lag("2026-08-26T02:59:45.000Z", "2026-08-26T14:09:28.000Z"),
+      new Date("2026-08-26T17:00:00.000Z")
+    );
+
+    expect(result.status).toBe("fresh");
+    expect(result.message).toBeNull();
   });
 
   it("periodo em andamento continua trailing, nao incomplete", () => {
