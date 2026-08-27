@@ -44,5 +44,5 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# configuracao local do Claude Code (por maquina)
-.claude/settings.local.json
+# artefatos locais do Claude Code (agentes, skills, configuracao) - nao versionar
+.claude/
