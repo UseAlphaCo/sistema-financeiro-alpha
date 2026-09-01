@@ -18,7 +18,9 @@
     "worker:sync:once": "tsx src/workers/sync/run-once.ts",
     "gate:b:baseline": "tsx scripts/gate-b-baseline.ts",
     "verify:shopify": "tsx scripts/verify-shopify-values.ts",
-    "resolve:shopify-gateway": "tsx scripts/resolve-shopify-gateway-recent.ts"
+    "resolve:shopify-gateway": "tsx scripts/resolve-shopify-gateway-recent.ts",
+    "backfill:shopify-split": "tsx scripts/backfill-shopify-gateway-split.ts",
+    "diag:shopify-pagamentos": "tsx scripts/diagnostico-pagamentos-shopify-dia.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
