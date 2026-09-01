@@ -47,8 +47,16 @@
       // chegava 24 h depois -- durante todo o dia em que aquela data e "Ontem"
       // na tela. Ver o docblock de MATERIALIZE_CRONS em src/index.ts.
       // Nao colide com "0 9 * * *" (shopify-verify, 06:00 BRT).
+      //
+      // ATENCAO 6: D-1 roda DUAS vezes, 06:30 e 11:05 BRT (14:05 UTC). As 06:30
+      // ainda perde os `orders/paid` atrasados -- em 30/08/2026 foram 6 pedidos,
+      // R$ 778,25, com paid chegando de 47 a 63 min depois do passe. 11:05 BRT e
+      // quando os relatorios da Shopify fecham a contagem de "ontem". Custa +1
+      // invocacao/dia da rota de materializacao (~45-70 s de wall time, quase
+      // toda em espera de banco). Ver o docblock de MATERIALIZE_CRONS.
       "0 2 * * *",
       "30 9 * * *",
+      "5 14 * * *",
       "30 2 * * *"
     ]
   },

@@ -34,10 +34,26 @@ const SHOPIFY_VERIFY_CRON = "0 9 * * *";
  * As 06:30 os syncs de 03:00 e 06:00 ja rodaram e o dia anterior esta fechado
  * ha mais de 6 h. Mesma quantidade de invocacoes: e troca de horario, nao
  * aumento de cadencia -- nao custa nada na cota de Fluid Active CPU.
+ *
+ * D-1 roda DUAS vezes: 06:30 e 11:05 BRT. As 06:30 nao basta porque pedido
+ * ainda e pago depois disso. Medido em 30/08/2026: o passe das 06:30 rodou
+ * 09:31:27Z e 6 pedidos Appmax so receberam `orders/paid` no mirror entre
+ * 10:18Z e 10:34Z -- ainda estavam `pending` quando o passe olhou, e R$ 778,25
+ * ficaram de fora justamente enquanto aquela data era "Ontem" na tela. O passe
+ * D-2 curava, mas so na noite seguinte.
+ *
+ * 11:05 BRT porque e quando os relatorios da Shopify fecham a contagem de
+ * "ontem": e a ultima palavra dos dois lados no mesmo momento. Os 5 min de
+ * folga sao para cair depois da resolucao de gateway das 11:00 BRT, nao junto.
+ *
+ * Ressalva: o sync OMS->mirror mais recente nesse horario e o das 09:00 BRT
+ * (cadencia de 3 em 3 h). Quem for pago entre 09:00 e 11:05 so entra no passe
+ * D-2. Fechar essa fresta exigiria sync mais frequente, que e orcamento de CPU.
  */
 const MATERIALIZE_CRONS: Record<string, number> = {
   "0 2 * * *": 0,
   "30 9 * * *": -1,
+  "5 14 * * *": -1,
   "30 2 * * *": -2,
 };
 
