@@ -58,24 +58,38 @@ async function main() {
   console.log(`Backfill do rateio por gateway: ${args.from} a ${args.to}`);
   console.log(`Janela de busca (com folga de 1 dia): ${inicio.toISOString()} -> ${fim.toISOString()}`);
 
-  // --ids-file reprocessa so uma lista (um id por linha): numa rodada de ~50 min
-  // alguns pedidos falham por rede, e refazer os 3.900 por causa de 58 e
-  // desperdicio. O log da rodada anterior ja tem os ids nas linhas "falha em".
+  // Passo 1, so SQL: pedido de gateway UNICO nao precisa de chamada nenhuma.
+  // A resolucao ja guarda gateway, valor total e data do pagamento, e quando
+  // `dominant_amount_cents = total_amount_cents` esse gateway e o pedido
+  // inteiro. Conferido contra 30/08, que foi preenchido 100% pela API: nos
+  // 1.119 pedidos de gateway unico do dia, derivar da resolucao deu o MESMO
+  // gateway, valor, data e contagem, em todos. Zero divergencia.
+  //
+  // E o que transforma ~12 h de API em ~6 h: metade dos pedidos de agosto ja
+  // tem resolucao, e quase todos sao de gateway unico.
+  if (!args.idsFile && !args.dryRun) {
+    const derivados = await derivarDeResolucao(inicio, fim);
+    console.log(`${derivados} pedidos de gateway unico derivados da resolucao, sem chamar a API.`);
+  }
+
+  // --ids-file reprocessa so uma lista (um id por linha): numa rodada longa
+  // alguns pedidos falham por rede, e refazer tudo por causa de algumas dezenas
+  // e desperdicio. O log da rodada anterior tem os ids nas linhas "falha em".
   const pedidos = args.idsFile
     ? readFileSync(args.idsFile, "utf8")
         .split("\n")
         .map((linha) => linha.trim())
         .filter(Boolean)
-    : await carregarPedidos(inicio, fim);
+    : await carregarPedidosSemRateio(inicio, fim);
 
   console.log(
     args.idsFile
       ? `${pedidos.length} pedidos vindos de ${args.idsFile}.`
-      : `${pedidos.length} pedidos Shopify na janela.`
+      : `${pedidos.length} pedidos ainda sem rateio — estes exigem a API.`
   );
 
   if (args.dryRun) {
-    console.log("--dry-run: nada foi escrito.");
+    console.log("--dry-run: nada foi escrito (a derivacao por SQL tambem foi pulada).");
     return;
   }
 
@@ -175,11 +189,52 @@ async function comRetry<T>(run: () => Promise<T>, tentativas = 3): Promise<T> {
 }
 
 /**
- * Pedidos Shopify da janela: os que ja tem resolucao (datados pelo pagamento) e
- * os que ainda nao tem (datados pelo created_at do payload, que e o melhor
- * palpite disponivel antes de perguntar a Shopify).
+ * Cria o rateio dos pedidos de gateway unico direto da resolucao ja existente.
+ *
+ * `dominant_amount_cents = total_amount_cents` significa que o gateway titular
+ * recebeu o pedido inteiro, ou seja, nao ha segundo gateway para descobrir. O
+ * valor e a data ja estao na resolucao, e a contagem e 1.
+ *
+ * Nao toca pedido que ja tem rateio, nem pedido com split (esses precisam da
+ * API para saber quanto foi de cada gateway).
  */
-async function carregarPedidos(inicio: Date, fim: Date): Promise<string[]> {
+async function derivarDeResolucao(inicio: Date, fim: Date): Promise<number> {
+  const pool = getCorePool();
+  if (!pool) throw new Error("CORE_DB_URL ausente.");
+
+  const result = await withConnectionRetry(() =>
+    pool.query(
+      `
+      INSERT INTO integration.shopify_order_payment_gateway_split
+        (external_order_id, gateway_raw, amount_cents, transaction_count, transaction_processed_at, resolved_at)
+      SELECT spr.external_order_id, spr.dominant_gateway_raw, spr.total_amount_cents, 1,
+             spr.transaction_processed_at, NOW()
+      FROM integration.shopify_order_payment_resolution spr
+      LEFT JOIN integration.shopify_order_payment_gateway_split g
+        ON g.external_order_id = spr.external_order_id
+      WHERE spr.transaction_processed_at >= $1
+        AND spr.transaction_processed_at < $2
+        AND spr.dominant_gateway_raw IS NOT NULL
+        AND spr.dominant_amount_cents = spr.total_amount_cents
+        AND g.external_order_id IS NULL
+      ON CONFLICT (external_order_id, gateway_raw) DO NOTHING
+      `,
+      [inicio, fim]
+    )
+  );
+
+  return result.rowCount ?? 0;
+}
+
+/**
+ * Pedidos da janela que ainda NAO tem rateio — os unicos que exigem a API.
+ *
+ * Fica de fora quem a resolucao ja marcou como sem transacao resolvivel
+ * (`dominant_gateway_raw IS NULL`): sao pedidos nao pagos, chamar a API por
+ * eles nao produziria linha nenhuma. Se um deles for pago depois, o mirror
+ * muda e o job normal o reprocessa.
+ */
+async function carregarPedidosSemRateio(inicio: Date, fim: Date): Promise<string[]> {
   const pool = getCorePool();
   if (!pool) throw new Error("CORE_DB_URL ausente.");
 
@@ -190,11 +245,15 @@ async function carregarPedidos(inicio: Date, fim: Date): Promise<string[]> {
       FROM mirror.raw_payloads rp
       LEFT JOIN integration.shopify_order_payment_resolution spr
         ON spr.external_order_id = rp.external_order_id
+      LEFT JOIN integration.shopify_order_payment_gateway_split g
+        ON g.external_order_id = rp.external_order_id
       WHERE rp.source = 'shopify'
         AND rp.external_order_id IS NOT NULL
         AND rp.payload_json IS NOT NULL
         AND COALESCE(spr.transaction_processed_at, (rp.payload_json->>'created_at')::timestamptz) >= $1
         AND COALESCE(spr.transaction_processed_at, (rp.payload_json->>'created_at')::timestamptz) < $2
+        AND g.external_order_id IS NULL
+        AND NOT (spr.external_order_id IS NOT NULL AND spr.dominant_gateway_raw IS NULL)
       ORDER BY rp.external_order_id
       `,
       [inicio, fim]
