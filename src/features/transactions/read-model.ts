@@ -3,7 +3,11 @@ import {
   listMaterializedOrders,
   type FinancialOrderRow,
 } from "@/features/transactions/financial-orders-repository";
-import { getCorePool, queryMirrorRows } from "@/features/transactions/mirror-events-repository";
+import {
+  getCorePool,
+  queryMirrorRows,
+  queryShopifyGatewayPaymentsInWindow,
+} from "@/features/transactions/mirror-events-repository";
 import { mapMirrorRow, normalizeSearchTerm } from "@/features/transactions/mirror-order-mapper";
 import { resolveCoverage } from "@/features/transactions/read-model-coverage";
 import {
@@ -288,6 +292,33 @@ export async function listFinancialReadModelTransactions(
   return [...coreItems, ...prismaItems].sort((left, right) =>
     right.occurredAt.localeCompare(left.occurredAt)
   );
+}
+
+export type ShopifyGatewayPayment = {
+  gatewayRaw: string;
+  amountCents: number;
+  transactionCount: number;
+};
+
+/**
+ * Pagamentos Shopify por gateway na janela, direto do ledger de rateio.
+ *
+ * E a base do "Pagamentos brutos por gateway" da Shopify: cada perna do
+ * pagamento entra no dia do seu proprio processed_at, com o valor real daquele
+ * gateway. Usado no Fluxo de Caixa para a linha Shopify de bySource e para a
+ * parte Shopify de byPaymentMethod — as demais origens continuam vindo de
+ * integration.financial_orders.
+ */
+export async function listShopifyGatewayPaymentsInWindow(
+  start: Date,
+  end: Date
+): Promise<ShopifyGatewayPayment[]> {
+  const rows = await queryShopifyGatewayPaymentsInWindow(start, end);
+  return rows.map((row) => ({
+    gatewayRaw: row.gateway_raw,
+    amountCents: Number(row.amount_cents),
+    transactionCount: Number(row.transaction_count),
+  }));
 }
 
 export async function listFinancialReadModelPaginated(

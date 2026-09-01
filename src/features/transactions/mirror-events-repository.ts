@@ -62,6 +62,17 @@ function isMissingResolutionTableError(error: unknown): boolean {
   );
 }
 
+let gatewaySplitTableKnownMissing = false;
+
+function isMissingGatewaySplitTableError(error: unknown): boolean {
+  const pgError = error as { code?: string; message?: string };
+  return (
+    pgError?.code === "42P01" &&
+    typeof pgError.message === "string" &&
+    pgError.message.includes("shopify_order_payment_gateway_split")
+  );
+}
+
 function buildMirrorQuery(columns: string, join: string, whereSql: string, tailSql: string): string {
   return `
     SELECT ${columns}
@@ -337,3 +348,65 @@ export async function queryMirrorRows(
   );
   return { rows: dedupeMirrorRows(result.rows) };
 }
+
+export type GatewayPaymentWindowRow = {
+  gateway_raw: string;
+  amount_cents: string;
+  transaction_count: string;
+};
+
+/**
+ * Pagamentos Shopify por gateway numa janela de tempo, somados a partir do
+ * ledger de rateio (integration.shopify_order_payment_gateway_split).
+ *
+ * Duas propriedades que a leitura por pedido nao tinha, e que sao a razao de
+ * esta funcao existir:
+ *
+ * 1. Recorta por `transaction_processed_at` de CADA perna do pagamento, nao
+ *    pela data do pedido. E como a Shopify monta o relatorio "Pagamentos
+ *    brutos por gateway", e a unica forma de o total bater com ele. Medido em
+ *    30/08/2026: o credito na loja so fecha os R$ 3.050,96 do relatorio
+ *    somando R$ 2.952,38 de pedidos em que ele e o gateway titular com
+ *    R$ 98,58 espalhados por pedidos em que ele nao e.
+ * 2. Nao depende de o pedido ter virado linha em integration.financial_orders.
+ *    No mesmo dia, dois pedidos Appmax de R$ 2.303,43 tinham o pagamento
+ *    confirmado na Shopify mas ainda nao estavam materializados, porque o
+ *    `orders/paid` chegou ao mirror depois do ultimo passe do dia. Pela via
+ *    antiga eles eram invisiveis; por esta, aparecem.
+ */
+export async function queryShopifyGatewayPaymentsInWindow(
+  start: Date,
+  end: Date
+): Promise<GatewayPaymentWindowRow[]> {
+  if (gatewaySplitTableKnownMissing) return [];
+
+  const pool = getCorePool();
+  if (!pool) return [];
+
+  try {
+    const result = await withConnectionRetry(() =>
+      queryWithTimeout<GatewayPaymentWindowRow>(
+        pool,
+        READ_TIMEOUT_MS,
+        `
+          SELECT gateway_raw,
+                 sum(amount_cents) AS amount_cents,
+                 sum(transaction_count) AS transaction_count
+          FROM integration.shopify_order_payment_gateway_split
+          WHERE transaction_processed_at >= $1
+            AND transaction_processed_at < $2
+          GROUP BY gateway_raw
+        `,
+        [start, end]
+      )
+    );
+    return result.rows;
+  } catch (error) {
+    if (!isMissingGatewaySplitTableError(error)) {
+      throw error;
+    }
+    gatewaySplitTableKnownMissing = true;
+    return [];
+  }
+}
+

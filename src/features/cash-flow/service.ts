@@ -1,9 +1,9 @@
 import { getPrismaClient } from "@/core/db/prisma-client";
-import { getPaymentMethodSearchTokens } from "@/features/transactions/payment-method-filter";
+import { classifyPaymentMethod, getPaymentMethodSearchTokens } from "@/features/transactions/payment-method-filter";
 import { canCompare, resolveCoverage } from "@/features/transactions/read-model-coverage";
 import { normalizeMarketplaceToken } from "@/features/transactions/read-model-filters";
 import { PAYMENT_METHODS, type PaymentMethod } from "@/features/transactions/types";
-import { isMirrorReadModelEnabled } from "@/shared/read-model-config";
+import { isMirrorReadModelEnabled, isShopifyPaymentsBasisEnabled } from "@/shared/read-model-config";
 import {
   endOfZonedDay,
   getDateRangeForPeriod,
@@ -12,7 +12,11 @@ import {
   startOfZonedDay,
   zonedDayKey,
 } from "@/lib/date-utils";
-import { listFinancialReadModelTransactions } from "@/features/transactions/read-model";
+import {
+  listFinancialReadModelTransactions,
+  listShopifyGatewayPaymentsInWindow,
+  type ShopifyGatewayPayment,
+} from "@/features/transactions/read-model";
 import type {
   CashFlowByPaymentMethod,
   CashFlowBySource,
@@ -182,6 +186,7 @@ function buildSourceMap(rows: AggregateRow[]): Map<string, CashFlowBySource> {
         grossCents: 0,
         expenseCents: 0,
         transactionCount: 0,
+        basis: "orders",
       });
     }
     const entry = map.get(src)!;
@@ -284,18 +289,40 @@ function shouldUseMirrorReadModel(): boolean {
   return isMirrorReadModelEnabled();
 }
 
-function summarizeTransactions(items: Array<{
-  marketplace: string | null;
-  externalSource: string | null;
-  source: string;
-  type: string;
-  paymentMethodNormalized: string | null;
-  amountCents: number;
-  discountCents: number;
-  shippingCents: number;
-  taxCents: number;
-  feeCents: number;
-}>): {
+/** Rotulo de origem da linha Shopify quando nao ha nenhum pedido materializado. */
+const SHOPIFY_SOURCE_LABEL = "Shopify";
+
+// Exportada para testabilidade sem depender de banco (mesmo motivo de
+// resolveCashFlowDateRange abaixo): a troca da base da Shopify (de pedidos
+// para pagamentos) precisa de um teste que prove que as outras origens nao
+// mudam, e mockar o read model inteiro so pra isso seria mais fragil que
+// testar a funcao pura direto.
+export function summarizeTransactions(
+  items: Array<{
+    marketplace: string | null;
+    externalSource: string | null;
+    source: string;
+    type: string;
+    paymentMethodNormalized: string | null;
+    amountCents: number;
+    discountCents: number;
+    shippingCents: number;
+    taxCents: number;
+    feeCents: number;
+  }>,
+  /**
+   * Pagamentos Shopify por gateway na janela, vindos do ledger de rateio.
+   *
+   * Quando presente, a Shopify troca de base: a linha dela em bySource e a
+   * parte dela em byPaymentMethod passam a ser "pagamentos processados"
+   * (uma entrada por perna de pagamento, datada pelo processed_at daquela
+   * perna) em vez de "pedidos pagos". E o que faz o numero fechar com o
+   * relatorio "Pagamentos brutos por gateway" da Shopify.
+   *
+   * As demais origens seguem intocadas, somando integration.financial_orders.
+   */
+  shopifyPayments?: ShopifyGatewayPayment[] | null
+): {
   totalIncomeCents: number;
   totalExpenseCents: number;
   totalDiscountCents: number;
@@ -313,10 +340,29 @@ function summarizeTransactions(items: Array<{
   const bySourceMap = new Map<string, CashFlowBySource>();
   const byPaymentMethodMap = new Map<string, CashFlowByPaymentMethod>();
 
+  // Quando a Shopify vem do ledger de pagamentos, os pedidos dela nao entram
+  // mais nestas somas — entrariam em duplicidade, e numa base diferente.
+  // Descontos, frete e impostos continuam vindo do pedido: sao atributos do
+  // pedido, nao do pagamento, e nao aparecem no relatorio da Shopify.
+  //
+  // Ledger vazio NAO significa "nao houve pagamento": significa, quase sempre,
+  // que o job de resolucao ainda nao cobriu esta janela. Trocar de base nesse
+  // caso apagaria a Shopify da tela, e vazio na tela le-se como "nao vendemos
+  // nada". Entao so troca quando ha rateio de verdade; senao, cai na base de
+  // pedidos, que e o comportamento de sempre.
+  const shopifyPeloLedger = Boolean(shopifyPayments && shopifyPayments.length > 0);
+  let shopifySourceKey: string | null = null;
+
   for (const item of items) {
     totalDiscountCents += item.discountCents;
     totalShippingCents += item.shippingCents;
     totalTaxCents += item.taxCents + item.feeCents;
+
+    const ehPedidoShopify = item.externalSource === "shopify" && item.type === "income";
+    if (shopifyPeloLedger && ehPedidoShopify) {
+      shopifySourceKey ??= item.marketplace ?? item.externalSource ?? item.source;
+      continue;
+    }
 
     const paymentMethodKey = normalizePaymentMethodBucket(item.paymentMethodNormalized);
     if (!byPaymentMethodMap.has(paymentMethodKey)) {
@@ -336,6 +382,7 @@ function summarizeTransactions(items: Array<{
         grossCents: 0,
         expenseCents: 0,
         transactionCount: 0,
+        basis: "orders",
       });
     }
 
@@ -345,15 +392,49 @@ function summarizeTransactions(items: Array<{
     if (item.type === "income") {
       totalIncomeCents += item.amountCents;
       bucket.grossCents += item.amountCents;
-      paymentBucket.grossCents += item.amountCents;
+      // Uma linha do read model = um pedido. Para estas origens "Transacoes"
+      // continua sendo contagem de PEDIDOS.
       paymentBucket.transactionCount += 1;
+      paymentBucket.grossCents += item.amountCents;
     } else if (item.type === "expense") {
       totalExpenseCents += item.amountCents;
       bucket.expenseCents += item.amountCents;
     }
   }
 
-  const bySource = Array.from(bySourceMap.values());
+  if (shopifyPeloLedger && shopifyPayments) {
+    const shopifyBucket: CashFlowBySource = {
+      source: shopifySourceKey ?? SHOPIFY_SOURCE_LABEL,
+      grossCents: 0,
+      expenseCents: 0,
+      transactionCount: 0,
+      basis: "payments",
+    };
+
+    for (const pagamento of shopifyPayments) {
+      totalIncomeCents += pagamento.amountCents;
+      shopifyBucket.grossCents += pagamento.amountCents;
+      shopifyBucket.transactionCount += pagamento.transactionCount;
+
+      const methodKey = classifyPaymentMethod(pagamento.gatewayRaw);
+      if (!byPaymentMethodMap.has(methodKey)) {
+        byPaymentMethodMap.set(methodKey, {
+          paymentMethod: methodKey,
+          grossCents: 0,
+          transactionCount: 0,
+        });
+      }
+      const methodBucket = byPaymentMethodMap.get(methodKey)!;
+      methodBucket.grossCents += pagamento.amountCents;
+      methodBucket.transactionCount += pagamento.transactionCount;
+    }
+
+    bySourceMap.set(shopifyBucket.source, shopifyBucket);
+  }
+
+  // Maior primeiro: sem ordenar, a linha da Shopify (montada depois do laco)
+  // cairia sempre no fim da tabela, abaixo de marketplaces muito menores.
+  const bySource = Array.from(bySourceMap.values()).sort((a, b) => b.grossCents - a.grossCents);
 
   return {
     totalIncomeCents,
@@ -426,6 +507,21 @@ export async function computeCashFlow(
       startDate: start.toISOString(),
       endDate: end.toISOString(),
     });
+    // A Shopify so troca de base quando esta de fato em escopo. Com um filtro
+    // de origem ou de outro marketplace ativo, somar o ledger inteiro
+    // acrescentaria uma linha Shopify que o usuario pediu para nao ver.
+    const shopifyEmEscopo =
+      isShopifyPaymentsBasisEnabled() &&
+      !filters.source &&
+      (marketplace === undefined || marketplace === "shopify");
+    const filtrarPorForma = (pagamentos: ShopifyGatewayPayment[]) =>
+      filters.paymentMethod
+        ? pagamentos.filter((pagamento) => classifyPaymentMethod(pagamento.gatewayRaw) === filters.paymentMethod)
+        : pagamentos;
+
+    const currentShopifyPayments = shopifyEmEscopo
+      ? filtrarPorForma(await listShopifyGatewayPaymentsInWindow(start, end))
+      : null;
 
     // Base de comparacao so existe se o periodo anterior estiver INTEIRO acima
     // do piso de cobertura. Sem este teste o periodo anterior devolve zero e a
@@ -449,9 +545,13 @@ export async function computeCashFlow(
           endDate: prevRange.end.toISOString(),
         })
       : null;
+    const previousShopifyPayments =
+      previousItems && shopifyEmEscopo
+        ? filtrarPorForma(await listShopifyGatewayPaymentsInWindow(prevRange.start, prevRange.end))
+        : null;
 
-    const current = summarizeTransactions(currentItems);
-    const previous = previousItems ? summarizeTransactions(previousItems) : null;
+    const current = summarizeTransactions(currentItems, currentShopifyPayments);
+    const previous = previousItems ? summarizeTransactions(previousItems, previousShopifyPayments) : null;
 
     const period: CashFlowPeriod = {
       startDate: start.toISOString(),
