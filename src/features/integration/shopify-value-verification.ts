@@ -20,6 +20,7 @@
  */
 
 import { computeCashFlow } from "@/features/cash-flow/service";
+import { classifyPaymentMethod } from "@/features/transactions/payment-method-filter";
 import { getCorePool, withConnectionRetry } from "@/features/transactions/mirror-events-repository";
 // dayWindowUtc/zonedDateToUtc nasceram aqui e eram a unica conversao de fuso
 // correta do repo. Foram para @/lib/date-utils para virar a convencao unica do
@@ -100,6 +101,14 @@ export async function buildVerificationReport(options: VerificationOptions = {})
   const financeiroSource = financeiro.bySource.find((entry) => entry.source === "Shopify");
   const financeiroGrossCents = financeiroSource?.grossCents ?? 0;
   const financeiroOrderCount = financeiroSource?.transactionCount ?? 0;
+  // Na base de pagamentos a contagem do sistema ja e de transacoes, e o
+  // comparavel do lado da Shopify passa a ser o numero de transacoes tambem.
+  const contagemShopify =
+    financeiroSource?.basis === "payments" ? shopify.transactionCount : shopify.orderCount;
+  const rotuloContagem =
+    financeiroSource?.basis === "payments"
+      ? "Nº de transações (pagamentos processados)"
+      : "Nº de transações (pedidos pagos)";
 
   return {
     date,
@@ -107,18 +116,48 @@ export async function buildVerificationReport(options: VerificationOptions = {})
     windowUtc: { start: window.start.toISOString(), endExclusive: window.end.toISOString() },
     metrics: [
       buildMetric("Faturamento bruto", financeiroGrossCents, shopify.grossCents, toleranceCents, formatMoney),
-      buildMetric(
-        "Nº de transações (pedidos pagos)",
-        financeiroOrderCount,
-        shopify.orderCount,
-        0,
-        (value) => String(value)
-      ),
+      buildMetric(rotuloContagem, financeiroOrderCount, contagemShopify, 0, (value) => String(value)),
+      // Por gateway, e nao so o total: em 30/08/2026 o credito na loja estava
+      // R$ 190,70 ACIMA e o cartao R$ 2.563,79 abaixo. No total as duas se
+      // cancelam parcialmente e o alarme subestima o tamanho do problema.
+      ...buildGatewayMetrics(financeiro.byPaymentMethod, shopify.byGateway, toleranceCents),
     ],
     syncFreshness: freshness,
     maturity: computeMaturity(window, freshness),
     shopifyCandidateOrders: shopify.candidateOrders,
   };
+}
+
+/**
+ * Uma metrica por forma de pagamento, comparando o que o Fluxo de Caixa mostra
+ * com o que a Shopify processou.
+ *
+ * Agrupa os gateways crus da Shopify pela MESMA classificacao que o sistema usa
+ * (classifyPaymentMethod), senao "Pix (3% de desconto)" nunca casaria com "pix".
+ */
+function buildGatewayMetrics(
+  financeiroByMethod: Array<{ paymentMethod: string; grossCents: number }>,
+  shopifyByGateway: Map<string, { grossCents: number; transactionCount: number }>,
+  toleranceCents: number
+): VerificationMetric[] {
+  const shopifyByMethod = new Map<string, number>();
+  for (const [gateway, bucket] of shopifyByGateway) {
+    const method = classifyPaymentMethod(gateway);
+    shopifyByMethod.set(method, (shopifyByMethod.get(method) ?? 0) + bucket.grossCents);
+  }
+
+  const financeiroByMethodMap = new Map(financeiroByMethod.map((row) => [row.paymentMethod, row.grossCents]));
+  const metodos = [...new Set([...financeiroByMethodMap.keys(), ...shopifyByMethod.keys()])].sort();
+
+  return metodos.map((metodo) =>
+    buildMetric(
+      `Faturamento — ${metodo}`,
+      financeiroByMethodMap.get(metodo) ?? 0,
+      shopifyByMethod.get(metodo) ?? 0,
+      toleranceCents,
+      formatMoney
+    )
+  );
 }
 
 function computeMaturity(window: { start: Date; end: Date }, freshness: SyncFreshness): MaturitySignal {
@@ -157,7 +196,9 @@ function buildMetric(
 type ShopifySide = {
   grossCents: number;
   orderCount: number;
+  transactionCount: number;
   candidateOrders: number;
+  byGateway: Map<string, { grossCents: number; transactionCount: number }>;
 };
 
 async function loadShopifySide(
@@ -167,14 +208,40 @@ async function loadShopifySide(
   window: { start: Date; end: Date },
   concurrency: number
 ): Promise<ShopifySide> {
-  const orderIds = await loadTenderTransactionOrderIds(storeDomain, accessToken, date, window);
+  // tenderTransactions SOZINHO nao serve como conjunto candidato: ele nao emite
+  // entrada para pedido pago inteiramente com credito na loja. Medido em
+  // 30/08/2026 — por esta via so aparecem 13 pagamentos de credito na loja
+  // (R$ 1.534,16) contra os 22 (R$ 3.050,96) do relatorio da Shopify, e o total
+  // do dia sai R$ 3.820,23 abaixo. Era esse o motivo de esta verificacao ler
+  // baixo todo dia, e nao o fuso da janela.
+  //
+  // A uniao com os pedidos do mirror cobre o buraco: quem paga so com credito
+  // na loja continua sendo um pedido normal no mirror. Um pedido que nao esteja
+  // em nenhuma das duas pontas segue invisivel — limitacao conhecida, e bem
+  // menor que a anterior.
+  const [tenderIds, mirrorIds] = await Promise.all([
+    loadTenderTransactionOrderIds(storeDomain, accessToken, date, window),
+    loadMirrorOrderIds(window),
+  ]);
+  const orderIds = new Set([...tenderIds, ...mirrorIds]);
+
   const transactions = await loadOrderTransactions(storeDomain, accessToken, [...orderIds], window, concurrency);
 
   const grossByOrder = new Map<string, number>();
+  const byGateway = new Map<string, { grossCents: number; transactionCount: number }>();
+  let transactionCount = 0;
+
   for (const { orderId, transaction } of transactions) {
     if (transaction.status !== SUCCESS_STATUS) continue;
     if (!GROSS_KINDS.has(transaction.kind)) continue;
+
     grossByOrder.set(orderId, (grossByOrder.get(orderId) ?? 0) + transaction.amountCents);
+    transactionCount += 1;
+
+    const bucket = byGateway.get(transaction.gateway) ?? { grossCents: 0, transactionCount: 0 };
+    bucket.grossCents += transaction.amountCents;
+    bucket.transactionCount += 1;
+    byGateway.set(transaction.gateway, bucket);
   }
 
   const grossCents = [...grossByOrder.values()].reduce((sum, value) => sum + value, 0);
@@ -182,8 +249,39 @@ async function loadShopifySide(
   return {
     grossCents,
     orderCount: grossByOrder.size,
+    transactionCount,
     candidateOrders: orderIds.size,
+    byGateway,
   };
+}
+
+/**
+ * Pedidos Shopify que o mirror conhece na janela, para completar o conjunto
+ * candidato. Recorta pela data do pagamento quando ela existe (resolucao de
+ * gateway ja rodou) e cai no created_at do payload quando nao existe.
+ */
+async function loadMirrorOrderIds(window: { start: Date; end: Date }): Promise<Set<string>> {
+  const pool = getCorePool();
+  if (!pool) return new Set();
+
+  const result = await withConnectionRetry(() =>
+    pool.query<{ external_order_id: string }>(
+      `
+      SELECT DISTINCT rp.external_order_id
+      FROM mirror.raw_payloads rp
+      LEFT JOIN integration.shopify_order_payment_resolution spr
+        ON spr.external_order_id = rp.external_order_id
+      WHERE rp.source = 'shopify'
+        AND rp.external_order_id IS NOT NULL
+        AND rp.payload_json IS NOT NULL
+        AND COALESCE(spr.transaction_processed_at, (rp.payload_json->>'created_at')::timestamptz) >= $1
+        AND COALESCE(spr.transaction_processed_at, (rp.payload_json->>'created_at')::timestamptz) < $2
+      `,
+      [window.start, window.end]
+    )
+  );
+
+  return new Set(result.rows.map((row) => row.external_order_id));
 }
 
 type TenderTransactionsResponse = {
