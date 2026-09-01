@@ -205,6 +205,19 @@ describe("summarizeTransactions — base de pagamentos da Shopify", () => {
     expect(result.bySource.map((row) => row.source)).toEqual(["Shopify", "Mercado Livre"]);
   });
 
+  // Cobertura PARCIAL e pior que cobertura nenhuma: o numero nao fica zero,
+  // fica menor, e nada na tela denuncia. Quem decide isso e computeCashFlow
+  // (que conhece o tamanho da janela); aqui provamos o contrato de que passar
+  // null mantem a base de pedidos, que e no que a decisao dele se traduz.
+  it("null (cobertura insuficiente) mantem a Shopify na base de pedidos", () => {
+    const result = summarizeTransactions([incomeItem({ amountCents: 10_000 })], null);
+
+    expect(result.bySource).toEqual([
+      { source: "Shopify", grossCents: 10_000, expenseCents: 0, transactionCount: 1, basis: "orders" },
+    ]);
+    expect(result.totalIncomeCents).toBe(10_000);
+  });
+
   // Ledger vazio quase sempre significa "o job de resolucao ainda nao cobriu
   // esta janela", nao "nao houve pagamento". Trocar de base aqui apagaria a
   // Shopify da tela, e vazio na tela le-se como "nao vendemos nada".

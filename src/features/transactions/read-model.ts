@@ -312,13 +312,16 @@ export type ShopifyGatewayPayment = {
 export async function listShopifyGatewayPaymentsInWindow(
   start: Date,
   end: Date
-): Promise<ShopifyGatewayPayment[]> {
+): Promise<{ pagamentos: ShopifyGatewayPayment[]; diasCobertos: number }> {
   const rows = await queryShopifyGatewayPaymentsInWindow(start, end);
-  return rows.map((row) => ({
-    gatewayRaw: row.gateway_raw,
-    amountCents: Number(row.amount_cents),
-    transactionCount: Number(row.transaction_count),
-  }));
+  return {
+    pagamentos: rows.map((row) => ({
+      gatewayRaw: row.gateway_raw,
+      amountCents: Number(row.amount_cents),
+      transactionCount: Number(row.transaction_count),
+    })),
+    diasCobertos: Number(rows[0]?.dias_cobertos ?? 0),
+  };
 }
 
 export async function listFinancialReadModelPaginated(

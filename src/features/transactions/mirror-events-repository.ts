@@ -353,6 +353,14 @@ export type GatewayPaymentWindowRow = {
   gateway_raw: string;
   amount_cents: string;
   transaction_count: string;
+  /**
+   * Dias de calendario da janela que TEM rateio.
+   *
+   * Existe para o chamador saber se pode confiar na soma. O ledger e populado
+   * por backfill, um periodo por vez: uma janela de 30 dias com rateio de 3
+   * devolveria numeros que parecem certos e representam um decimo do periodo.
+   */
+  dias_cobertos: string;
 };
 
 /**
@@ -389,12 +397,20 @@ export async function queryShopifyGatewayPaymentsInWindow(
         pool,
         READ_TIMEOUT_MS,
         `
+          WITH janela AS (
+            SELECT gateway_raw,
+                   amount_cents,
+                   transaction_count,
+                   (transaction_processed_at AT TIME ZONE 'America/Sao_Paulo')::date AS dia
+            FROM integration.shopify_order_payment_gateway_split
+            WHERE transaction_processed_at >= $1
+              AND transaction_processed_at < $2
+          )
           SELECT gateway_raw,
                  sum(amount_cents) AS amount_cents,
-                 sum(transaction_count) AS transaction_count
-          FROM integration.shopify_order_payment_gateway_split
-          WHERE transaction_processed_at >= $1
-            AND transaction_processed_at < $2
+                 sum(transaction_count) AS transaction_count,
+                 (SELECT count(DISTINCT dia) FROM janela) AS dias_cobertos
+          FROM janela
           GROUP BY gateway_raw
         `,
         [start, end]

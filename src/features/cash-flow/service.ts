@@ -519,9 +519,25 @@ export async function computeCashFlow(
         ? pagamentos.filter((pagamento) => classifyPaymentMethod(pagamento.gatewayRaw) === filters.paymentMethod)
         : pagamentos;
 
-    const currentShopifyPayments = shopifyEmEscopo
-      ? filtrarPorForma(await listShopifyGatewayPaymentsInWindow(start, end))
-      : null;
+    /**
+     * So usa o ledger quando ele cobre a janela INTEIRA.
+     *
+     * O ledger e populado por backfill, um periodo por vez. Numa janela de 30
+     * dias com rateio de 3, a soma sairia parecendo certa e representando um
+     * decimo do periodo — sem erro, sem aviso, so um numero menor. E a mesma
+     * classe de defeito de "vazio na tela le-se como nao vendemos nada", so que
+     * mais dificil de perceber, porque o numero nao e zero.
+     *
+     * Falta um dia? Cai inteiro na base de pedidos. Preferimos a base antiga
+     * completa a uma base nova pela metade.
+     */
+    const carregarPagamentos = async (janelaInicio: Date, janelaFim: Date, diasEsperados: number) => {
+      const { pagamentos, diasCobertos } = await listShopifyGatewayPaymentsInWindow(janelaInicio, janelaFim);
+      if (pagamentos.length === 0 || diasCobertos < diasEsperados) return null;
+      return filtrarPorForma(pagamentos);
+    };
+
+    const currentShopifyPayments = shopifyEmEscopo ? await carregarPagamentos(start, end, periodDays) : null;
 
     // Base de comparacao so existe se o periodo anterior estiver INTEIRO acima
     // do piso de cobertura. Sem este teste o periodo anterior devolve zero e a
@@ -547,7 +563,7 @@ export async function computeCashFlow(
       : null;
     const previousShopifyPayments =
       previousItems && shopifyEmEscopo
-        ? filtrarPorForma(await listShopifyGatewayPaymentsInWindow(prevRange.start, prevRange.end))
+        ? await carregarPagamentos(prevRange.start, prevRange.end, periodDays)
         : null;
 
     const current = summarizeTransactions(currentItems, currentShopifyPayments);
