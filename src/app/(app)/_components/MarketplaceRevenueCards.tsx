@@ -8,8 +8,16 @@ function formatBRL(cents: number): string {
   }).format(cents / 100);
 }
 
-function formatCount(value: number): string {
-  return value === 1 ? "1 transação" : `${value} transações`;
+/**
+ * O substantivo muda com a base da linha, e nao e preciosismo: em "pedidos" um
+ * pedido pago com Pix mais credito na loja conta 1, em "pagamentos" conta 2.
+ * Chamar os dois de "transacoes" convidava a somar as duas bases.
+ */
+function formatCount(value: number, basis: CashFlowBySource["basis"]): string {
+  if (basis === "payments") {
+    return value === 1 ? "1 transação" : `${value} transações`;
+  }
+  return value === 1 ? "1 pedido" : `${value} pedidos`;
 }
 
 type Props = {
@@ -53,7 +61,7 @@ export default function MarketplaceRevenueCards({ title, current, unavailable = 
             <p className="mt-2 text-xl font-semibold tabular-nums text-gray-900">
               {formatBRL(item.grossCents)}
             </p>
-            <p className="mt-1 text-xs text-gray-400">{formatCount(item.transactionCount)}</p>
+            <p className="mt-1 text-xs text-gray-400">{formatCount(item.transactionCount, item.basis)}</p>
           </div>
         ))}
       </div>

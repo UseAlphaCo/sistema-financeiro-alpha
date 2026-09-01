@@ -409,7 +409,9 @@ export default async function FluxoDeCaixaPage({
                   <th className="px-4 py-3 text-right">Receita bruta</th>
                   <th className="px-4 py-3 text-right">Despesas</th>
                   <th className="px-4 py-3 text-right">Líquido</th>
-                  <th className="px-4 py-3 text-right">Transações</th>
+                  {/* "Quantidade", e nao "Transacoes": a coluna passou a
+                      misturar duas unidades, e cada linha diz qual e a sua. */}
+                  <th className="px-4 py-3 text-right">Quantidade</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -417,6 +419,12 @@ export default async function FluxoDeCaixaPage({
                   <tr key={row.source} className="hover:bg-gray-50">
                     <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
                       {formatOriginLabel(row.source)}
+                      {/* As duas bases convivem na mesma tabela e nao sao
+                          somaveis entre si. Sem dizer qual e qual, a coluna
+                          "Transacoes" convida a comparar pedido com pagamento. */}
+                      <span className="ml-2 align-middle text-xs font-normal text-gray-400">
+                        {row.basis === "payments" ? "pagamentos processados" : "pedidos pagos"}
+                      </span>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-right text-gray-700">
                       {formatBRL(row.grossCents)}
@@ -429,12 +437,24 @@ export default async function FluxoDeCaixaPage({
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-right text-gray-500">
                       {row.transactionCount}
+                      <span className="ml-1 text-xs text-gray-400">
+                        {row.basis === "payments" ? "transações" : "pedidos"}
+                      </span>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+        )}
+
+        {bySource.some((row) => row.basis === "payments") && (
+          <p className="mt-2 text-xs text-gray-500">
+            Linhas em <span className="font-medium">pagamentos processados</span> somam cada pagamento
+            no dia em que a Shopify o processou, e fecham com o relatório de pagamentos dela. Linhas em{" "}
+            <span className="font-medium">pedidos pagos</span> somam o total do pedido uma vez. As duas
+            respondem perguntas diferentes e não devem ser comparadas entre si.
+          </p>
         )}
       </div>
     </div>
