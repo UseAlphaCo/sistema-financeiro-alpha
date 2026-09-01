@@ -65,6 +65,28 @@ Para o gateway titular correto em pedidos Shopify com pagamento dividido
 e o job `src/features/integration/shopify-payment-resolution-job.ts`, que
 alimenta este read model via LEFT JOIN.
 
+## A Shopify pode não vir daqui
+
+Com `FINANCIAL_SHOPIFY_PAYMENTS_BASIS=true`, a linha Shopify do Fluxo de Caixa
+**não** sai de `integration.financial_orders`. Ela sai do ledger de rateio
+`integration.shopify_order_payment_gateway_split`, somado por janela sobre o
+`transaction_processed_at` de cada perna do pagamento — que é como a Shopify
+monta o relatório "Pagamentos brutos por gateway".
+
+Duas consequências que valem lembrar antes de investigar uma divergência:
+
+- A linha Shopify passa a incluir pagamento de pedido que ainda não foi
+  materializado (medido em 30/08/2026: R$ 2.303,43 em dois pedidos cujo
+  `orders/paid` chegou depois do último passe do dia). Divergência entre a
+  tela e `financial_orders` deixa de ser, por si só, sinal de defeito.
+- `transactionCount` da Shopify passa a contar **transações**, e as demais
+  origens continuam contando **pedidos**. `CashFlowBySource.basis` diz qual é
+  qual, e a tela rotula as duas. Não são somáveis entre si.
+
+O ledger só cobre datas já processadas por `npm run backfill:shopify-split`.
+Janela sem cobertura cai automaticamente na base de pedidos, em vez de exibir
+zero. Ver [DIAGNOSTICO-PARIDADE-SHOPIFY-2026-08.md](../DIAGNOSTICO-PARIDADE-SHOPIFY-2026-08.md).
+
 ## Source `gatea-test-updated` (e outros registros técnicos)
 Não fazem parte do domínio financeiro. Devem ser filtrados para fora da
 leitura do front e das métricas de paridade/comparação.

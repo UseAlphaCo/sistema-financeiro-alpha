@@ -1,9 +1,9 @@
 # Diagnóstico de paridade Shopify — medição de 2026-08-18
 
-> **Status:** Fase 0 (medição) **concluída**. Decisão tomada: **não construir o ledger
-> transacional** `shopify_payment_transactions`. Fases 1 e 2 pendentes, bloqueadas pelo
-> descongelamento de produção (ver
-> [PLAN-CORRECAO-CONSUMO-E-MATERIALIZACAO.md](PLAN-CORRECAO-CONSUMO-E-MATERIALIZACAO.md)).
+> **Status:** Fases 0, 1 e 2 **concluídas** (2026-09-01). Decisão mantida: **não construir o
+> ledger transacional** `shopify_payment_transactions` — o grão (pedido, gateway) bastou.
+> Ver [Medição de 30/08](#medição-de-3008-o-rateio-sozinho-não-fechava) para o que a Fase 0
+> original não tinha como enxergar.
 >
 > Este documento **sobrepõe** a recomendação de data warehouse de
 > [shopify/shopify-payments-by-gateway.md](shopify/shopify-payments-by-gateway.md#data-warehouse)
@@ -124,11 +124,58 @@ líquido de +11,58% na linha dele. Resolver isso custa **uma única data** de de
 | Fase | Escopo | Status |
 |---|---|---|
 | 0 | Medir cada modo de falha em pedidos e R$, sem escrever nada | **CONCLUÍDA** (2026-08-18) |
-| 1 | Persistir o rateio por gateway que o job já calcula e descarta | **PENDENTE** — bloqueada pelo descongelamento |
-| 2 | Rotular as telas: "Pedidos pagos" vs "Pagamentos processados" | **PENDENTE** — independente da Fase 1 |
-| 3 | Uma data de detalhe transacional, para fechar a direção do erro líquido de `store_credit` | **PENDENTE**, opcional — precede a Fase 1 se quisermos o número certo antes |
-| 4 | Completude via `tenderTransactions` (1 chamada GraphQL/dia): pedidos que existem na Shopify e em lugar nenhum nosso | **NÃO PLANEJADA** — é o que sobrou de valioso do plano de medição original |
-| 5 | Reembolso e líquido | **BLOQUEADA A MONTANTE** — exige decidir ingerir mais tópicos de webhook, ou o sweep de `tenderTransactions` |
+| 1 | Persistir o rateio por gateway que o job já calcula e descarta | **CONCLUÍDA** (2026-09-01) — ver [medição de 30/08](#medição-de-3008-o-rateio-sozinho-não-fechava) |
+| 2 | Rotular as telas: "Pedidos pagos" vs "Pagamentos processados" | **CONCLUÍDA** (2026-09-01) |
+| 3 | Uma data de detalhe transacional, para fechar a direção do erro líquido de `store_credit` | **DISPENSADA** — a medição de 30/08 respondeu sem custo extra: o rateio fecha o crédito na loja ao centavo |
+| 4 | Completude via `tenderTransactions` (1 chamada GraphQL/dia): pedidos que existem na Shopify e em lugar nenhum nosso | **DESCARTADA COMO DESENHADA** — `tenderTransactions` é provadamente incompleto (ver abaixo) |
+| 5 | Reembolso e líquido | **BLOQUEADA A MONTANTE** — exige decidir ingerir mais tópicos de webhook |
+
+## Medição de 30/08: o rateio sozinho não fechava
+
+Medido em 2026-09-01 com `scripts/diagnostico-pagamentos-shopify-dia.ts` (somente leitura),
+contra o relatório "Pagamentos brutos por gateway" da própria Shopify para 2026-08-30.
+
+| Gateway | Sistema (pedidos) | Shopify (pagamentos) | Δ |
+|---|---:|---:|---:|
+| Pix (3% de desconto) | 677 · R$ 96.166,93 | 682 · R$ 96.200,77 | −R$ 33,84 |
+| Appmax - Cartão de Crédito | 431 · R$ 79.517,29 | 439 · R$ 82.081,08 | −R$ 2.563,79 |
+| Crédito na loja | 19 · R$ 3.241,66 | 22 · R$ 3.050,96 | **+R$ 190,70** |
+| **Total** | **1.127 · R$ 178.925,88** | **1.143 · R$ 181.332,81** | −R$ 2.406,93 |
+
+Três conclusões que mudaram o desenho da Fase 1:
+
+**1. O rateio explica no máximo 20% da diferença.** O dinheiro fora do gateway titular no dia
+inteiro é de **R$ 491,36**, em apenas **13 pedidos**. Ele fecha o crédito na loja ao centavo
+(R$ 2.952,38 como titular + R$ 98,58 espalhado = **R$ 3.050,96**, exatamente o relatório) e
+responde a *Limitação honesta* acima — o erro de `store_credit` de fato se inverte. Mas não toca
+os R$ 2.563,79 do cartão.
+
+**2. Os R$ 2.303,43 que faltavam eram materialização atrasada, não rateio.** Dois pedidos Appmax
+(`7530846552289` R$ 1.917,42 e `7530888986849` R$ 386,01), criados em 30/08 às 19:09 e 19:40 BRT,
+tiveram o `orders/paid` chegando ao mirror só em **31/08 às 18:48 e 19:08 BRT** — depois do último
+passe de materialização do dia. Existiam na Shopify e no mirror, mas não em
+`integration.financial_orders`. **É por isso que a leitura passou a ser por janela sobre o ledger,
+e não por pedido materializado**: o ledger os enxerga, a via antiga não.
+
+**3. `tenderTransactions` não serve como conjunto candidato.** Ele não emite entrada para pedido
+pago inteiramente com crédito na loja: por essa via aparecem 13 pagamentos de crédito na loja
+(R$ 1.534,16) contra os 22 (R$ 3.050,96) reais. Era **essa** a causa de
+`scripts/verify-shopify-values.ts` ler baixo todo dia (R$ 177.512,58 contra R$ 181.332,81), e não
+o fuso da janela — a hipótese do fuso foi testada e descartada (1.121 candidatos na janela real
+contra os 1.119 que o script lia). A verificação passou a unir `tenderTransactions` com os pedidos
+do mirror, e a comparar **por gateway**, não só o total: em 30/08 o crédito na loja estava acima e
+o cartão abaixo, e no total as duas divergências se cancelavam parcialmente.
+
+### O que ficou implementado
+
+- `integration.shopify_order_payment_gateway_split` cobre **todos** os pedidos resolvidos (não só
+  os com ≥2 gateways) e carrega `transaction_count` — a métrica "Transações" da Shopify conta
+  eventos de pagamento, não pedidos.
+- O Fluxo de Caixa lê a Shopify por janela sobre `transaction_processed_at` de cada perna.
+- A troca de base fica atrás de `FINANCIAL_SHOPIFY_PAYMENTS_BASIS`, **desligada por omissão**: o
+  ledger só cobre datas já processadas por `scripts/backfill-shopify-gateway-split.ts`, e ler uma
+  janela sem cobertura exibiria a Shopify a menos.
+- `CashFlowBySource.basis` diz em que base cada linha foi medida, e a tela rotula as duas.
 
 ### Fase 1 — desenho pretendido (não implementado)
 
