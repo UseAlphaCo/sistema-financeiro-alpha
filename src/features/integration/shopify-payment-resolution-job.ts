@@ -5,13 +5,16 @@ import {
   stripWrappingQuotes,
 } from "./shopify-orders-sync";
 import {
+  ensureShopifyPaymentGatewaySplitTable,
   ensureShopifyPaymentResolutionTable,
   findUnresolvedShopifyOrders,
+  replaceShopifyPaymentGatewaySplit,
   upsertShopifyPaymentResolution,
 } from "./shopify-payment-resolution-repository";
 import {
   fetchShopifyOrderTransactions,
   resolveDominantPaymentMethod,
+  resolvePaymentGatewaySplit,
 } from "./shopify-order-transactions";
 
 export type ShopifyPaymentResolutionJobResult = {
@@ -35,6 +38,7 @@ export async function runShopifyPaymentResolutionJob(
   sinceReceivedAt?: Date
 ): Promise<ShopifyPaymentResolutionJobResult> {
   await ensureShopifyPaymentResolutionTable();
+  await ensureShopifyPaymentGatewaySplitTable();
 
   const storeDomain = normalizeShopifyStoreDomain(process.env.SHOPIFY_STORE_URL ?? "");
   const accessToken = stripWrappingQuotes(process.env.SHOPIFY_ACCESS_TOKEN ?? "");
@@ -74,6 +78,7 @@ export async function runShopifyPaymentResolutionJob(
             total_amount_cents: 0,
             transaction_processed_at: null,
           });
+          await replaceShopifyPaymentGatewaySplit(candidate.external_order_id, []);
           skipped += 1;
           continue;
         }
@@ -85,6 +90,18 @@ export async function runShopifyPaymentResolutionJob(
           total_amount_cents: dominant.totalAmountCents,
           transaction_processed_at: dominant.processedAt,
         });
+
+        // Persiste o rateio de TODO pedido resolvido, inclusive os de um
+        // gateway so. A versao anterior gravava so quando havia >=2 gateways,
+        // o que bastava para corrigir a quebra por forma de pagamento; mas o
+        // Fluxo de Caixa passou a datar cada perna do pagamento pelo seu
+        // proprio processed_at (que e como a Shopify monta o relatorio), e
+        // isso exige que a tabela cubra o dia inteiro, nao so os splits.
+        // Custo: ~1.150 linhas/dia em vez de ~13.
+        await replaceShopifyPaymentGatewaySplit(
+          candidate.external_order_id,
+          resolvePaymentGatewaySplit(transactions)
+        );
         resolved += 1;
       } catch (error) {
         failed += 1;

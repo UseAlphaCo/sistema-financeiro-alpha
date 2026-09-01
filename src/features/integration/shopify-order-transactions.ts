@@ -149,22 +149,62 @@ export async function fetchShopifyOrderTransactions(
  * pra calcular isso com o valor por transacao — payment_gateway_names do
  * pedido nao carrega valor (ver docs/shopify/shopify-payments-by-gateway.md).
  */
-export function resolveDominantPaymentMethod(
-  transactions: ShopifyOrderTransaction[]
-): DominantPaymentMethodResult | null {
-  const totals = new Map<string, { amountCents: number; processedAt: string | null }>();
+type GatewayTotals = Map<string, { amountCents: number; processedAt: string | null; transactionCount: number }>;
+
+function buildGatewayTotals(transactions: ShopifyOrderTransaction[]): GatewayTotals {
+  const totals: GatewayTotals = new Map();
 
   for (const tx of transactions) {
     if (tx.status !== SUCCESS_STATUS) continue;
     if (!DOMINANT_PAYMENT_KINDS.has(tx.kind)) continue;
 
-    const current = totals.get(tx.gateway) ?? { amountCents: 0, processedAt: null };
+    const current = totals.get(tx.gateway) ?? { amountCents: 0, processedAt: null, transactionCount: 0 };
     current.amountCents += tx.amountCents;
+    current.transactionCount += 1;
     if (tx.processedAt && (!current.processedAt || tx.processedAt > current.processedAt)) {
       current.processedAt = tx.processedAt;
     }
     totals.set(tx.gateway, current);
   }
+
+  return totals;
+}
+
+export type GatewaySplitEntry = {
+  gatewayRaw: string;
+  amountCents: number;
+  processedAt: string | null;
+  /**
+   * Quantas transacoes de pagamento este gateway teve no pedido.
+   *
+   * Existe porque a metrica "Transacoes" do relatorio da Shopify conta eventos
+   * de pagamento, nao pedidos: em 30/08/2026 ela marcou 1.143 contra 1.128
+   * pedidos. Contar aqui, na mesma passada que ja soma o valor, torna a
+   * contagem exata por construcao em vez de aproximada por pares
+   * (pedido, gateway) — ver docs/DIAGNOSTICO-PARIDADE-SHOPIFY-2026-08.md.
+   */
+  transactionCount: number;
+};
+
+/**
+ * Rateio completo por gateway de um pedido (nao so o vencedor). Mesmo calculo
+ * que resolveDominantPaymentMethod ja faz internamente e descartava — ver
+ * docs/DIAGNOSTICO-PARIDADE-SHOPIFY-2026-08.md, Fase 1.
+ */
+export function resolvePaymentGatewaySplit(transactions: ShopifyOrderTransaction[]): GatewaySplitEntry[] {
+  const totals = buildGatewayTotals(transactions);
+  return [...totals.entries()].map(([gatewayRaw, entry]) => ({
+    gatewayRaw,
+    amountCents: entry.amountCents,
+    processedAt: entry.processedAt,
+    transactionCount: entry.transactionCount,
+  }));
+}
+
+export function resolveDominantPaymentMethod(
+  transactions: ShopifyOrderTransaction[]
+): DominantPaymentMethodResult | null {
+  const totals = buildGatewayTotals(transactions);
 
   if (totals.size === 0) return null;
 

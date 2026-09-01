@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 
+import { logError } from "@/core/observability/logger";
 import { getCoreConnectionString } from "@/shared/read-model-config";
 
 const globalStore = globalThis as typeof globalThis & {
@@ -23,9 +24,28 @@ function getPool(): Pool | null {
       keepAliveInitialDelayMillis: 5_000,
       idleTimeoutMillis: 15_000,
     });
+
+    // Sem isto, um ETIMEDOUT numa conexao OCIOSA vira 'error' nao tratado no
+    // EventEmitter e derruba o processo inteiro — nao so a query da vez. Foi
+    // exatamente o que matou um backfill no meio, depois de ja ter gravado
+    // ~900 pedidos. O pg descarta o cliente quebrado sozinho; aqui so
+    // registramos para o erro nao ser silencioso.
+    globalStore.__shopifyPaymentResolutionPool.on("error", (error) => {
+      logError("shopify_payment_resolution_pool_error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   }
 
   return globalStore.__shopifyPaymentResolutionPool;
+}
+
+/** Fecha o pool. Existe para o teste de integracao nao segurar o processo. */
+export async function closeShopifyPaymentResolutionPool(): Promise<void> {
+  const pool = globalStore.__shopifyPaymentResolutionPool;
+  if (!pool) return;
+  globalStore.__shopifyPaymentResolutionPool = undefined;
+  await pool.end();
 }
 
 export type ShopifyPaymentResolutionRow = {
@@ -146,6 +166,102 @@ export async function upsertShopifyPaymentResolution(row: ShopifyPaymentResoluti
       row.dominant_amount_cents,
       row.total_amount_cents,
       row.transaction_processed_at,
+    ]
+  );
+}
+
+export type ShopifyPaymentGatewaySplitRow = {
+  gatewayRaw: string;
+  amountCents: number;
+  processedAt: string | null;
+  transactionCount: number;
+};
+
+export async function ensureShopifyPaymentGatewaySplitTable(): Promise<void> {
+  const pool = getPool();
+  if (!pool) return;
+
+  await pool.query(`CREATE SCHEMA IF NOT EXISTS integration`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS integration.shopify_order_payment_gateway_split (
+      external_order_id text NOT NULL,
+      gateway_raw text NOT NULL,
+      amount_cents bigint NOT NULL,
+      transaction_count integer NOT NULL DEFAULT 0,
+      transaction_processed_at timestamptz,
+      resolved_at timestamptz NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (external_order_id, gateway_raw)
+    )
+  `);
+
+  // Idempotente: tabelas criadas antes da contagem de transacoes existirem.
+  await pool.query(`
+    ALTER TABLE integration.shopify_order_payment_gateway_split
+    ADD COLUMN IF NOT EXISTS transaction_count integer NOT NULL DEFAULT 0
+  `);
+
+  // A leitura do Fluxo de Caixa janela por esta coluna (cada perna do pagamento
+  // datada pelo seu proprio processed_at, que e como a Shopify monta o
+  // relatorio de pagamentos). Sem indice isso vira seq scan da tabela inteira.
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_shopify_gateway_split_processed_at
+    ON integration.shopify_order_payment_gateway_split (transaction_processed_at)
+  `);
+}
+
+/**
+ * Substitui o rateio por gateway de um pedido: apaga o que saiu do conjunto e
+ * grava o que entrou, numa unica instrucao.
+ *
+ * Precisa apagar, e nao so `ON CONFLICT`: um pedido pode trocar de gateway
+ * entre resolucoes (ex.: reprocessamento com payload diferente), e o upsert
+ * sozinho nunca remove uma linha que deixou de existir. `entries=[]` limpa o
+ * rateio inteiro do pedido (pedido sem nenhuma transacao resolvivel).
+ *
+ * Uma instrucao so, e nao BEGIN/DELETE/INSERT/COMMIT em cliente dedicado: o
+ * Postgres ja envolve cada instrucao numa transacao implicita, e as duas
+ * pontas do CTE atingem conjuntos disjuntos (`NOT IN` de um lado, `IN` do
+ * outro), entao a atomicidade e a mesma. O que muda e o custo: some o
+ * `pool.connect()` por pedido e tres round-trips. Desde que TODO pedido
+ * resolvido passa por aqui (antes so os com >=2 gateways), segurar um cliente
+ * dedicado por pedido esgotava o pool na concorrencia do job e derrubava a
+ * rodada com "timeout exceeded when trying to connect".
+ */
+export async function replaceShopifyPaymentGatewaySplit(
+  externalOrderId: string,
+  entries: ShopifyPaymentGatewaySplitRow[]
+): Promise<void> {
+  const pool = getPool();
+  if (!pool) return;
+
+  await pool.query(
+    `
+      WITH entradas AS (
+        SELECT * FROM UNNEST($2::text[], $3::bigint[], $4::integer[], $5::timestamptz[])
+          AS g(gateway_raw, amount_cents, transaction_count, processed_at)
+      ),
+      removidas AS (
+        DELETE FROM integration.shopify_order_payment_gateway_split
+        WHERE external_order_id = $1
+          AND gateway_raw NOT IN (SELECT gateway_raw FROM entradas)
+      )
+      INSERT INTO integration.shopify_order_payment_gateway_split
+        (external_order_id, gateway_raw, amount_cents, transaction_count, transaction_processed_at, resolved_at)
+      SELECT $1, gateway_raw, amount_cents, transaction_count, processed_at, NOW()
+      FROM entradas
+      ON CONFLICT (external_order_id, gateway_raw) DO UPDATE SET
+        amount_cents = EXCLUDED.amount_cents,
+        transaction_count = EXCLUDED.transaction_count,
+        transaction_processed_at = EXCLUDED.transaction_processed_at,
+        resolved_at = NOW()
+    `,
+    [
+      externalOrderId,
+      entries.map((entry) => entry.gatewayRaw),
+      entries.map((entry) => entry.amountCents),
+      entries.map((entry) => entry.transactionCount),
+      entries.map((entry) => entry.processedAt),
     ]
   );
 }
