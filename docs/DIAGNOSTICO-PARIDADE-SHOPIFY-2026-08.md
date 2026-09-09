@@ -326,6 +326,36 @@ materialização, e é a ponta 1 fazendo exatamente o que foi desenhada para faz
 `sale`/`capture`/`change` e ignora `refund`, então somar as negativas faria todo pedido reembolsado
 divergir para sempre contra um ledger que nunca vai concordar. Elas são descartadas e contadas.
 
+### 09/09, 10:50 BRT: a corrente da manhã fecha, e o alerta dispara pela primeira vez
+
+Com a cadência da Fase 3 no ar (sync 10:00 → resolução 10:15 → materialização 10:40 → verificação
+10:50), a execução automática de 09/09 sobre 08/09 foi a **primeira com `isMature: true`** desde que
+o sinal existe — e portanto a primeira em que o ramo de alerta executou em produção:
+
+| | 08:46 BRT | 09:31 BRT | **10:50 BRT (cron)** |
+|---|---:|---:|---:|
+| Pedidos sem gateway resolvido | 65 | 0 | **0** |
+| Materializados sem perna no ledger | 56 | 0 | **0** |
+| `isMature` | falso | — | **verdadeiro** |
+| Ponta 1 — bruto Sistema × Ledger | −R$ 1.152,79 | −R$ 1.152,79 | **R$ 0,00** |
+| Ponta 2 — desvio Ledger × Shopify | R$ 10.293,27 (60 pedidos) | R$ 679,69 (3) | **R$ 679,69 (3)** |
+| `alert` | `informational` | — | **`divergence`** |
+
+Duas leituras que essa tabela obriga:
+
+1. **A lacuna recorrente da ponta 1 era de horário, não de dado.** Ela aparecia em 7 dos 8 dias
+   medidos porque a verificação rodava às 06:00 BRT, antes do passe de materialização de fechamento.
+   Com a verificação depois das 10:40, o bruto fecha em **R$ 0,00** — os 6 pedidos que faltavam
+   entraram no passe das 10:40. A ponta 1 não acusava um defeito de valor; acusava a ordem errada
+   dos elos.
+2. **Desvio de dia imaturo não é desvio, é fila.** Às 08:46 a ponta 2 leu R$ 10.293,27 em 60
+   pedidos; às 09:31, sem ninguém corrigir nada, R$ 679,69 em 3. Os 57 pedidos da diferença nunca
+   divergiram — só ainda não tinham perna no ledger. É a razão de o painel exibir o número de um dia
+   imaturo como **parcial**, e não como veredito (ver `verification-run-view.ts`).
+
+Sobram os **3 pedidos / R$ 679,69** da ponta 2, que são os únicos candidatos reais da Fase 5 já
+observados: em 05/09 e 07/09 esse número foi zero.
+
 ### Limites reconfirmados
 
 - **Reembolso e cancelamento seguem estruturalmente invisíveis.** Nos últimos 20 dias o mirror

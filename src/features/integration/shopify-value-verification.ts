@@ -54,6 +54,10 @@ import {
   tenderTotalsByOrder,
   widenedWindowForDay,
 } from "./shopify-tender-transactions";
+// O rotulo mora no modulo de leitura, e nao aqui, para que ele continue puro:
+// o painel precisa da constante e nao pode arrastar computeCashFlow e o pool do
+// CORE junto so para reconhecer um rotulo. Mesmo arranjo de job-names.ts.
+import { LEDGER_VS_SHOPIFY_METRIC_LABEL } from "./verification-run-view";
 
 export const VERIFICATION_TIMEZONE = "America/Bahia";
 
@@ -223,7 +227,7 @@ function buildLedgerVsShopifyMetric(
   toleranceCents: number
 ): VerificationMetric {
   return {
-    label: "Ledger × Shopify (tenderTransactions, por pedido)",
+    label: LEDGER_VS_SHOPIFY_METRIC_LABEL,
     financeiro: `${comparison.comparedOrders} pedidos comparados`,
     shopify: `${comparison.storeCreditBlindSpotFormatted} em crédito na loja (invisível)`,
     diff: comparison.driftFormatted,

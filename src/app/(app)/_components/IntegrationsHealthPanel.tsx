@@ -1,11 +1,15 @@
 import { unstable_cache } from "next/cache";
 
-import { JOB_EXPECTATIONS, type JobExpectation } from "@/features/integration/job-names";
+import { JOB_EXPECTATIONS, JOB_NAMES, type JobExpectation } from "@/features/integration/job-names";
 import { listLatestJobRuns, type JobRunRow } from "@/features/integration/job-run-repository";
 import {
   getPipelineStatus,
   type PipelineStatus,
 } from "@/features/integration/shopify-payment-resolution-repository";
+import {
+  buildVerificationView,
+  type VerificationView,
+} from "@/features/integration/verification-run-view";
 import { getSyncSweepStatus } from "@/features/integration/worker-sync-jobs";
 import { formatMoment } from "@/features/transactions/read-model-freshness";
 import type { SweepStatus } from "@/workers/sync/repositories/core-repository";
@@ -152,6 +156,13 @@ const carregarComCache = unstable_cache(carregar, ["integrations-health-panel"],
 export default async function IntegrationsHealthPanel() {
   const { runs, sweep, pipeline } = await carregarComCache();
 
+  // Sai da mesma leitura de job_runs que o bloco de execucoes ja fez: o recibo
+  // da verificacao esta no `result` daquela linha. Nenhuma consulta a mais.
+  const verificacao =
+    runs === null
+      ? null
+      : buildVerificationView(runs.find((run) => run.job_name === JOB_NAMES.shopifyVerify));
+
   return (
     <div className="space-y-4">
       <div>
@@ -167,6 +178,7 @@ export default async function IntegrationsHealthPanel() {
       </div>
 
       <PipelineCard pipeline={pipeline} />
+      <VerificacaoCard view={verificacao} />
     </div>
   );
 }
@@ -364,6 +376,147 @@ function PipelineCard({ pipeline }: { pipeline: PipelineStatus | null }) {
         Mede o que já foi materializado. Pedido pago que ainda não virou linha aparece no bloco de
         execuções, não aqui.
       </p>
+    </Card>
+  );
+}
+
+/**
+ * Recibo da ultima verificacao contra a Shopify.
+ *
+ * Responde literalmente "quantos pedidos faltam ser reconciliados", que o bloco
+ * de cima nao respondia: la a coluna "sem rateio" so enxerga pedido sem NENHUMA
+ * perna no ledger. Um pedido com perna de valor errado — captura que chegou
+ * depois — conta como reconciliado ali, e so aparece aqui.
+ *
+ * A regra de exibicao esta em verification-run-view.ts: enquanto o dia nao
+ * fecha, o desvio e' apresentado como parcial, nunca como veredito.
+ */
+const VERIFICACAO_ROTULO: Record<VerificationView["status"], { texto: string; tone: Tone }> = {
+  sem_registro: { texto: "sem registro", tone: "unknown" },
+  falhou: { texto: "falhou", tone: "warn" },
+  formato_desconhecido: { texto: "formato não reconhecido", tone: "unknown" },
+  provisoria: { texto: "parcial", tone: "unknown" },
+  conferido: { texto: "confere", tone: "ok" },
+  divergente: { texto: "diverge", tone: "warn" },
+};
+
+function VerificacaoCard({ view }: { view: VerificationView | null }) {
+  if (view === null || view.status === "sem_registro") {
+    return (
+      <Card title="Verificação contra a Shopify">
+        <SemDado motivo="a verificação ainda não deixou registro" />
+      </Card>
+    );
+  }
+
+  const rotulo = VERIFICACAO_ROTULO[view.status];
+  const ledger = view.ledgerVsShopify;
+  const provisoria = view.status === "provisoria";
+
+  return (
+    <Card
+      title="Verificação contra a Shopify"
+      hint="Recibo do último dia verificado (D-1). O desvio compara o ledger de rateio com o que a Shopify diz ter recebido, pedido a pedido."
+    >
+      <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <Badge tone={rotulo.tone}>{rotulo.texto}</Badge>
+        <span className="text-[11px] text-gray-500">
+          {view.date ? `dia ${view.date}` : "dia não identificado"} · verificado em{" "}
+          {instante(view.ranAt)}
+        </span>
+      </div>
+
+      {view.errorMessage && (
+        <p className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+          {view.errorMessage}
+        </p>
+      )}
+
+      {/* O aviso vem ANTES dos numeros de proposito: quem bate o olho no valor e
+          sai da tela precisa ter lido que ele ainda esta se movendo. */}
+      {provisoria && view.pendencias.length > 0 && (
+        <div className="mb-3 rounded border border-dashed border-gray-300 bg-gray-50 px-3 py-2">
+          <p className="text-[11px] font-medium text-gray-700">
+            Números parciais — o dia ainda não fechou:
+          </p>
+          <ul className="mt-1 list-inside list-disc text-[11px] text-gray-600">
+            {view.pendencias.map((pendencia) => (
+              <li key={pendencia}>{pendencia}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {ledger === null ? (
+        <SemDado motivo="a execução não registrou a comparação com a Shopify" />
+      ) : (
+        <dl className="grid grid-cols-2 gap-3 text-[11px] sm:grid-cols-4">
+          <div>
+            <dt className="text-gray-500">Desvio</dt>
+            <dd
+              className={`text-sm font-semibold ${
+                provisoria
+                  ? "text-gray-500"
+                  : ledger.divergentOrders > 0
+                    ? "text-amber-700"
+                    : "text-gray-800"
+              }`}
+            >
+              {ledger.driftFormatted}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-gray-500">Pedidos a reconciliar</dt>
+            <dd
+              className={`text-sm font-semibold ${
+                provisoria
+                  ? "text-gray-500"
+                  : ledger.divergentOrders > 0
+                    ? "text-amber-700"
+                    : "text-gray-800"
+              }`}
+            >
+              {ledger.divergentOrders.toLocaleString("pt-BR")}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-gray-500">Pedidos comparados</dt>
+            <dd className="text-sm font-semibold text-gray-800">
+              {ledger.comparedOrders.toLocaleString("pt-BR")}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-gray-500">Ponto cego declarado</dt>
+            <dd className="text-sm font-semibold text-gray-800">{ledger.blindSpotFormatted}</dd>
+          </div>
+        </dl>
+      )}
+
+      {view.metricasDivergentes.length > 0 && (
+        <div className="mt-3 border-t border-gray-100 pt-3">
+          <p className="text-[11px] font-medium text-gray-700">
+            Sistema × ledger — o que a tela mostra contra o que foi reconciliado:
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {view.metricasDivergentes.map((metrica) => (
+              <li key={metrica.label} className="flex justify-between gap-3 text-[11px]">
+                <span className="min-w-0 truncate text-gray-600">{metrica.label}</span>
+                <span className={`shrink-0 font-medium ${provisoria ? "text-gray-500" : "text-amber-700"}`}>
+                  {metrica.diff} ({metrica.diffPct})
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {ledger !== null && ledger.ordersOnlyInLedger > 0 && (
+        <p className="mt-2 text-[11px] text-gray-500">
+          O ponto cego são {ledger.ordersOnlyInLedger.toLocaleString("pt-BR")} pedido(s) pagos 100%
+          com crédito na loja. A Shopify não emite tender transaction para esse meio, então essas
+          pernas ficam fora da comparação em vez de virarem divergência permanente.
+        </p>
+      )}
     </Card>
   );
 }
