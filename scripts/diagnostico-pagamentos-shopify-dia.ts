@@ -18,18 +18,25 @@
  * existe para descobrir onde estao os outros ~R$ 1.900 antes de escrever
  * qualquer codigo de producao.
  *
- * Tambem responde por que scripts/verify-shopify-values.ts le baixo: ele monta o
- * conjunto candidato com LITERAIS DE DATA no GraphQL
- * (`processed_at:>=2026-08-30`), cujo fuso de interpretacao nao esta fixado. Aqui
- * puxamos uma janela alargada UMA vez e simulamos as duas interpretacoes
- * possiveis em memoria, sem chamada extra — se uma delas reproduzir o numero do
- * script atual, a hipotese esta provada.
+ * Tambem foi este script que provou por que a v1 do verify-shopify-values.ts lia
+ * baixo: ela montava o conjunto candidato com LITERAIS DE DATA no GraphQL
+ * (`processed_at:>=2026-08-30`), cujo fuso de interpretacao nao esta fixado, e a
+ * Shopify os lia em UTC — perdendo as ultimas 3 h de todo dia. Aqui puxamos uma
+ * janela alargada UMA vez e simulamos as duas interpretacoes possiveis em
+ * memoria, sem chamada extra. A busca ficou em
+ * src/features/integration/shopify-tender-transactions.ts, que este script e a
+ * verificacao agora compartilham — nao ha mais duas versoes para divergir.
  */
 
 import dotenv from "dotenv";
 
 import { fetchShopifyOrderTransactions, type ShopifyOrderTransaction } from "../src/features/integration/shopify-order-transactions";
 import { normalizeShopifyStoreDomain, stripWrappingQuotes } from "../src/features/integration/shopify-orders-sync";
+import {
+  fetchTenderTransactions,
+  tenderOrderIdsInWindow,
+  widenedWindowForDay,
+} from "../src/features/integration/shopify-tender-transactions";
 import { getCorePool, withConnectionRetry } from "../src/features/transactions/mirror-events-repository";
 import { addDaysToDayKey, dayWindowUtc } from "../src/lib/date-utils";
 
@@ -45,13 +52,6 @@ type Args = {
   concurrency: number;
   json: boolean;
   margemHoras: number;
-};
-
-type TenderNode = {
-  orderId: string;
-  processedAt: Date;
-  amountCents: number;
-  test: boolean;
 };
 
 /** Uma transacao de pagamento da Shopify dentro da janela, com o pedido dela. */
@@ -115,16 +115,18 @@ async function main() {
   if (!accessToken) throw new Error("SHOPIFY_ACCESS_TOKEN ausente.");
 
   console.error(`[1/5] tenderTransactions da janela alargada (${args.date} +- 1 dia)...`);
-  const tenders = await loadTenderTransactions(storeDomain, accessToken, args.date);
+  const alargada = widenedWindowForDay(args.date, TIMEZONE);
+  const tenders = await fetchTenderTransactions(storeDomain, accessToken, alargada.from, alargada.to);
 
   // Diagnostico do conjunto candidato: as duas leituras possiveis do literal de
-  // data que o verify-shopify-values.ts usa hoje, calculadas sem chamada extra.
-  const candidatosJanelaReal = orderIdsNaJanela(tenders, window.start, window.end);
+  // data que a v1 do verify-shopify-values.ts usava, calculadas sem chamada
+  // extra. Mantido depois da correcao porque e' a prova de que o bug existia.
+  const candidatosJanelaReal = tenderOrderIdsInWindow(tenders, window.start, window.end);
   const janelaSeLiteralForUtc = {
     start: new Date(`${args.date}T00:00:00.000Z`),
     end: new Date(`${addDaysToDayKey(args.date, 1)}T00:00:00.000Z`),
   };
-  const candidatosSeLiteralForUtc = orderIdsNaJanela(
+  const candidatosSeLiteralForUtc = tenderOrderIdsInWindow(
     tenders,
     janelaSeLiteralForUtc.start,
     janelaSeLiteralForUtc.end
@@ -133,7 +135,7 @@ async function main() {
   // Margem para pegar pedido cuja perna cai perto da meia-noite: se ele tem
   // dinheiro tanto dentro quanto fora da janela, precisamos ver o pedido inteiro.
   const margemMs = args.margemHoras * 60 * 60 * 1000;
-  const candidatosComMargem = orderIdsNaJanela(
+  const candidatosComMargem = tenderOrderIdsInWindow(
     tenders,
     new Date(window.start.getTime() - margemMs),
     new Date(window.end.getTime() + margemMs)
@@ -238,65 +240,6 @@ async function main() {
   } else {
     imprimir(relatorio);
   }
-}
-
-/** Puxa tender transactions de [dia-1, dia+2) com limites ISO explicitos. */
-async function loadTenderTransactions(
-  storeDomain: string,
-  accessToken: string,
-  date: string
-): Promise<TenderNode[]> {
-  // Alargamos de proposito: o objetivo e NAO depender de como a Shopify
-  // interpreta o filtro. Filtrar fino e responsabilidade do codigo, nao da query.
-  const de = dayWindowUtc(addDaysToDayKey(date, -1), TIMEZONE).start;
-  const ate = dayWindowUtc(addDaysToDayKey(date, 1), TIMEZONE).end;
-  const searchQuery = `processed_at:>='${de.toISOString()}' AND processed_at:<='${ate.toISOString()}'`;
-
-  const query = `
-    query TenderTransactions($first: Int!, $after: String, $query: String!) {
-      tenderTransactions(first: $first, after: $after, query: $query) {
-        edges {
-          node {
-            processedAt
-            test
-            amount { amount }
-            order { legacyResourceId }
-          }
-        }
-        pageInfo { hasNextPage endCursor }
-      }
-    }
-  `;
-
-  const nodes: TenderNode[] = [];
-  let after: string | undefined;
-
-  do {
-    const data = await shopifyGraphql(storeDomain, accessToken, query, { first: 250, after, query: searchQuery });
-    const connection = data.tenderTransactions;
-    for (const edge of connection.edges) {
-      const orderId = edge.node.order?.legacyResourceId;
-      if (!orderId) continue;
-      nodes.push({
-        orderId: String(orderId),
-        processedAt: new Date(edge.node.processedAt),
-        amountCents: Math.round(Number(edge.node.amount?.amount ?? 0) * 100),
-        test: Boolean(edge.node.test),
-      });
-    }
-    after = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : undefined;
-  } while (after);
-
-  return nodes;
-}
-
-function orderIdsNaJanela(tenders: TenderNode[], inicio: Date, fim: Date): Set<string> {
-  const ids = new Set<string>();
-  for (const tender of tenders) {
-    if (tender.test) continue;
-    if (tender.processedAt >= inicio && tender.processedAt < fim) ids.add(tender.orderId);
-  }
-  return ids;
 }
 
 async function carregarTransacoes(
@@ -472,51 +415,6 @@ function classificarDiferenca(naJanela: TxNaJanela[], core: LadoCore): { categor
   }
 
   return { categorias: [...cats.values()].sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents)) };
-}
-
-type TenderTransactionsResponse = {
-  tenderTransactions: {
-    edges: Array<{
-      node: {
-        processedAt: string;
-        test: boolean;
-        amount: { amount: string } | null;
-        order: { legacyResourceId: string } | null;
-      };
-    }>;
-    pageInfo: { hasNextPage: boolean; endCursor?: string };
-  };
-};
-
-async function shopifyGraphql(
-  storeDomain: string,
-  accessToken: string,
-  query: string,
-  variables: Record<string, unknown>,
-  retries = 2
-): Promise<TenderTransactionsResponse> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      const response = await fetch(`https://${storeDomain}/admin/api/2024-10/graphql.json`, {
-        method: "POST",
-        headers: {
-          "X-Shopify-Access-Token": accessToken,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({ query, variables }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      const json = await response.json();
-      if (!response.ok || json.errors) {
-        throw new Error(`Shopify GraphQL falhou: ${response.status} ${JSON.stringify(json.errors ?? json)}`);
-      }
-      return json.data;
-    } catch (error) {
-      if (attempt >= retries) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
-    }
-  }
 }
 
 function imprimir(r: Relatorio) {
