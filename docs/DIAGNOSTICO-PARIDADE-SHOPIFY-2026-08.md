@@ -1,11 +1,15 @@
-# Diagnóstico de paridade Shopify — medições de 18/08, 30/08 e 08/09
+# Diagnóstico de paridade Shopify — medições de 18/08, 30/08, 08/09 e 09/09
 
 > **Status:** Fases 0, 1 e 2 **concluídas** (2026-09-01). Decisão mantida: **não construir o
 > ledger transacional** `shopify_payment_transactions` — o grão (pedido, gateway) bastou.
 > Ver [Medição de 30/08](#medição-de-3008-o-rateio-sozinho-não-fechava) para o que a Fase 0
 > original não tinha como enxergar, e [Medição de 08/09](#medição-de-0809-a-paridade-de-valor-fechou)
 > para o veredito atual: **a paridade de valor fechou** e a defasagem que resta é toda de
-> materialização, não de rateio nem de fonte de dado.
+> materialização, não de rateio nem de fonte de dado. A
+> [medição de 09/09](#medição-de-0909-o-ledger-fecha-com-a-shopify-pedido-a-pedido) confirmou isso
+> por uma via independente — o ledger bate com o `tenderTransactions` **pedido a pedido**, desvio
+> R$ 0,00 — e corrigiu o tamanho do ponto cego do crédito na loja, que é **por perna de pagamento**,
+> não só por pedido pago integralmente assim.
 >
 > Este documento **sobrepõe** a recomendação de data warehouse de
 > [shopify/shopify-payments-by-gateway.md](shopify/shopify-payments-by-gateway.md#data-warehouse)
@@ -129,7 +133,7 @@ líquido de +11,58% na linha dele. Resolver isso custa **uma única data** de de
 | 1 | Persistir o rateio por gateway que o job já calcula e descarta | **CONCLUÍDA** (2026-09-01) — ver [medição de 30/08](#medição-de-3008-o-rateio-sozinho-não-fechava) |
 | 2 | Rotular as telas: "Pedidos pagos" vs "Pagamentos processados" | **CONCLUÍDA** (2026-09-01) |
 | 3 | Uma data de detalhe transacional, para fechar a direção do erro líquido de `store_credit` | **DISPENSADA** — a medição de 30/08 respondeu sem custo extra: o rateio fecha o crédito na loja ao centavo |
-| 4 | Completude via `tenderTransactions` (1 chamada GraphQL/dia): pedidos que existem na Shopify e em lugar nenhum nosso | **DESCARTADA COMO DESENHADA** — `tenderTransactions` é provadamente incompleto (ver abaixo), e a [medição de 08/09](#medição-de-0809-a-paridade-de-valor-fechou) mostrou a incompletude uma segunda vez, no mesmo formato |
+| 4 | Completude via `tenderTransactions` (1 chamada GraphQL/dia): pedidos que existem na Shopify e em lugar nenhum nosso | **DESCARTADA COMO DESENHADA, REAPROVEITADA COM ESCOPO MENOR** — `tenderTransactions` é provadamente incompleto (ver abaixo), e a [medição de 08/09](#medição-de-0809-a-paridade-de-valor-fechou) mostrou a incompletude uma segunda vez. Não serve como conjunto candidato; serve como **conferência independente do ledger**, descartando as pernas de crédito na loja — ver [medição de 09/09](#medição-de-0909-o-ledger-fecha-com-a-shopify-pedido-a-pedido) |
 | 5 | Reembolso e líquido | **BLOQUEADA A MONTANTE** — exige decidir ingerir mais tópicos de webhook |
 
 Encerrado o escopo declarado (bruto por gateway/dia, datado por `transaction.processed_at`): a
@@ -268,6 +272,59 @@ D-0 da materialização só roda às 23:00 BRT. É a origem do R$ 0,00 em "Hoje"
 
 Isso inverte a ordem de prioridade que valia até aqui: **não há mais erro de valor a corrigir na
 Shopify; há defasagem de leitura.**
+
+### O ponto cego do crédito na loja é por PERNA, não por pedido
+
+Medido em 09/09 sobre 07/09 e 05/09, ao trocar a verificação diária pelo ledger (ver
+[Medição de 09/09](#medição-de-0909-o-ledger-fecha-com-a-shopify-pedido-a-pedido)). Corrige o que
+está escrito acima em *3. `tenderTransactions` não serve como conjunto candidato*, que descreve o
+ponto cego como restrito a "pedido pago **inteiramente** com crédito na loja".
+
+Não é. Em 07/09, comparando pedido a pedido, **18 dos 786** pedidos divergiam entre o ledger e o
+`tenderTransactions`, somando R$ 1.461,25 — e esse valor é **exatamente** a soma das pernas
+`shopify_store_credit` desses mesmos 18 pedidos, ao centavo. Todos eles são pedidos **parcialmente**
+pagos com crédito: uma perna Pix ou Appmax, que o tender reporta, e uma perna de crédito na loja,
+que ele omite.
+
+```
+7553206321377  tender=R$  18,31  ledger=R$ 202,31  delta=-R$ 184,00  (= perna shopify_store_credit)
+7552157516001  tender=R$  35,22  ledger=R$ 211,51  delta=-R$ 176,29  (= perna shopify_store_credit)
+7552072777953  tender=R$  26,32  ledger=R$ 145,65  delta=-R$ 119,33  (= perna shopify_store_credit)
+```
+
+Duas consequências, e as duas mudam desenho:
+
+1. **Qualquer detector que compare ledger × tender precisa descartar as pernas de crédito**, senão
+   produz ~18 falsos positivos por dia que nunca fecham. Com elas fora, o desvio de 07/09 e 05/09 é
+   **R$ 0,00 em 0 pedidos** — o ledger concorda com a Shopify pedido a pedido.
+2. **Em nenhum dos 18 o tender apontava MAIS que o ledger.** Zero pedidos na direção que
+   significaria dinheiro recebido pela Shopify e não registrado por nós. É o segundo resultado
+   independente apontando que o ledger está correto.
+
+### Medição de 09/09: o ledger fecha com a Shopify pedido a pedido
+
+A verificação diária (`/api/internal/cron/shopify-verify`) montava o lado Shopify com **uma chamada
+REST por pedido candidato** — ~1.700/dia, serializadas pelo portão de 500 ms do bucket: cerca de
+**850 s**, numa rota que era a única das quatro **sem `maxDuration` declarado**. Ela não completava,
+e o ramo de alerta nunca executou em produção.
+
+Trocada pelo ledger, com o `tenderTransactions` como terceira ponta: **42 s medidos** na chamada
+real, contra os ~850 s anteriores. A verificação passou a dizer *de que lado* está o problema:
+
+| Ponta | Compara | Mede |
+|---|---|---|
+| 1 | Sistema × Ledger | defasagem de **materialização** (tudo em SQL) |
+| 2 | Ledger × `tenderTransactions` | deriva do lado da **Shopify** (~10 chamadas GraphQL) |
+
+Em 07/09 a ponta 2 fecha em **R$ 0,00**. A ponta 1 acusa −R$ 199,92 — o pedido de crédito integral
+já documentado acima. Uma consulta SQL sobre 31/08–07/09 mostra que essa lacuna da ponta 1 é
+**recorrente, não pontual**: sistema abaixo do ledger em 7 dos 8 dias, entre R$ 84,98 e R$ 469,17
+por dia, com 06/09 fechando exatamente em zero. É defasagem de atribuição de janela e de
+materialização, e é a ponta 1 fazendo exatamente o que foi desenhada para fazer.
+
+**A Shopify emite tender negativa para reembolso**: 2 entradas em 08/09. O ledger só soma
+`sale`/`capture`/`change` e ignora `refund`, então somar as negativas faria todo pedido reembolsado
+divergir para sempre contra um ledger que nunca vai concordar. Elas são descartadas e contadas.
 
 ### Limites reconfirmados
 
