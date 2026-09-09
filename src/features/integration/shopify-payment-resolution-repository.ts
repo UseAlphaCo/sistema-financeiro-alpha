@@ -116,25 +116,51 @@ export async function findUnresolvedShopifyOrders(
     sinceClause = `AND rp.received_at >= $${values.length}`;
   }
 
-  const result = await pool.query<UnresolvedShopifyOrder>(
-    `
-      SELECT DISTINCT rp.external_order_id
-      FROM mirror.raw_payloads rp
-      LEFT JOIN integration.shopify_order_payment_resolution spr
-        ON spr.external_order_id = rp.external_order_id
-      WHERE rp.source = 'shopify'
-        AND rp.external_order_id IS NOT NULL
-        AND rp.payload_json IS NOT NULL
-        AND (
-          spr.external_order_id IS NULL
-          OR rp.mirror_updated_at > spr.resolved_at
-        )
-        ${sinceClause}
-      ORDER BY rp.external_order_id DESC
-      LIMIT $1
-    `,
-    values
-  );
+  const filtro = `
+    SELECT DISTINCT rp.external_order_id
+    FROM mirror.raw_payloads rp
+    LEFT JOIN integration.shopify_order_payment_resolution spr
+      ON spr.external_order_id = rp.external_order_id
+    WHERE rp.source = 'shopify'
+      AND rp.external_order_id IS NOT NULL
+      AND rp.payload_json IS NOT NULL
+      AND (
+        spr.external_order_id IS NULL
+        OR rp.mirror_updated_at > spr.resolved_at
+      )
+      ${sinceClause}
+  `;
+
+  /**
+   * Com janela de tempo, forcar a materializacao do filtro ANTES de ordenar.
+   *
+   * Sem o CTE MATERIALIZED, o `ORDER BY external_order_id DESC LIMIT n` convence
+   * o planner a percorrer idx_raw_payloads_external_order_id de tras para
+   * frente e filtrar linha a linha, apostando que acha `n` cedo. A aposta so
+   * paga quando existe backlog; em regime normal, com a fila quase vazia, ele
+   * varre a tabela inteira. Medido em 08/09/2026 com janela de 1 dia:
+   * **910.178 linhas descartadas por filtro, 900 mil buffers, 75,7 s** para
+   * devolver zero linha — em CADA uma das 12 invocacoes diarias do cron, mesmo
+   * sem trabalho nenhum a fazer. Era ~15 min/dia de Fluid Active CPU queimados
+   * a toa, na cota que estourou em 25/08/2026.
+   *
+   * Com o CTE, o filtro passa por idx_raw_payloads_received_at e so depois
+   * ordena: **47 ms e 61 mil buffers**, com janela de 3 dias (mais trabalho que
+   * a medicao acima). A semantica nao muda — mesmo filtro, mesma prioridade por
+   * id decrescente, mesmo limite.
+   *
+   * Sem janela nao vale a pena: nao ha indice que torne o filtro barato, e ai a
+   * parada antecipada do plano antigo e' de fato a melhor aposta. E' o caminho
+   * dos scripts manuais de backfill, que e' justamente quando existe backlog.
+   */
+  const sql = sinceReceivedAt
+    ? `WITH candidatos AS MATERIALIZED (${filtro})
+       SELECT external_order_id FROM candidatos
+       ORDER BY external_order_id DESC
+       LIMIT $1`
+    : `${filtro} ORDER BY rp.external_order_id DESC LIMIT $1`;
+
+  const result = await pool.query<UnresolvedShopifyOrder>(sql, values);
 
   return result.rows;
 }
