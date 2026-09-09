@@ -59,7 +59,14 @@ export type SweepStatus = {
   pendingRepair: number;
   /** Null aqui significa "o ciclo nunca rodou" -- e um alarme, nao um vazio. */
   lastCycleAt: Date | null;
-  /** Esperado 24 no cron horario. Menos que isso e ciclo morrendo. */
+  /**
+   * Menos que o esperado e ciclo morrendo.
+   *
+   * O esperado depende da cadencia do cron e ja foi 24 (cron horario); com
+   * `0 * / 3 * * *` sao 8. Nao comparar contra numero fixo aqui: quem sabe o
+   * esperado e JOB_EXPECTATIONS em src/features/integration/job-names.ts,
+   * derivado de wrangler.jsonc.
+   */
   okCyclesLast24h: number;
   cursors: {
     pass: string;

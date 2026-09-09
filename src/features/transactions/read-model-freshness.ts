@@ -61,7 +61,14 @@ export type Freshness = {
   canShowTotals: boolean;
 };
 
-function formatMoment(value: Date): string {
+/**
+ * Instante curto em pt-BR, no fuso de Brasilia.
+ *
+ * Exportado para o painel de /integracoes reusar em vez de virar a quinta copia
+ * de formatacao de data do projeto (as outras estao em dashboard/page.tsx,
+ * integracoes/page.tsx e MarketplaceRevenueCards.tsx).
+ */
+export function formatMoment(value: Date): string {
   return new Intl.DateTimeFormat("pt-BR", {
     day: "2-digit",
     month: "2-digit",

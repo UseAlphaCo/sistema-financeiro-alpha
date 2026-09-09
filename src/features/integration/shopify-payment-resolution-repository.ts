@@ -291,3 +291,103 @@ export async function replaceShopifyPaymentGatewaySplit(
     ]
   );
 }
+
+/** Pulso do ledger de rateio e estado do pipeline por dia, para o painel. */
+export type PipelineStatus = {
+  /** Ultima perna gravada no ledger. null = o ledger nunca escreveu nada. */
+  lastLedgerWriteAt: string | null;
+  /** Pagamento mais recente ja presente no ledger. */
+  lastPaymentProcessedAt: string | null;
+  days: PipelineDay[];
+};
+
+export type PipelineDay = {
+  day: string;
+  orders: number;
+  /** Quando este dia foi materializado pela ultima vez. */
+  lastMaterializedAt: string | null;
+  /** Pedidos sem nenhuma perna no ledger de rateio. */
+  withoutLedger: number;
+  /** Pedidos que o job de resolucao ainda nao visitou. */
+  withoutResolution: number;
+};
+
+/**
+ * Estado da reconciliacao por dia, ancorado em integration.financial_orders.
+ *
+ * Ancorar na materializada, e nao no mirror, e' deliberado: a mesma pergunta
+ * feita sobre mirror.raw_payloads exige DISTINCT ON sobre uma tabela de 2754 MB
+ * e levou 38 s numa medicao de 08/09/2026 — inviavel num render de tela, e
+ * exatamente o tipo de leitura cara que estourou a cota de CPU da Vercel.
+ *
+ * A consequencia e' que este numero mede "do que o sistema ja materializou,
+ * quanto falta reconciliar". Pedido pago que ainda nao foi materializado nao
+ * aparece aqui — quem responde por ele e' o bloco de materializacao do painel.
+ * Cada bloco mede a sua propria camada, e nenhum finge medir a do outro.
+ *
+ * Os dois NOT EXISTS usam a PK de cada tabela auxiliar, entao sao sondagens de
+ * indice: ~1.000 pedidos/dia na janela padrao.
+ */
+export async function getPipelineStatus(days = 7): Promise<PipelineStatus | null> {
+  const pool = getPool();
+  if (!pool) return null;
+
+  try {
+    const pulse = await pool.query<{ last_write: Date | null; last_payment: Date | null }>(`
+      SELECT max(resolved_at) AS last_write,
+             max(transaction_processed_at) AS last_payment
+        FROM integration.shopify_order_payment_gateway_split
+    `);
+
+    const perDay = await pool.query<{
+      day: string;
+      orders: string;
+      last_materialized_at: Date | null;
+      without_ledger: string;
+      without_resolution: string;
+    }>(
+      `
+      SELECT to_char(date(fo.occurred_at AT TIME ZONE 'America/Bahia'), 'YYYY-MM-DD') AS day,
+             count(*)::text AS orders,
+             max(fo.materialized_at) AS last_materialized_at,
+             count(*) FILTER (
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM integration.shopify_order_payment_gateway_split s
+                  WHERE s.external_order_id = fo.order_key
+               )
+             )::text AS without_ledger,
+             count(*) FILTER (
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM integration.shopify_order_payment_resolution r
+                  WHERE r.external_order_id = fo.order_key
+               )
+             )::text AS without_resolution
+        FROM integration.financial_orders fo
+       WHERE fo.source_key = 'shopify'
+         AND fo.occurred_at >= now() - make_interval(days => $1::int)
+       GROUP BY 1
+       ORDER BY 1 DESC
+      `,
+      [days]
+    );
+
+    return {
+      lastLedgerWriteAt: pulse.rows[0]?.last_write?.toISOString() ?? null,
+      lastPaymentProcessedAt: pulse.rows[0]?.last_payment?.toISOString() ?? null,
+      days: perDay.rows.map((row) => ({
+        day: row.day,
+        orders: Number(row.orders),
+        lastMaterializedAt: row.last_materialized_at?.toISOString() ?? null,
+        withoutLedger: Number(row.without_ledger),
+        withoutResolution: Number(row.without_resolution),
+      })),
+    };
+  } catch (error) {
+    // Tabela ausente neste ambiente e' falta de dado, nao falha da tela. O
+    // painel distingue null de zero: null vira "sem dado", nunca "tudo certo".
+    logError("pipeline_status_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
