@@ -1,6 +1,8 @@
 import type { NextRequest } from "next/server";
 
 import { logError, logInfo } from "@/core/observability/logger";
+import { JOB_NAMES } from "@/features/integration/job-names";
+import { withJobRun } from "@/features/integration/job-run-repository";
 import { runShopifyPaymentResolutionJob } from "@/features/integration/shopify-payment-resolution-job";
 import { buildVerificationReport, VERIFICATION_TIMEZONE } from "@/features/integration/shopify-value-verification";
 import { dayWindowUtc } from "@/lib/date-utils";
@@ -37,42 +39,50 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const report = await buildVerificationReport();
-    const hasDivergence = report.metrics.some((metric) => metric.diverges);
+    const outcome = await withJobRun(JOB_NAMES.shopifyVerify, null, requestId, async () => {
+      const report = await buildVerificationReport();
+      const hasDivergence = report.metrics.some((metric) => metric.diverges);
 
-    if (!hasDivergence) {
-      logInfo("shopify_verify_ok", { requestId, date: report.date, metrics: report.metrics });
-      return createApiSuccess(requestId, { report, alert: "none" as const });
-    }
+      if (!hasDivergence) {
+        logInfo("shopify_verify_ok", { requestId, date: report.date, metrics: report.metrics });
+        return { report, alert: "none" as const, alignment: undefined };
+      }
 
-    if (!report.maturity.isMature) {
-      logInfo("shopify_verify_divergence_informational", {
+      if (!report.maturity.isMature) {
+        logInfo("shopify_verify_divergence_informational", {
+          requestId,
+          date: report.date,
+          metrics: report.metrics,
+          maturity: report.maturity,
+        });
+        return { report, alert: "informational" as const, alignment: undefined };
+      }
+
+      logError("shopify_verify_divergence_alert", {
         requestId,
         date: report.date,
         metrics: report.metrics,
         maturity: report.maturity,
       });
-      return createApiSuccess(requestId, { report, alert: "informational" as const });
-    }
 
-    logError("shopify_verify_divergence_alert", {
-      requestId,
-      date: report.date,
-      metrics: report.metrics,
-      maturity: report.maturity,
+      const window = dayWindowUtc(report.date, VERIFICATION_TIMEZONE);
+      let alignment: Awaited<ReturnType<typeof runShopifyPaymentResolutionJob>> | { error: string };
+      try {
+        alignment = await runShopifyPaymentResolutionJob(AUTO_ALIGN_BATCH_SIZE, window.start);
+      } catch (error) {
+        alignment = { error: error instanceof Error ? error.message : "Falha ao tentar auto-alinhar." };
+      }
+
+      logInfo("shopify_verify_auto_align_result", { requestId, date: report.date, alignment });
+
+      return { report, alert: "divergence" as const, alignment };
     });
 
-    const window = dayWindowUtc(report.date, VERIFICATION_TIMEZONE);
-    let alignment: Awaited<ReturnType<typeof runShopifyPaymentResolutionJob>> | { error: string };
-    try {
-      alignment = await runShopifyPaymentResolutionJob(AUTO_ALIGN_BATCH_SIZE, window.start);
-    } catch (error) {
-      alignment = { error: error instanceof Error ? error.message : "Falha ao tentar auto-alinhar." };
-    }
-
-    logInfo("shopify_verify_auto_align_result", { requestId, date: report.date, alignment });
-
-    return createApiSuccess(requestId, { report, alert: "divergence" as const, alignment });
+    return createApiSuccess(requestId, {
+      report: outcome.report,
+      alert: outcome.alert,
+      ...(outcome.alignment === undefined ? {} : { alignment: outcome.alignment }),
+    });
   } catch (error) {
     return createApiError(
       requestId,

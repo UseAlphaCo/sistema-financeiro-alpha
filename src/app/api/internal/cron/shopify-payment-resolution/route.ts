@@ -1,5 +1,7 @@
 import type { NextRequest } from "next/server";
 
+import { JOB_NAMES } from "@/features/integration/job-names";
+import { withJobRun } from "@/features/integration/job-run-repository";
 import { runShopifyPaymentResolutionJob } from "@/features/integration/shopify-payment-resolution-job";
 import { createApiError, createApiSuccess } from "@/shared/api/envelope";
 
@@ -60,7 +62,12 @@ export async function GET(request: NextRequest) {
   const sinceReceivedAt = parseSinceDays(request.nextUrl.searchParams.get("sinceDays"));
 
   try {
-    const summary = await runShopifyPaymentResolutionJob(batchSize, sinceReceivedAt);
+    const summary = await withJobRun(
+      JOB_NAMES.shopifyPaymentResolution,
+      { batchSize, sinceReceivedAt: sinceReceivedAt?.toISOString() ?? null },
+      requestId,
+      () => runShopifyPaymentResolutionJob(batchSize, sinceReceivedAt)
+    );
     return createApiSuccess(requestId, summary);
   } catch (error) {
     return createApiError(

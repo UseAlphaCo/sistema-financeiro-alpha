@@ -1,5 +1,7 @@
 import type { NextRequest } from "next/server";
 
+import { JOB_NAMES } from "@/features/integration/job-names";
+import { withJobRun } from "@/features/integration/job-run-repository";
 import { runMaterializeOrdersJob } from "@/features/transactions/materialize-orders-job";
 import { createApiError, createApiSuccess } from "@/shared/api/envelope";
 
@@ -83,7 +85,12 @@ export async function GET(request: NextRequest) {
 
   try {
     const days = parseDays(request.nextUrl.searchParams.get("days"));
-    const summary = await runMaterializeOrdersJob({ days });
+    // O registro envolve o job, e nao a rota inteira, de proposito: erro de
+    // parse de parametro nao e' execucao de job e nao deve virar linha em
+    // job_runs -- so poluiria a serie que o painel usa para detectar atraso.
+    const summary = await withJobRun(JOB_NAMES.materializeOrders, { days }, requestId, () =>
+      runMaterializeOrdersJob({ days })
+    );
     return createApiSuccess(requestId, summary);
   } catch (error) {
     return createApiError(

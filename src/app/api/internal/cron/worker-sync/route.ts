@@ -1,5 +1,7 @@
 import type { NextRequest } from "next/server";
 
+import { JOB_NAMES } from "@/features/integration/job-names";
+import { withJobRun } from "@/features/integration/job-run-repository";
 import { startWorkerSyncJob } from "@/features/integration/worker-sync-jobs";
 import { createApiError, createApiSuccess } from "@/shared/api/envelope";
 
@@ -58,13 +60,20 @@ export async function GET(request: NextRequest) {
     // Sem backfillWindowDays: o ciclo automatico faz apenas descoberta
     // incremental por marca d'agua. A varredura por janela de dias e
     // exclusiva dos disparos manuais.
-    const job = await startWorkerSyncJob({
-      estimatedScopeDays: days,
-      requestedBy: "cloudflare-cron",
-      requestId,
-      maxRuns,
-      awaitCompletion: true,
-    });
+    //
+    // Este job ja tem duas tabelas proprias (worker_sync_jobs e
+    // sync_cycle_log). A linha em job_runs nao as substitui: existe para que o
+    // painel consiga responder "todos os crons rodaram?" olhando UM lugar so,
+    // em vez de um esquema por job.
+    const job = await withJobRun(JOB_NAMES.workerSync, { days, maxRuns }, requestId, () =>
+      startWorkerSyncJob({
+        estimatedScopeDays: days,
+        requestedBy: "cloudflare-cron",
+        requestId,
+        maxRuns,
+        awaitCompletion: true,
+      })
+    );
 
     return createApiSuccess(requestId, {
       jobId: job.id,
