@@ -1,9 +1,11 @@
-# Diagnóstico de paridade Shopify — medição de 2026-08-18
+# Diagnóstico de paridade Shopify — medições de 18/08, 30/08 e 08/09
 
 > **Status:** Fases 0, 1 e 2 **concluídas** (2026-09-01). Decisão mantida: **não construir o
 > ledger transacional** `shopify_payment_transactions` — o grão (pedido, gateway) bastou.
 > Ver [Medição de 30/08](#medição-de-3008-o-rateio-sozinho-não-fechava) para o que a Fase 0
-> original não tinha como enxergar.
+> original não tinha como enxergar, e [Medição de 08/09](#medição-de-0809-a-paridade-de-valor-fechou)
+> para o veredito atual: **a paridade de valor fechou** e a defasagem que resta é toda de
+> materialização, não de rateio nem de fonte de dado.
 >
 > Este documento **sobrepõe** a recomendação de data warehouse de
 > [shopify/shopify-payments-by-gateway.md](shopify/shopify-payments-by-gateway.md#data-warehouse)
@@ -127,8 +129,13 @@ líquido de +11,58% na linha dele. Resolver isso custa **uma única data** de de
 | 1 | Persistir o rateio por gateway que o job já calcula e descarta | **CONCLUÍDA** (2026-09-01) — ver [medição de 30/08](#medição-de-3008-o-rateio-sozinho-não-fechava) |
 | 2 | Rotular as telas: "Pedidos pagos" vs "Pagamentos processados" | **CONCLUÍDA** (2026-09-01) |
 | 3 | Uma data de detalhe transacional, para fechar a direção do erro líquido de `store_credit` | **DISPENSADA** — a medição de 30/08 respondeu sem custo extra: o rateio fecha o crédito na loja ao centavo |
-| 4 | Completude via `tenderTransactions` (1 chamada GraphQL/dia): pedidos que existem na Shopify e em lugar nenhum nosso | **DESCARTADA COMO DESENHADA** — `tenderTransactions` é provadamente incompleto (ver abaixo) |
+| 4 | Completude via `tenderTransactions` (1 chamada GraphQL/dia): pedidos que existem na Shopify e em lugar nenhum nosso | **DESCARTADA COMO DESENHADA** — `tenderTransactions` é provadamente incompleto (ver abaixo), e a [medição de 08/09](#medição-de-0809-a-paridade-de-valor-fechou) mostrou a incompletude uma segunda vez, no mesmo formato |
 | 5 | Reembolso e líquido | **BLOQUEADA A MONTANTE** — exige decidir ingerir mais tópicos de webhook |
+
+Encerrado o escopo declarado (bruto por gateway/dia, datado por `transaction.processed_at`): a
+[medição de 08/09](#medição-de-0809-a-paridade-de-valor-fechou) fechou dois dos três gateways ao
+centavo e explicou o terceiro. O trabalho que resta **não é de paridade** — é defasagem de
+materialização e cobertura do ledger antes de 23/08.
 
 ## Medição de 30/08: o rateio sozinho não fechava
 
@@ -204,6 +211,125 @@ Pagamentos processados na Shopify
 
 "Transações" no Fluxo de Caixa é **contagem de pedidos**, não de eventos de pagamento — a Shopify
 conta eventos. Não comparar contra a métrica `transactions` do relatório ShopifyQL.
+
+## Medição de 08/09: a paridade de valor fechou
+
+Medido em 2026-09-08 (somente leitura) sobre **2026-09-07**, o último dia fechado, com
+`scripts/diagnostico-pagamentos-shopify-dia.ts` — que rebusca a Admin API em vez de comparar
+contra um relatório capturado antes.
+
+| Gateway | Ledger de rateio | Shopify (API, hoje) | Δ |
+|---|---:|---:|---:|
+| Appmax - Cartão de Crédito | 334 tx · R$ 71.399,33 | 334 tx · R$ 71.399,33 | **R$ 0,00** |
+| Pix (3% de desconto) | 449 tx · R$ 71.145,92 | 449 tx · R$ 71.145,92 | **R$ 0,00** |
+| Crédito na loja | 20 tx · R$ 1.661,17 | 18 tx · R$ 1.461,25 | +R$ 199,92 |
+| **Total** | **803 tx · R$ 144.206,42** | **801 tx · R$ 144.006,50** | +R$ 199,92 |
+
+Dois dos três gateways fecham **ao centavo** — inclusive o Appmax, que em 30/08 aparecia
+−R$ 2.563,79 e era a maior divergência aberta. Aquele buraco tinha duas causas somadas, e as duas
+se fecharam: R$ 2.303,43 de `orders/paid` que chegou depois do último passe de materialização, e o
+resto de capturas que a Shopify só registrou dias depois (ver
+[30/08 revisitado](#3008-revisitado-também-fecha-ao-centavo)).
+
+**Os R$ 199,92 são cegueira do instrumento, não erro do sistema.** É um único pedido,
+`7551826624737`, pago **inteiramente** com crédito na loja (gateway único, 2 transações,
+`spr.total_amount_cents` = R$ 199,92). É exatamente a classe de pedido para a qual
+`tenderTransactions` não emite entrada — o achado que já havia descartado a Fase 4. O ledger está
+certo; quem não vê é a via de medição.
+
+### O que a tela mostra, e por quê
+
+Com `FINANCIAL_SHOPIFY_PAYMENTS_BASIS` desligada, a base é pedidos (`integration.financial_orders`):
+**R$ 141.881,27 / 777 pedidos**, R$ 2.125,23 abaixo (1,50%). O diagnóstico decompôs **100% disso**
+em `pedido_nao_materializado` (6 pedidos) e fechou com **`NAO EXPLICADO: R$ 0,00`** — a primeira
+medição sem resíduo. Uma consulta SQL independente devolveu os mesmos 6 pedidos e os mesmos
+R$ 2.125,23.
+
+Integridade de valor no período coberto pelo ledger (23/08–07/09): `spr.total_amount_cents` contra a
+soma das pernas → **0 divergências em 19.237 pedidos, R$ 0,00**.
+
+### A defasagem restante é toda de materialização
+
+Estado em 2026-09-08, 12:44 BRT:
+
+| Dia | Pagos no mirror | Sem materializar |
+|---|---:|---:|
+| 08/09 (corrente) | 222 | **222 · R$ 42.560,62** |
+| 07/09 | 782 | 6 · R$ 2.125,23 |
+| 06/09 | 703 | 4 · R$ 1.043,99 |
+| 05/09 e anteriores | — | 0 |
+
+A fila de resolução de gateway estava **zerada** em todos esses dias: o ledger já continha
+R$ 44.187,55 do dia corrente, com a última perna gravada às 12:26 BRT — **minutos** depois do
+pagamento. O dado existe quase em tempo real; o caminho de leitura é que não o usa, porque o passe
+D-0 da materialização só roda às 23:00 BRT. É a origem do R$ 0,00 em "Hoje" descrito no docblock de
+`getMaterializedLag`
+([financial-orders-repository.ts](../src/features/transactions/financial-orders-repository.ts)).
+
+Isso inverte a ordem de prioridade que valia até aqui: **não há mais erro de valor a corrigir na
+Shopify; há defasagem de leitura.**
+
+### Limites reconfirmados
+
+- **Reembolso e cancelamento seguem estruturalmente invisíveis.** Nos últimos 20 dias o mirror
+  recebeu apenas `orders/create` (30.959 linhas) e `orders/paid` (27.280). Nada mais — o quadro de
+  2026-08-18 não mudou. O número validado é bruto de pedidos pagos, e isso é da ingestão.
+- **O ledger só cobre 2026-08-23 em diante** (`min(transaction_processed_at)` = 31/07, mas contínuo
+  só a partir de 23/08). Ligar a base de pagamentos agora não muda nada numa janela de 30 dias: o
+  guard de cobertura em [service.ts](../src/features/cash-flow/service.ts) derruba a janela inteira
+  para a base de pedidos se faltar um dia. Exige backfill de 01→22/08 antes.
+- **`pending` é 15,05% do bruto criado** em 01–07/09 (R$ 219.914,28 em 1.039 pedidos). Fora do
+  faturamento por definição correta — registrado porque é o tamanho da fila, não um defeito.
+
+### 30/08 revisitado: também fecha ao centavo
+
+Não exigiu nenhuma chamada nova de API — o ledger em 08/09 pode ser comparado contra o valor
+verdadeiro daquele dia, que a medição de 02/09 já havia estabelecido:
+
+| Gateway | Ledger em 08/09 | Verdade do dia | Fonte da verdade |
+|---|---:|---:|---|
+| Pix (3% de desconto) | 682 · R$ 96.200,77 | 682 · R$ 96.200,77 | relatório de 01/09 |
+| Appmax - Cartão de Crédito | 442 · R$ 83.407,80 | 442 · R$ 83.407,80 | API em 02/09 |
+| Crédito na loja | 22 · R$ 3.050,96 | 22 · R$ 3.050,96 | rateio, confirmado em 01/09 |
+| **Total** | **R$ 182.659,53** | **R$ 182.659,53** | |
+
+Dois pontos que isso comprova:
+
+1. **O relatório lido em 01/09 estava incompleto**, não errado do nosso lado: ele dava Appmax
+   439 · R$ 82.081,08. O dia continuou crescendo do lado da Shopify por ~2 dias (capturas Appmax
+   atrasadas). Comparar contra um relatório capturado cedo mede a defasagem *deles*.
+2. **A perna atrasada foi recolhida — mas nenhum mecanismo automático a recolheu.** Em 02/09 o
+   ledger marcava R$ 182.564,56, e a diferença de R$ 94,97 contra a verdade era exatamente uma
+   perna Appmax atrasada. Hoje o ledger marca R$ 182.659,53: os R$ 94,97 entraram.
+
+   Vale ser preciso sobre o que pode e o que não pode ter fechado isso, porque é a diferença entre
+   uma rotina e um acaso:
+
+   - O **job de resolução** não foi: o predicado dele é
+     `spr.external_order_id IS NULL OR rp.mirror_updated_at > spr.resolved_at`, e uma transação
+     nova num pedido existente **não** muda `payload_json` nem `mirror_updated_at`.
+   - O **backfill** (`scripts/backfill-shopify-gateway-split.ts`) só alcança o caso em que o pedido
+     ainda **não tinha nenhuma** linha de rateio: tanto `derivarDeResolucao` quanto
+     `carregarPedidosSemRateio` filtram `g.external_order_id IS NULL`. Ele fecha "pedido **sem**
+     rateio"; **não** fecha "rateio com valor **velho**". Para um pedido que já tem linha, o único
+     caminho é `--ids-file`, que é manual e exige saber de antemão qual pedido mudou.
+
+   Ou seja: os R$ 94,97 pertenciam a um pedido que ainda não tinha rateio nenhum, ou entraram por
+   uma lista de ids montada à mão. **A classe "pedido já resolvido que recebeu transação nova" não
+   tem remédio automático hoje** — nem o job, nem o backfill, nem o auto-align do `shopify-verify`
+   (que chama o mesmo job, com o mesmo predicado, e portanto é no-op por construção para esses
+   pedidos). Fechar essa classe exige um detector que compare o ledger contra a Shopify por pedido,
+   e é a única capacidade genuinamente nova que a paridade ainda pede.
+
+### Duas frestas que restam abertas
+
+Nenhuma das duas apareceu nos números de 07/09, mas as duas são reais:
+
+1. **Data da perna é `MAX(processed_at)` do gateway** (`buildGatewayTotals` em
+   [shopify-order-transactions.ts](../src/features/integration/shopify-order-transactions.ts)). Um
+   gateway com duas transações em dias diferentes tem o valor inteiro datado no dia mais tarde.
+2. **Transações `test` não são filtradas** em nenhum ponto do caminho do ledger — só `status` e
+   `kind` são.
 
 ## Achado operacional que atropela a prioridade
 
