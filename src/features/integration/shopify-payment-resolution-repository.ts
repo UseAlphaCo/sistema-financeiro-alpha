@@ -292,6 +292,132 @@ export async function replaceShopifyPaymentGatewaySplit(
   );
 }
 
+export type LedgerGatewayTotal = {
+  gatewayRaw: string;
+  amountCents: number;
+  transactionCount: number;
+  orderCount: number;
+};
+
+export type LedgerDaySummary = {
+  grossCents: number;
+  transactionCount: number;
+  byGateway: LedgerGatewayTotal[];
+  /**
+   * Pedidos com pelo menos uma perna na janela.
+   *
+   * Vem como conjunto, e nao como contagem, porque quem compara contra o
+   * tenderTransactions precisa saber QUAIS pedidos o tender nao reporta — e' o
+   * ponto cego do credito na loja, e ele so e' identificavel por diferenca de
+   * conjuntos.
+   */
+  orderIds: Set<string>;
+};
+
+/**
+ * O que o ledger de rateio diz que a Shopify processou na janela.
+ *
+ * Substitui ~1.700 chamadas REST por dia na verificacao diaria. O ledger e' a
+ * mesma coisa que aquelas chamadas produziam — foi ele que as gravou —, so que
+ * ja persistido: em 08/09/2026 a medicao nao encontrou **nenhuma** divergencia
+ * entre `spr.total_amount_cents` e a soma das pernas em 19.237 pedidos. A
+ * verificacao contra a Shopify ao vivo continua existindo, mas via
+ * tenderTransactions, que custa ~10 chamadas em vez de 1.700.
+ *
+ * Janela por `transaction_processed_at`, cada perna datada pelo seu proprio
+ * pagamento — que e' como a Shopify monta o relatorio de pagamentos brutos.
+ * Passa por idx_shopify_gateway_split_processed_at.
+ */
+export async function getLedgerDaySummary(window: { start: Date; end: Date }): Promise<LedgerDaySummary> {
+  const pool = getPool();
+  if (!pool) return { grossCents: 0, transactionCount: 0, byGateway: [], orderIds: new Set() };
+
+  const result = await pool.query<{
+    external_order_id: string;
+    gateway_raw: string;
+    amount_cents: string;
+    transaction_count: string;
+  }>(
+    `SELECT external_order_id, gateway_raw, amount_cents::text, transaction_count::text
+       FROM integration.shopify_order_payment_gateway_split
+      WHERE transaction_processed_at >= $1
+        AND transaction_processed_at < $2`,
+    [window.start, window.end]
+  );
+
+  const porGateway = new Map<string, LedgerGatewayTotal & { orders: Set<string> }>();
+  const orderIds = new Set<string>();
+
+  for (const row of result.rows) {
+    orderIds.add(row.external_order_id);
+    const atual = porGateway.get(row.gateway_raw) ?? {
+      gatewayRaw: row.gateway_raw,
+      amountCents: 0,
+      transactionCount: 0,
+      orderCount: 0,
+      orders: new Set<string>(),
+    };
+    atual.amountCents += Number(row.amount_cents);
+    atual.transactionCount += Number(row.transaction_count);
+    atual.orders.add(row.external_order_id);
+    porGateway.set(row.gateway_raw, atual);
+  }
+
+  const byGateway = [...porGateway.values()].map(({ orders, ...total }) => ({
+    ...total,
+    orderCount: orders.size,
+  }));
+
+  return {
+    grossCents: byGateway.reduce((sum, row) => sum + row.amountCents, 0),
+    transactionCount: byGateway.reduce((sum, row) => sum + row.transactionCount, 0),
+    byGateway,
+    // Nao e' a soma dos orderCount por gateway: um pedido com pagamento
+    // dividido entre dois gateways seria contado duas vezes.
+    orderIds,
+  };
+}
+
+/**
+ * Rateio do ledger por pedido, quebrado por gateway — sem recorte de janela.
+ *
+ * Sem recorte de janela de proposito. O ledger guarda uma linha por
+ * (pedido, gateway) com um unico `transaction_processed_at`, que e' o MAX das
+ * transacoes daquele gateway no pedido. Um pedido com duas capturas do mesmo
+ * gateway em dias diferentes tem as duas colapsadas sob a data da ultima.
+ * Comparar por janela transformaria essa fresta conhecida em divergencia
+ * permanente, e o detector nunca convergiria. Comparado por PEDIDO, o total
+ * fecha.
+ *
+ * Quebrado por gateway, e nao somado, porque quem compara contra a Shopify
+ * precisa descartar as pernas de credito na loja — a Shopify nao emite tender
+ * transaction para elas. Somar aqui obrigaria o consumidor a subtrair depois
+ * sem saber o que subtrair.
+ */
+export async function findLedgerGatewayTotalsByOrderIds(
+  orderIds: string[]
+): Promise<Map<string, Map<string, number>>> {
+  const pool = getPool();
+  if (!pool || orderIds.length === 0) return new Map();
+
+  const result = await pool.query<{ external_order_id: string; gateway_raw: string; amount_cents: string }>(
+    `SELECT external_order_id, gateway_raw, sum(amount_cents)::text AS amount_cents
+       FROM integration.shopify_order_payment_gateway_split
+      WHERE external_order_id = ANY($1::text[])
+      GROUP BY external_order_id, gateway_raw`,
+    [orderIds]
+  );
+
+  const porPedido = new Map<string, Map<string, number>>();
+  for (const row of result.rows) {
+    const gateways = porPedido.get(row.external_order_id) ?? new Map<string, number>();
+    gateways.set(row.gateway_raw, Number(row.amount_cents));
+    porPedido.set(row.external_order_id, gateways);
+  }
+
+  return porPedido;
+}
+
 /** Pulso do ledger de rateio e estado do pipeline por dia, para o painel. */
 export type PipelineStatus = {
   /** Ultima perna gravada no ledger. null = o ledger nunca escreveu nada. */

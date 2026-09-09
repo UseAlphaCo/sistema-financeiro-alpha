@@ -7,7 +7,7 @@
  *
  * Uso:
  *   npx tsx scripts/verify-shopify-values.ts [--date=YYYY-MM-DD] [--json]
- *     [--csv=caminho.csv] [--tolerance-cents=1] [--concurrency=5]
+ *     [--csv=caminho.csv] [--tolerance-cents=1]
  *
  * Sem --date, verifica o dia anterior em America/Bahia.
  */
@@ -25,7 +25,6 @@ type Args = {
   json: boolean;
   csv?: string;
   toleranceCents: number;
-  concurrency: number;
 };
 
 async function main() {
@@ -34,7 +33,6 @@ async function main() {
   const report = await buildVerificationReport({
     date: args.date,
     toleranceCents: args.toleranceCents,
-    concurrency: args.concurrency,
   });
 
   if (args.json) {
@@ -79,12 +77,34 @@ function printReport(report: VerificationReport) {
         " data real do pagamento — pode causar pequena divergência de janela explicável."
     );
   }
-  console.log(`  Pedidos candidatos consultados na Shopify (tenderTransactions): ${report.shopifyCandidateOrders}`);
+
   console.log("");
+  console.log("Ledger × Shopify (tenderTransactions, comparação por pedido):");
+  console.log(`  Pedidos comparados: ${report.ledgerVsShopify.comparedOrders}`);
   console.log(
-    `Maturidade do dia: ${report.maturity.hoursSinceWindowEnd.toFixed(1)}h desde o fim da janela, ` +
-      `${(report.maturity.resolvedRatio * 100).toFixed(1)}% dos pedidos resolvidos ` +
-      `(${report.maturity.isMature ? "dia maduro" : "ainda sincronizando"}).`
+    `  Divergentes: ${report.ledgerVsShopify.divergentOrders} (desvio acumulado ${report.ledgerVsShopify.driftFormatted})`
+  );
+  console.log(
+    `  Ponto cego declarado: ${report.ledgerVsShopify.storeCreditBlindSpotFormatted} em crédito na loja` +
+      ` (${report.ledgerVsShopify.ordersOnlyInLedger} pedido(s) pagos 100% assim).` +
+      " A Shopify não emite tender transaction para crédito na loja, nem parcial nem integral —" +
+      " por isso essas pernas ficam fora da comparação em vez de virarem divergência permanente."
+  );
+  if (report.ledgerVsShopify.tenderNegativeEntries > 0) {
+    console.log(
+      `  Entradas negativas descartadas: ${report.ledgerVsShopify.tenderNegativeEntries}` +
+        " (a Shopify emite tender negativa para reembolso — o ledger não conta refund)"
+    );
+  }
+
+  console.log("");
+  const m = report.maturity;
+  console.log(
+    `Maturidade do dia (${m.isMature ? "dia maduro" : "ainda processando"}):\n` +
+      `  Pedidos sem resolução de gateway: ${m.unresolvedOrders}\n` +
+      `  Pedidos materializados sem perna no ledger: ${m.ordersWithoutLedger}\n` +
+      `  Materialização passou em: ${m.lastMaterializedAt ?? "—"}` +
+      ` (${m.materializedAfterWindow ? "depois de o dia fechar" : "antes de o dia fechar"})`
   );
 }
 
@@ -116,7 +136,6 @@ function parseArgs(argv: string[]): Args {
     json: Boolean(parsed.json),
     csv: typeof parsed.csv === "string" ? parsed.csv : undefined,
     toleranceCents: typeof parsed["tolerance-cents"] === "string" ? Number(parsed["tolerance-cents"]) : 1,
-    concurrency: typeof parsed.concurrency === "string" ? Number(parsed.concurrency) : 5,
   };
 }
 

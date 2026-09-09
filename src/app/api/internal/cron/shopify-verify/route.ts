@@ -10,6 +10,15 @@ import { createApiError, createApiSuccess } from "@/shared/api/envelope";
 
 export const runtime = "nodejs";
 
+/**
+ * Era a unica das quatro rotas de cron sem teto declarado, e por isso caia no
+ * padrao da plataforma enquanto a v1 da verificacao levava ~850 s. Com o ledger
+ * no lugar das ~1.700 chamadas REST o trabalho cai para poucos segundos, mas o
+ * teto fica declarado assim mesmo: um estouro precisa aparecer como estouro em
+ * integration.job_runs, nao como corte silencioso no meio.
+ */
+export const maxDuration = 300;
+
 // Escopo de alinhamento automatico quando a divergencia e considerada um
 // alerta real (dia maduro). Reprocessa so o dia verificado, nao o backlog.
 const AUTO_ALIGN_BATCH_SIZE = 200;
@@ -27,10 +36,19 @@ function isAuthorized(request: NextRequest): boolean {
 
 // Sempre verifica D-1 em America/Bahia — decisao deliberada (ver plano de
 // 2026-07-27): checar contra um offset fixo de dia, mas so tratar divergencia
-// como alerta real quando o sinal de maturidade (report.maturity.isMature)
-// indicar que o dia ja teve tempo/completude suficiente de sincronizacao.
+// como alerta real quando o dia estiver maduro. Maturidade agora sao sinais de
+// fila drenada (resolucao vazia, ledger cobrindo os pedidos materializados,
+// materializacao rodada depois do dia fechar), e nao mais um proxy de horas que
+// era falso por construcao no horario do cron — ver MaturitySignal.
+//
 // Sem parametro de data na rota — quem precisa checar outro dia usa o script
 // CLI (npm run verify:shopify -- --date=...), que chama a mesma logica.
+//
+// LIMITE DO AUTO-ALINHAMENTO: runShopifyPaymentResolutionJob so alcanca pedido
+// que ainda nao tem resolucao nenhuma. Rateio com valor VELHO (captura Appmax
+// que chegou depois) nao volta por aqui, porque uma transacao nova nao muda o
+// payload do mirror e o predicado do job nunca reencontra o pedido. Quem vai
+// cobrir esse caso e' o job de reconciliacao.
 export async function GET(request: NextRequest) {
   const requestId = request.headers.get("x-request-id") ?? crypto.randomUUID();
 
