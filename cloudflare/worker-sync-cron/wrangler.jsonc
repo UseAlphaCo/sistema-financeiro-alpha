@@ -23,47 +23,95 @@
     // de JSON de 56 a 240 MB. Aumentar a frequencia aqui sem antes parar de
     // trafegar payload_json inteiro (ver mirror-events-repository.ts) volta a
     // estourar a cota.
+    // ATENCAO 5: a META e' "as 11:00 BRT, D-1 materializado E reconciliado".
+    // Ela nao se cumpre por cada cron ser rapido, e sim pela ORDEM deles na
+    // janela da manha. A corrente e:
+    //
+    //   10:00 BRT  sync OMS->mirror   traz o retardatario de D-1
+    //   10:15 BRT  resolucao          resolve o gateway do que acabou de chegar
+    //   10:40 BRT  materializacao D-1 vira linha em financial_orders
+    //   10:50 BRT  shopify-verify     confere e emite o recibo do dia
+    //
+    // Quebrar a ordem quebra a meta, mesmo com todos os horarios "certos". E' o
+    // motivo de os minutos serem escalonados em vez de redondos.
     "crons": [
       // Sync OMS->mirror por cursor fisico de pagina (cauda + auditoria).
       // A cada 3 horas: e o atraso maximo acordado entre a venda acontecer no
       // OMS e aparecer no sistema, e ainda entrega o dia fechado a tempo da
       // materializacao das 23h. Uma volta de auditoria passa a levar ~28 h, e a
       // regra das duas voltas pede ~56 h antes de declarar completude.
-      "0 */3 * * *",
+      //
+      // Lista explicita em vez de "0 */3 * * *": e' DESLOCAMENTO DE FASE, nao
+      // aumento de cadencia. Continuam 8 invocacoes/dia, custo zero na cota.
+      // "*/3" ancora em 00:00 UTC (21,00,03,06,09,12,15,18 BRT) e deixa um vao
+      // de 3 h entre 09:00 e 12:00 BRT -- exatamente onde a janela de
+      // fechamento da manha precisa de dado fresco. A lista move a fase em 1 h
+      // e poe um sync as 10:00 BRT.
+      "0 1,4,7,10,13,16,19,22 * * *",
       // Resolucao de gateway titular Shopify, escopada aos ultimos dias.
       // CPU baixa (espera de rede), mas cada rodada segura a funcao por ~75 s
       // por causa do portao de ritmo do bucket da Shopify.
       "0 */2 * * *",
-      // Verificacao Sistema x Shopify, 1x/dia as 06:00 BRT, sempre sobre D-1
-      // (dia maduro). Era horaria; cada execucao busca transacoes de ~1.700
-      // pedidos e forca o Postgres a detoastar payload_json da janela inteira.
-      "0 9 * * *",
+      // Passe de resolucao dedicado ao fechamento, 10:15 BRT.
+      //
+      // ATENCAO 6: esta e a UNICA invocacao a mais que a Fase 3 acrescenta
+      // (25 -> 26/dia). Existe porque "0 */2" so tem horas pares em UTC: o
+      // passe anterior e' 09:00 BRT e o seguinte 11:00 BRT, ou seja NENHUM
+      // entre o sync das 10:00 e a materializacao das 10:40. Sem ele, o pedido
+      // que o sync das 10:00 traz chega a materializacao sem gateway resolvido,
+      // e `isMature` nunca fecha. Roda com lote maior e janela menor que o
+      // passe regular -- ver SHOPIFY_PRECLOSE_* em vars.
+      //
+      // O custo e' folgadamente pago pela correcao de 08/09/2026 em
+      // findUnresolvedShopifyOrders: aquela consulta gastava 75,7 s por
+      // invocacao, 12x/dia, e passou a 47 ms. A Fase 3 devolve ~150 s/dia de
+      // wall time contra os ~15 min/dia de CPU que aquela correcao liberou.
+      //
+      // Esta e' a 8a entrada do array. Se algum dia o `wrangler deploy` recusar
+      // por limite de cron triggers da conta, o plano B nao e' remover o passe:
+      // e' trocar "0 */2 * * *" por "15 1,3,5,7,9,11,13,15,17,19,21,23 * * *",
+      // que poe um passe as 10:15 BRT sem entrada nova e sem invocacao extra.
+      // Custa perder o lote maior deste passe (voltaria aos 150 do regular).
+      "15 13 * * *",
       // Materializacao, um dia por invocacao (D-0, D-1, D-2). 02:00 UTC =
       // 23:00 BRT, com D-0 ja praticamente fechado.
       //
-      // ATENCAO 5: D-1 saiu das 23:15 para 09:30 UTC = 06:30 BRT. As 23 h o
-      // mirror ainda nao tem as ultimas horas do dia (sync de 3 em 3 h), entao
-      // o passe D-0 fecha o dia em ~78%; com D-1 na mesma noite, a correcao so
-      // chegava 24 h depois -- durante todo o dia em que aquela data e "Ontem"
-      // na tela. Ver o docblock de MATERIALIZE_CRONS em src/index.ts.
-      // Nao colide com "0 9 * * *" (shopify-verify, 06:00 BRT).
-      //
-      // ATENCAO 6: D-1 roda DUAS vezes, 06:30 e 11:05 BRT (14:05 UTC). As 06:30
-      // ainda perde os `orders/paid` atrasados -- em 30/08/2026 foram 6 pedidos,
-      // R$ 778,25, com paid chegando de 47 a 63 min depois do passe. 11:05 BRT e
-      // quando os relatorios da Shopify fecham a contagem de "ontem". Custa +1
-      // invocacao/dia da rota de materializacao (~45-70 s de wall time, quase
-      // toda em espera de banco). Ver o docblock de MATERIALIZE_CRONS.
+      // ATENCAO 7: D-1 roda DUAS vezes, 07:30 e 10:40 BRT. As 07:30 e' a tela
+      // da manha -- quem abre o sistema cedo precisa de "Ontem" ja correto. As
+      // 10:40 e' o fechamento: em 30/08/2026 seis pedidos Appmax so receberam
+      // `orders/paid` no mirror entre 10:18Z e 10:34Z, depois do passe da
+      // manha, e R$ 778,25 ficavam de fora justamente enquanto aquela data era
+      // "Ontem" na tela. Ver o docblock de MATERIALIZE_CRONS em src/index.ts.
       "0 2 * * *",
-      "30 9 * * *",
-      "5 14 * * *",
-      "30 2 * * *"
+      "30 10 * * *",
+      "40 13 * * *",
+      "30 2 * * *",
+      // Verificacao Sistema x Shopify, 1x/dia sobre D-1, as 10:50 BRT.
+      //
+      // ATENCAO 8: o horario e' consequencia, nao preferencia. `isMature` exige
+      // que a materializacao tenha rodado DEPOIS de o dia fechar; as 06:00 BRT
+      // (o horario antigo) o ultimo passe sobre D-1 era o D-0 das 23:00 BRT,
+      // anterior ao fim da janela, entao o sinal era falso por construcao e o
+      // ramo de alerta NUNCA executou. As 10:50 vem depois do passe das 10:40,
+      // e o alerta passa a ser alcancavel pela primeira vez.
+      "50 13 * * *"
     ]
   },
   "vars": {
     "APP_BASE_URL": "https://phi.usealphaco.com.br",
     "WORKER_CRON_DAYS": "30",
     "SHOPIFY_RESOLUTION_BATCH_SIZE": "150",
-    "SHOPIFY_RESOLUTION_SINCE_DAYS": "3"
+    "SHOPIFY_RESOLUTION_SINCE_DAYS": "3",
+    // Passe das 10:15 BRT. Lote maior porque ele precisa DRENAR a fila, nao so
+    // avancar nela: `isMature` exige zero pedido sem resolucao no dia. A fila
+    // ordena por external_order_id DESC, entao os pedidos de D-0 entram na
+    // frente dos retardatarios de D-1 -- com lote de 150 o retardatario pode
+    // ficar para o passe seguinte, que so vem as 11:00, depois da verificacao.
+    // 300 pedidos x 500 ms do portao da Shopify = ~150 s, dentro do
+    // maxDuration de 300 s da rota.
+    "SHOPIFY_PRECLOSE_BATCH_SIZE": "300",
+    // 2 dias em vez de 3: o alvo deste passe e' D-1 e D-0. Janela menor deixa
+    // o lote inteiro disponivel para o que importa no fechamento.
+    "SHOPIFY_PRECLOSE_SINCE_DAYS": "2"
   }
 }

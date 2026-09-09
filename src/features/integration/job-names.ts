@@ -36,11 +36,11 @@ export type JobExpectation = {
   expectedPerDay: number;
 };
 
-// Derivado de triggers.crons em wrangler.jsonc, em 08/09/2026:
-//   "0 */3 * * *"                 -> worker-sync                 (8/dia)
-//   "0 */2 * * *"                 -> shopify-payment-resolution  (12/dia)
-//   "0 9 * * *"                   -> shopify-verify              (1/dia)
-//   "0 2", "30 9", "5 14", "30 2" -> materialize-orders          (4/dia)
+// Derivado de triggers.crons em wrangler.jsonc, em 09/09/2026:
+//   "0 1,4,7,10,13,16,19,22 * * *"  -> worker-sync                 (8/dia)
+//   "0 */2 * * *" + "15 13 * * *"   -> shopify-payment-resolution  (13/dia)
+//   "50 13 * * *"                   -> shopify-verify              (1/dia)
+//   "0 2", "30 10", "40 13", "30 2" -> materialize-orders          (4/dia)
 export const JOB_EXPECTATIONS: JobExpectation[] = [
   {
     name: JOB_NAMES.workerSync,
@@ -51,16 +51,19 @@ export const JOB_EXPECTATIONS: JobExpectation[] = [
   {
     name: JOB_NAMES.materializeOrders,
     label: "Materialização de pedidos",
-    // O maior intervalo entre passes e' o das 11:05 BRT para as 23:00 BRT,
-    // ou seja ~12 h. A tolerancia acompanha o maior vao, nao a media.
+    // O maior intervalo entre passes e' o das 10:40 BRT para as 23:00 BRT,
+    // ou seja ~12 h20. A tolerancia acompanha o maior vao, nao a media.
     staleAfterMinutes: 900,
     expectedPerDay: 4,
   },
   {
     name: JOB_NAMES.shopifyPaymentResolution,
     label: "Resolução de gateway Shopify",
+    // 13 e nao 12: alem do passe de 2 em 2 horas ha o das 10:15 BRT, que existe
+    // para drenar a fila antes da materializacao de fechamento. O maior vao
+    // continua sendo 2 h, entao a tolerancia nao muda.
     staleAfterMinutes: 180,
-    expectedPerDay: 12,
+    expectedPerDay: 13,
   },
   {
     name: JOB_NAMES.shopifyVerify,
