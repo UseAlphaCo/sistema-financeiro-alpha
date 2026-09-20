@@ -89,7 +89,20 @@ reconciliação em si.
 
 A validação de valores/número de transações Sistema x Shopify segue hoje por
 `npm run verify:shopify` (script CLI) e pela rota automatizada
-`/api/internal/cron/shopify-verify` (checagem horária, sempre D-1, com
+`/api/internal/cron/shopify-verify` (1×/dia às 10:50 BRT, sempre D-1, com
 auto-alinhamento via `runShopifyPaymentResolutionJob` quando a divergência é
 considerada um alerta real — ver
 [src/features/integration/shopify-value-verification.ts](../src/features/integration/shopify-value-verification.ts)).
+
+**Atualização (2026-09-20):** a mesma rota passou a executar uma **reconciliação
+por pedido** sobre D-1..D-3
+([shopify-reconciliation.ts](../src/features/integration/shopify-reconciliation.ts)),
+que persiste cada divergência em `integration.shopify_reconciliation_divergences`
+e re-resolve o pedido contra a Admin API. Ela fecha a classe que o auto-alinhamento
+não alcança por construção — o pedido **já resolvido** cujo rateio ficou com valor
+velho. Inspeção e relatório por `npm run reconcile:shopify`. Detalhes e medições em
+[DIAGNOSTICO-PARIDADE-SHOPIFY-2026-08.md](DIAGNOSTICO-PARIDADE-SHOPIFY-2026-08.md#reconciliação-recorrente-2026-09-20-a-classe-sem-remédio-passa-a-ter-um).
+
+Note que a palavra "reconciliação" aqui **não** ressuscita a feature removida no
+commit `8195b57`: não há tela, não há `ReconciliationResult`. É um job de
+conserto, sem UI própria — o painel de `/integracoes` exibe só o placar.

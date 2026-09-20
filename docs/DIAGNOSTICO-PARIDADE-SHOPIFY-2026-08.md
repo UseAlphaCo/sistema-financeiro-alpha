@@ -1,4 +1,4 @@
-# Diagnóstico de paridade Shopify — medições de 18/08, 30/08, 08/09 e 09/09
+# Diagnóstico de paridade Shopify — medições de 18/08, 30/08, 08/09, 09/09 e 20/09
 
 > **Status:** Fases 0, 1 e 2 **concluídas** (2026-09-01). Decisão mantida: **não construir o
 > ledger transacional** `shopify_payment_transactions` — o grão (pedido, gateway) bastou.
@@ -134,7 +134,8 @@ líquido de +11,58% na linha dele. Resolver isso custa **uma única data** de de
 | 2 | Rotular as telas: "Pedidos pagos" vs "Pagamentos processados" | **CONCLUÍDA** (2026-09-01) |
 | 3 | Uma data de detalhe transacional, para fechar a direção do erro líquido de `store_credit` | **DISPENSADA** — a medição de 30/08 respondeu sem custo extra: o rateio fecha o crédito na loja ao centavo |
 | 4 | Completude via `tenderTransactions` (1 chamada GraphQL/dia): pedidos que existem na Shopify e em lugar nenhum nosso | **DESCARTADA COMO DESENHADA, REAPROVEITADA COM ESCOPO MENOR** — `tenderTransactions` é provadamente incompleto (ver abaixo), e a [medição de 08/09](#medição-de-0809-a-paridade-de-valor-fechou) mostrou a incompletude uma segunda vez. Não serve como conjunto candidato; serve como **conferência independente do ledger**, descartando as pernas de crédito na loja — ver [medição de 09/09](#medição-de-0909-o-ledger-fecha-com-a-shopify-pedido-a-pedido) |
-| 5 | Reembolso e líquido | **BLOQUEADA A MONTANTE** — exige decidir ingerir mais tópicos de webhook |
+| 5 | Reembolso e líquido | **BLOQUEADA A MONTANTE** — exige decidir ingerir mais tópicos de webhook. Ganhou um funil de candidatos: o status `persistente` da reconciliação (2026-09-20) |
+| 6 | Reconciliação por pedido: detectar e consertar o rateio com valor velho | **CONCLUÍDA** (2026-09-20) — ver [a seção final](#reconciliação-recorrente-2026-09-20-a-classe-sem-remédio-passa-a-ter-um) |
 
 Encerrado o escopo declarado (bruto por gateway/dia, datado por `transaction.processed_at`): a
 [medição de 08/09](#medição-de-0809-a-paridade-de-valor-fechou) fechou dois dos três gateways ao
@@ -407,6 +408,67 @@ Dois pontos que isso comprova:
    (que chama o mesmo job, com o mesmo predicado, e portanto é no-op por construção para esses
    pedidos). Fechar essa classe exige um detector que compare o ledger contra a Shopify por pedido,
    e é a única capacidade genuinamente nova que a paridade ainda pede.
+
+   > **FECHADO em 2026-09-20** pela reconciliação recorrente — ver
+   > [a seção abaixo](#reconciliação-recorrente-2026-09-20-a-classe-sem-remédio-passa-a-ter-um).
+
+## Reconciliação recorrente (2026-09-20): a classe sem remédio passa a ter um
+
+O detector pedido acima existe, e roda dentro da própria verificação diária
+([shopify-reconciliation.ts](../src/features/integration/shopify-reconciliation.ts)). **Zero cron
+novo, zero invocação a mais**: a rota das 10:50 BRT já buscava o `tenderTransactions` e já
+calculava o delta por pedido — só descartava a identidade dos divergentes, guardando contadores.
+
+### O que mudou
+
+| | antes | agora |
+|---|---|---|
+| Janela | D-1 | **D-1..D-3**, numa única busca paginada (D-4..D-0) |
+| Saída do desvio | "3 pedidos / R$ 679,69" | linha por pedido em `integration.shopify_reconciliation_divergences` |
+| Conserto | só pedido **sem** resolução | também **rateio com valor velho**, via `resolveShopifyOrderById` |
+| Custo da rota | ~42 s | **90 s medidos**, teto de 300 s |
+
+D-1..D-3 e não só D-1 porque a captura atrasada que motiva tudo isto foi observada chegando até
+~2 dias depois (as capturas Appmax de 30/08, que a Shopify só registrou em 01-02/09).
+
+### Por que o ciclo fecha sem código novo no caminho de leitura
+
+`upsertShopifyPaymentResolution` grava `resolved_at = NOW()` → `findOrderKeysWithStaleResolution`
+seleciona por `resolved_at > materialized_at` → o passo 1b da materialização já consome esse
+conjunto. O pedido reconciliado reentra na materialização sozinho.
+
+**Ordem importa:** a reconciliação roda às 10:50, *depois* da materialização das 10:40. A correção
+aparece na tela no passe seguinte, não na hora.
+
+### Duas salvaguardas que não são detalhe
+
+1. **Dia imaturo não é reconciliado.** D-1 só entra se `maturity.isMature`; D-2 e D-3 entram
+   sempre. Em 09/09 um dia imaturo mostrou 60 pedidos divergentes às 08:46 e 3 às 09:31, sem
+   ninguém corrigir nada — reconciliar ali dispararia dezenas de re-resoluções contra uma fila que
+   ia drenar sozinha.
+2. **As duas exclusões medidas são preservadas** por `detectOrderDivergences`, que é a regra única
+   compartilhada entre a verificação e a reconciliação: pernas de crédito na loja (senão ~18 falsos
+   positivos/dia) e entradas negativas do tender.
+
+### Status `persistente`
+
+Pedido corrigido que **volta** a divergir. Separa "atrasou e fechou" de defeito estrutural, e vira
+o funil de candidatos da Fase 5 — que continua bloqueada a montante, mas agora tem uma lista em vez
+de uma suspeita.
+
+### Medições de 20/09/2026
+
+| Medição | Resultado |
+|---|---|
+| 17-19/09, inspeção sem escrita | **2.386 pedidos comparados, 0 divergências**, 29 s |
+| 06-08/09 (onde 09/09 vira 3 pedidos / R$ 679,69) | **2.291 pedidos, 0 divergências** — aqueles 3 fecharam desde então |
+| Re-resolução por id, 3 pedidos reais (um com split Pix + crédito) | **idempotente**, rateio idêntico antes e depois |
+| Ciclo completo com divergência fabricada (−R$ 7,77 numa perna Pix de 19/09) | detectou **1 em 751**, corrigiu, restaurou ao centavo, registrou `corrigido`, **zero falso positivo** nos outros 750 |
+| Rota completa, chamada real | HTTP 200, 89.853 ms registrados em `job_runs` |
+
+A primeira linha é a mais importante e merece ser lida devagar: em 2.386 pedidos de três dias
+inteiros, o ledger concorda com a Shopify **pedido a pedido**. É o terceiro resultado independente
+apontando na mesma direção, agora numa amostra duas ordens de magnitude maior que a de 09/09.
 
 ### Duas frestas que restam abertas
 
