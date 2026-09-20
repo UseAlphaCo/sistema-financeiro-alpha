@@ -86,6 +86,24 @@ export type VerificationView = {
   } | null;
   /** Ponta 1: rotulos das metricas Sistema x Ledger que estao divergindo. */
   metricasDivergentes: { label: string; diff: string; diffPct: string }[];
+  /**
+   * Reconciliacao por pedido (D-1..D-3). Null quando nao deu para ler.
+   *
+   * `erro` preenchido significa que a verificacao correu bem e so o conserto
+   * falhou — distincao que importa, porque o painel nao pode exibir um numero
+   * medido com sucesso como se estivesse comprometido.
+   */
+  reconciliacao: {
+    corrigidos: number;
+    pendentes: number;
+    persistentes: number;
+    /** Divergencias detectadas nesta rodada, corrigidas ou nao. */
+    detectadas: number;
+    driftFormatted: string;
+    /** D-1 ficou de fora por estar imaturo. */
+    diaAdiado: string | null;
+    erro: string | null;
+  } | null;
 };
 
 const VAZIO: VerificationView = {
@@ -96,6 +114,7 @@ const VAZIO: VerificationView = {
   pendencias: [],
   ledgerVsShopify: null,
   metricasDivergentes: [],
+  reconciliacao: null,
 };
 
 /** Recorte do que o painel consome da linha de job_runs. */
@@ -175,6 +194,46 @@ function lerLedgerVsShopify(value: unknown): VerificationView["ledgerVsShopify"]
   };
 }
 
+/**
+ * Le o bloco da reconciliacao, que vive em `result.reconciliation` — irmao de
+ * `result.report`, e nao dentro dele: o relatorio e' a MEDICAO, a reconciliacao e'
+ * uma ACAO tomada depois. Uma execucao pode medir bem e consertar mal.
+ *
+ * Quando a reconciliacao falhou, o objeto so tem `error`. Devolver os contadores
+ * zerados nesse caso faria o painel afirmar "0 pendentes", que e' uma mentira
+ * precisa: ninguem sabe quantos ha.
+ */
+function lerReconciliacao(value: unknown): VerificationView["reconciliacao"] {
+  if (!isRecord(value)) return null;
+
+  const erro = asString(value.error);
+  if (erro !== null) {
+    return {
+      corrigidos: 0,
+      pendentes: 0,
+      persistentes: 0,
+      detectadas: 0,
+      driftFormatted: "—",
+      diaAdiado: null,
+      erro,
+    };
+  }
+
+  const porStatus = isRecord(value.byStatus) ? value.byStatus : null;
+  const detectadas = asNumber(value.detected);
+  if (detectadas === null) return null;
+
+  return {
+    corrigidos: asNumber(value.corrected) ?? 0,
+    pendentes: porStatus ? (asNumber(porStatus.pendente) ?? 0) : 0,
+    persistentes: porStatus ? (asNumber(porStatus.persistente) ?? 0) : 0,
+    detectadas,
+    driftFormatted: asString(value.driftFormatted) ?? "—",
+    diaAdiado: asString(value.skippedImmatureDay),
+    erro: null,
+  };
+}
+
 /** Toda metrica marcada como divergente, sem descarte. Base do VEREDITO. */
 function lerMetricasDivergentes(value: unknown): VerificationView["metricasDivergentes"] {
   if (!Array.isArray(value)) return [];
@@ -212,6 +271,9 @@ export function buildVerificationView(run: VerificationRunInput | null | undefin
   const maturity = isRecord(report.maturity) ? report.maturity : null;
   const ledgerVsShopify = lerLedgerVsShopify(report.ledgerVsShopify);
   const date = asString(report.date);
+  // `outcome`, e nao `report`: a reconciliacao e' irma do relatorio, nao parte
+  // dele. Ver lerReconciliacao.
+  const reconciliacao = lerReconciliacao(outcome?.reconciliation);
 
   // Duas listas de proposito, e a distincao ja custou um bug: o VEREDITO olha
   // toda metrica divergente; a EXIBICAO descarta a da ponta 2, que ja tem bloco
@@ -234,6 +296,7 @@ export function buildVerificationView(run: VerificationRunInput | null | undefin
       pendencias: ["a execução não registrou sinais de maturidade"],
       ledgerVsShopify,
       metricasDivergentes,
+      reconciliacao,
     };
   }
 
@@ -258,5 +321,6 @@ export function buildVerificationView(run: VerificationRunInput | null | undefin
     pendencias: maduro ? [] : pendencias,
     ledgerVsShopify,
     metricasDivergentes,
+    reconciliacao,
   };
 }

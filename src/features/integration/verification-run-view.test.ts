@@ -234,6 +234,74 @@ describe("buildVerificationView: a ponta 2 nao sai duas vezes", () => {
   });
 });
 
+describe("buildVerificationView: reconciliacao", () => {
+  /** Monta a execucao com o bloco de reconciliacao ao lado do relatorio. */
+  function comReconciliacao(reconciliation: unknown) {
+    return run({ result: { ...relatorio({ isMature: true }), reconciliation } });
+  }
+
+  it("le contadores e acumulado por status", () => {
+    const view = buildVerificationView(
+      comReconciliacao({
+        days: ["2026-09-06", "2026-09-07", "2026-09-08"],
+        skippedImmatureDay: null,
+        detected: 4,
+        corrected: 3,
+        driftFormatted: "R$ 1.204,55",
+        byStatus: { pendente: 1, corrigido: 12, persistente: 2, sem_correcao: 0 },
+      })
+    );
+
+    expect(view.reconciliacao).toEqual({
+      corrigidos: 3,
+      pendentes: 1,
+      persistentes: 2,
+      detectadas: 4,
+      driftFormatted: "R$ 1.204,55",
+      diaAdiado: null,
+      erro: null,
+    });
+  });
+
+  it("registra o dia adiado por imaturidade", () => {
+    const view = buildVerificationView(
+      comReconciliacao({
+        days: ["2026-09-06", "2026-09-07"],
+        skippedImmatureDay: "2026-09-08",
+        detected: 0,
+        corrected: 0,
+        driftFormatted: "R$ 0,00",
+        byStatus: { pendente: 0, corrigido: 0, persistente: 0, sem_correcao: 0 },
+      })
+    );
+
+    expect(view.reconciliacao?.diaAdiado).toBe("2026-09-08");
+  });
+
+  it("falha do conserto nao contamina a medicao, e nao vira zero", () => {
+    // O ponto: a verificacao correu bem. Dizer "0 pendentes" aqui seria uma
+    // mentira precisa — ninguem sabe quantos ha.
+    const view = buildVerificationView(comReconciliacao({ error: "429 da Admin API" }));
+
+    expect(view.status).toBe("conferido");
+    expect(view.reconciliacao?.erro).toBe("429 da Admin API");
+    expect(view.reconciliacao?.driftFormatted).toBe("—");
+  });
+
+  it("execucao antiga, sem o bloco, nao quebra a leitura", () => {
+    const view = buildVerificationView(run({ result: relatorio({ isMature: true }) }));
+
+    expect(view.reconciliacao).toBeNull();
+    expect(view.status).toBe("conferido");
+  });
+
+  it("bloco com formato inesperado vira ausencia, nao excecao", () => {
+    const view = buildVerificationView(comReconciliacao({ detected: "quatro" }));
+
+    expect(view.reconciliacao).toBeNull();
+  });
+});
+
 describe("buildVerificationView: ponto cego declarado", () => {
   it("credito na loja aparece como contexto, nao como divergencia", () => {
     const view = buildVerificationView(run({ result: relatorio({ isMature: true }) }));

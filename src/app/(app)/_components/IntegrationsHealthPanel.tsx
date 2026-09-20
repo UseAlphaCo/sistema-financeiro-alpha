@@ -517,6 +517,90 @@ function VerificacaoCard({ view }: { view: VerificationView | null }) {
           pernas ficam fora da comparação em vez de virarem divergência permanente.
         </p>
       )}
+
+      <ReconciliacaoBloco reconciliacao={view.reconciliacao} />
     </Card>
+  );
+}
+
+/**
+ * O que a reconciliacao fez na ultima rodada, e o que ficou em aberto.
+ *
+ * Fica DENTRO do card da verificacao, e nao num card proprio, porque a mesma
+ * execucao produz os dois: o desvio acima e' o que foi medido, isto e' o que foi
+ * feito a respeito. Separar em dois cards sugeriria duas rotinas independentes.
+ *
+ * `persistentes` ganha destaque proprio mesmo valendo zero na maior parte dos
+ * dias: e o unico numero aqui que nao se resolve sozinho com o tempo.
+ */
+function ReconciliacaoBloco({
+  reconciliacao,
+}: {
+  reconciliacao: VerificationView["reconciliacao"];
+}) {
+  if (reconciliacao === null) return null;
+
+  if (reconciliacao.erro !== null) {
+    return (
+      <p className="mt-3 border-t border-gray-100 pt-3 text-[11px] text-amber-800">
+        A medição acima correu bem, mas a reconciliação falhou: {reconciliacao.erro}
+      </p>
+    );
+  }
+
+  const { corrigidos, pendentes, persistentes, detectadas, diaAdiado } = reconciliacao;
+
+  return (
+    <div className="mt-3 border-t border-gray-100 pt-3">
+      <p className="text-[11px] font-medium text-gray-700">
+        Reconciliação por pedido (D-1 a D-3)
+      </p>
+      <dl className="mt-1 grid grid-cols-2 gap-3 text-[11px] sm:grid-cols-4">
+        <div>
+          <dt className="text-gray-500">Detectadas</dt>
+          <dd className="text-sm font-semibold text-gray-800">
+            {detectadas.toLocaleString("pt-BR")}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-gray-500">Corrigidas</dt>
+          <dd className="text-sm font-semibold text-gray-800">
+            {corrigidos.toLocaleString("pt-BR")}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-gray-500">Em aberto</dt>
+          <dd
+            className={`text-sm font-semibold ${pendentes > 0 ? "text-amber-700" : "text-gray-800"}`}
+          >
+            {pendentes.toLocaleString("pt-BR")}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-gray-500">Persistentes</dt>
+          <dd
+            className={`text-sm font-semibold ${
+              persistentes > 0 ? "text-amber-700" : "text-gray-800"
+            }`}
+          >
+            {persistentes.toLocaleString("pt-BR")}
+          </dd>
+        </div>
+      </dl>
+
+      {diaAdiado !== null && (
+        <p className="mt-2 text-[11px] text-gray-500">
+          {diaAdiado} ficou de fora desta rodada: a fila do dia ainda não drenou, e desvio de dia
+          imaturo é trabalho pendente, não divergência.
+        </p>
+      )}
+
+      {persistentes > 0 && (
+        <p className="mt-2 text-[11px] text-gray-500">
+          Persistente é o pedido que já foi corrigido e voltou a divergir — não fecha sozinho e
+          precisa de análise.
+        </p>
+      )}
+    </div>
   );
 }
