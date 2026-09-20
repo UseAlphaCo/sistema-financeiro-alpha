@@ -104,6 +104,24 @@ export type MaturitySignal = {
   isMature: boolean;
 };
 
+/**
+ * Um pedido em que o ledger e a Shopify discordam do total.
+ *
+ * O laco da ponta 2 sempre soube disto — calculava o delta por pedido e guardava
+ * so o contador. Sem a identidade, o painel consegue dizer "3 pedidos" e nunca
+ * QUAIS, e nenhum conserto automatico e' possivel. E' a materia-prima da
+ * reconciliacao (shopify-reconciliation.ts).
+ */
+export type OrderDivergence = {
+  orderId: string;
+  /** Total do pedido segundo o tenderTransactions. */
+  tenderCents: number;
+  /** Total comparavel do ledger: ja SEM as pernas de credito na loja. */
+  ledgerCents: number;
+  /** tender - ledger. Positivo = a Shopify recebeu mais do que registramos. */
+  deltaCents: number;
+};
+
 /** Ponta 2: o ledger contra o que a Shopify diz ter recebido. */
 export type LedgerVsShopify = {
   /** Pedidos comparados: os que o tenderTransactions reporta na janela. */
@@ -120,6 +138,22 @@ export type LedgerVsShopify = {
   ordersOnlyInLedger: number;
   /** Entradas negativas do tender descartadas. Ver tenderTotalsByOrder. */
   tenderNegativeEntries: number;
+};
+
+/**
+ * A ponta 2 com a identidade dos pedidos, e nao so os agregados.
+ *
+ * E' um tipo a parte, e nao um campo opcional em LedgerVsShopify, para que o
+ * compilador garanta o que um comentario so pediria: `VerificationReport` carrega
+ * `LedgerVsShopify` puro e **nao tem como** levar a lista junto. O relatorio
+ * inteiro e' serializado em job_runs.result e relido pelo painel a cada 60 s; um
+ * dia ruim com dezenas de pedidos engordaria esse jsonb sem que ninguem leia a
+ * lista por la. Quem precisa dela e' a reconciliacao, que a consome em memoria e
+ * persiste em tabela propria.
+ */
+export type LedgerVsShopifyDetailed = LedgerVsShopify & {
+  /** Pedidos divergentes, em ordem decrescente de |delta|. */
+  divergences: OrderDivergence[];
 };
 
 export type VerificationReport = {
@@ -150,7 +184,8 @@ export async function buildVerificationReport(options: VerificationOptions = {})
   ]);
 
   // A ponta 2 depende do conjunto de pedidos do ledger, entao vem depois.
-  const ledgerVsShopify = await compareLedgerAgainstShopify(date, window, ledger, toleranceCents);
+  const detalhado = await compareLedgerAgainstShopify(date, window, ledger, toleranceCents);
+  const ledgerVsShopify = semDivergencias(detalhado);
 
   const financeiroSource = financeiro.bySource.find((entry) => entry.source === "Shopify");
   const financeiroGrossCents = financeiroSource?.grossCents ?? 0;
@@ -241,7 +276,7 @@ async function compareLedgerAgainstShopify(
   window: { start: Date; end: Date },
   ledger: LedgerDaySummary,
   toleranceCents: number
-): Promise<LedgerVsShopify> {
+): Promise<LedgerVsShopifyDetailed> {
   const storeDomain = normalizeShopifyStoreDomain(process.env.SHOPIFY_STORE_URL ?? "");
   const accessToken = stripWrappingQuotes(process.env.SHOPIFY_ACCESS_TOKEN ?? "");
   if (!storeDomain) throw new Error("SHOPIFY_STORE_URL ausente ou invalido.");
@@ -256,16 +291,8 @@ async function compareLedgerAgainstShopify(
   const { byOrder: tenderPorPedido, negativeEntries } = tenderTotalsByOrder(tenders, candidatos);
   const ledgerPorPedido = await findLedgerGatewayTotalsByOrderIds([...candidatos]);
 
-  let divergentOrders = 0;
-  let driftCents = 0;
-  for (const [orderId, tenderCents] of tenderPorPedido) {
-    // Pedido que o tender aponta e o ledger nao conhece conta como desvio
-    // integral: e' dinheiro que a Shopify recebeu e o sistema nao registrou.
-    const delta = tenderCents - comparableLedgerCents(ledgerPorPedido.get(orderId));
-    if (Math.abs(delta) <= toleranceCents) continue;
-    divergentOrders += 1;
-    driftCents += Math.abs(delta);
-  }
+  const divergences = detectOrderDivergences(tenderPorPedido, ledgerPorPedido, toleranceCents);
+  const driftCents = divergences.reduce((sum, item) => sum + Math.abs(item.deltaCents), 0);
 
   let ordersOnlyInLedger = 0;
   for (const orderId of ledger.orderIds) {
@@ -278,14 +305,72 @@ async function compareLedgerAgainstShopify(
 
   return {
     comparedOrders: tenderPorPedido.size,
-    divergentOrders,
+    divergentOrders: divergences.length,
     driftCents,
     driftFormatted: formatMoney(driftCents),
     storeCreditBlindSpotCents,
     storeCreditBlindSpotFormatted: formatMoney(storeCreditBlindSpotCents),
     ordersOnlyInLedger,
     tenderNegativeEntries: negativeEntries,
+    divergences,
   };
+}
+
+/**
+ * Os agregados da ponta 2, sem a lista de pedidos.
+ *
+ * Copia campo a campo em vez de fazer rest-spread do detalhado: assim, um campo
+ * novo so entra no jsonb de job_runs se alguem o acrescentar AQUI, de proposito.
+ * Com spread, qualquer campo novo em LedgerVsShopifyDetailed vazaria sozinho
+ * para o `result` que o painel rele a cada 60 s.
+ */
+function semDivergencias(detalhado: LedgerVsShopifyDetailed): LedgerVsShopify {
+  return {
+    comparedOrders: detalhado.comparedOrders,
+    divergentOrders: detalhado.divergentOrders,
+    driftCents: detalhado.driftCents,
+    driftFormatted: detalhado.driftFormatted,
+    storeCreditBlindSpotCents: detalhado.storeCreditBlindSpotCents,
+    storeCreditBlindSpotFormatted: detalhado.storeCreditBlindSpotFormatted,
+    ordersOnlyInLedger: detalhado.ordersOnlyInLedger,
+    tenderNegativeEntries: detalhado.tenderNegativeEntries,
+  };
+}
+
+/**
+ * Quais pedidos discordam entre o tender e o ledger, do maior desvio para o menor.
+ *
+ * Pura de proposito: e' a regra de deteccao que a verificacao diaria e a
+ * reconciliacao (shopify-reconciliation.ts) precisam aplicar **identicamente**.
+ * Duplicar o laco nos dois lugares abriria espaco para uma das copias esquecer a
+ * exclusao de credito na loja, e o sintoma seria ~18 divergencias por dia que
+ * nunca fecham — exatamente o que comparableLedgerCents existe para evitar.
+ *
+ * Itera pelo tender, e nao pelo ledger: pedido ausente do tender e' ausencia de
+ * informacao (o ponto cego do credito na loja), nunca ausencia de dinheiro. Ja o
+ * contrario — o tender aponta e o ledger nao conhece — e' desvio integral, e cai
+ * naturalmente aqui com `ledgerCents` zero.
+ */
+export function detectOrderDivergences(
+  tenderPorPedido: ReadonlyMap<string, number>,
+  ledgerPorPedido: ReadonlyMap<string, Map<string, number>>,
+  toleranceCents: number
+): OrderDivergence[] {
+  const divergences: OrderDivergence[] = [];
+
+  for (const [orderId, tenderCents] of tenderPorPedido) {
+    const ledgerCents = comparableLedgerCents(ledgerPorPedido.get(orderId));
+    const deltaCents = tenderCents - ledgerCents;
+    if (Math.abs(deltaCents) <= toleranceCents) continue;
+    divergences.push({ orderId, tenderCents, ledgerCents, deltaCents });
+  }
+
+  // Maior dinheiro primeiro: quem consome tem teto de correcoes por rodada, e o
+  // que fica para a proxima precisa ser o menos relevante, nao o que calhou de
+  // vir por ultimo na iteracao do Map.
+  divergences.sort((a, b) => Math.abs(b.deltaCents) - Math.abs(a.deltaCents));
+
+  return divergences;
 }
 
 /**

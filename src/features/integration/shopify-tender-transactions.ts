@@ -113,9 +113,28 @@ export async function fetchTenderTransactions(
  * e um dia de folga cobre com sobra a distancia observada entre pernas.
  */
 export function widenedWindowForDay(date: string, timeZone: string): { from: Date; to: Date } {
+  return widenedWindowForRange(date, date, timeZone);
+}
+
+/**
+ * A mesma folga de um dia para cada lado, sobre um intervalo de dias.
+ *
+ * Existe para a reconciliacao, que olha D-1..D-3 de uma vez. O ponto e' que ela
+ * faz **uma** busca paginada cobrindo D-4..D-0, e nao uma por dia: o custo do
+ * `tenderTransactions` esta na paginacao do periodo, entao tres janelas diarias
+ * separadas trafegariam as bordas duas vezes cada e triplicariam as chamadas
+ * para cobrir o mesmo intervalo continuo.
+ *
+ * `startDate` e `endDate` sao inclusivos e em ordem cronologica.
+ */
+export function widenedWindowForRange(
+  startDate: string,
+  endDate: string,
+  timeZone: string
+): { from: Date; to: Date } {
   return {
-    from: dayWindowUtc(addDaysToDayKey(date, -1), timeZone).start,
-    to: dayWindowUtc(addDaysToDayKey(date, 1), timeZone).end,
+    from: dayWindowUtc(addDaysToDayKey(startDate, -1), timeZone).start,
+    to: dayWindowUtc(addDaysToDayKey(endDate, 1), timeZone).end,
   };
 }
 

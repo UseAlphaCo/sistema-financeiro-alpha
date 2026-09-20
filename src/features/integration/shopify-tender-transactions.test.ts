@@ -4,6 +4,7 @@ import {
   tenderOrderIdsInWindow,
   tenderTotalsByOrder,
   widenedWindowForDay,
+  widenedWindowForRange,
   type TenderTransaction,
 } from "./shopify-tender-transactions";
 
@@ -43,6 +44,33 @@ describe("widenedWindowForDay", () => {
 
     expect(from.getTime()).toBeLessThan(START.getTime());
     expect(to.getTime()).toBeGreaterThan(END.getTime());
+  });
+});
+
+describe("widenedWindowForRange", () => {
+  it("cobre o intervalo inteiro com um dia de folga de cada lado", () => {
+    // A janela da reconciliacao: D-1..D-3 terminando em 08/09 vira 05/09..09/09.
+    const { from, to } = widenedWindowForRange("2026-09-06", "2026-09-08", TIMEZONE);
+
+    expect(from.toISOString()).toBe("2026-09-05T03:00:00.000Z");
+    expect(to.toISOString()).toBe("2026-09-10T03:00:00.000Z");
+  });
+
+  it("coincide com widenedWindowForDay quando o intervalo e um dia so", () => {
+    // Garante que a funcao de um dia continua sendo um caso particular desta, e
+    // nao uma segunda definicao de folga que pode divergir.
+    const range = widenedWindowForRange("2026-09-08", "2026-09-08", TIMEZONE);
+    const dia = widenedWindowForDay("2026-09-08", TIMEZONE);
+
+    expect(range.from.toISOString()).toBe(dia.from.toISOString());
+    expect(range.to.toISOString()).toBe(dia.to.toISOString());
+  });
+
+  it("atravessa a virada de mes sem perder dia", () => {
+    const { from, to } = widenedWindowForRange("2026-08-30", "2026-09-01", TIMEZONE);
+
+    expect(from.toISOString()).toBe("2026-08-29T03:00:00.000Z");
+    expect(to.toISOString()).toBe("2026-09-03T03:00:00.000Z");
   });
 });
 
