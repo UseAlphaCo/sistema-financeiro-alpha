@@ -256,11 +256,51 @@ describe("buildVerificationView: reconciliacao", () => {
       corrigidos: 3,
       pendentes: 1,
       persistentes: 2,
+      semCorrecao: 0,
       detectadas: 4,
       driftFormatted: "R$ 1.204,55",
       diaAdiado: null,
       erro: null,
     });
+  });
+
+  /**
+   * `sem_correcao` e' o status que o tipo de dominio marca como "precisa de
+   * gente": a re-resolucao rodou contra a Admin API e o ledger continuou
+   * discordando. Ficava fora desta leitura, entao o unico estado que nenhum
+   * mecanismo automatico alcanca era tambem o unico invisivel no painel.
+   */
+  it("expoe sem_correcao, o status que nenhum automatismo fecha", () => {
+    const view = buildVerificationView(
+      comReconciliacao({
+        days: ["2026-09-18", "2026-09-19", "2026-09-20"],
+        skippedImmatureDay: null,
+        detected: 5,
+        corrected: 2,
+        driftFormatted: "R$ 3.120,00",
+        byStatus: { pendente: 0, corrigido: 40, persistente: 1, sem_correcao: 3 },
+      })
+    );
+
+    expect(view.reconciliacao?.semCorrecao).toBe(3);
+    expect(view.reconciliacao?.persistentes).toBe(1);
+  });
+
+  // Mesma regra dos demais contadores: byStatus ausente nao pode virar zero por
+  // acidente de leitura, mas tambem nao pode quebrar a tela. Zero aqui vem do
+  // fallback declarado, nao de uma medicao.
+  it("byStatus ausente nao quebra a leitura de sem_correcao", () => {
+    const view = buildVerificationView(
+      comReconciliacao({
+        days: ["2026-09-20"],
+        skippedImmatureDay: null,
+        detected: 0,
+        corrected: 0,
+        driftFormatted: "R$ 0,00",
+      })
+    );
+
+    expect(view.reconciliacao?.semCorrecao).toBe(0);
   });
 
   it("registra o dia adiado por imaturidade", () => {

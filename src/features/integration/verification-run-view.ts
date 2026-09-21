@@ -97,6 +97,15 @@ export type VerificationView = {
     corrigidos: number;
     pendentes: number;
     persistentes: number;
+    /**
+     * Re-resolvidos contra a Admin API e o ledger continuou discordando.
+     *
+     * E' o unico estado que o proprio tipo de dominio marca como "precisa de
+     * gente" — nenhum mecanismo automatico alcanca essas linhas. Ficava de fora
+     * desta leitura, entao o estado que mais pede olho humano era justamente o
+     * invisivel no painel.
+     */
+    semCorrecao: number;
     /** Divergencias detectadas nesta rodada, corrigidas ou nao. */
     detectadas: number;
     driftFormatted: string;
@@ -212,6 +221,7 @@ function lerReconciliacao(value: unknown): VerificationView["reconciliacao"] {
       corrigidos: 0,
       pendentes: 0,
       persistentes: 0,
+      semCorrecao: 0,
       detectadas: 0,
       driftFormatted: "—",
       diaAdiado: null,
@@ -227,6 +237,7 @@ function lerReconciliacao(value: unknown): VerificationView["reconciliacao"] {
     corrigidos: asNumber(value.corrected) ?? 0,
     pendentes: porStatus ? (asNumber(porStatus.pendente) ?? 0) : 0,
     persistentes: porStatus ? (asNumber(porStatus.persistente) ?? 0) : 0,
+    semCorrecao: porStatus ? (asNumber(porStatus.sem_correcao) ?? 0) : 0,
     detectadas,
     driftFormatted: asString(value.driftFormatted) ?? "—",
     diaAdiado: asString(value.skippedImmatureDay),

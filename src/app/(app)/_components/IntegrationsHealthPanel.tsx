@@ -32,11 +32,26 @@ import type { SweepStatus } from "@/workers/sync/repositories/core-repository";
 
 const MINUTE_MS = 60_000;
 
-type Tone = "ok" | "warn" | "unknown";
+/**
+ * `crit` existe porque o ambar estava fazendo dois trabalhos.
+ *
+ * Antes, "o dia ainda esta drenando a fila" e "nenhum mecanismo automatico
+ * alcanca este pedido" saiam com a mesma cor. Quem olha o painel todo dia
+ * aprende a ignorar um ambar que quase sempre significa espera — e junto com
+ * ele passa a ignorar o caso que exige alguem agir.
+ *
+ * Por isso `crit` e' escasso por definicao: so entra onde nenhuma rodada
+ * seguinte resolve sozinha. Ambar continua sendo "espere e olhe de novo";
+ * vermelho e' "ninguem vai consertar isto sem voce". Diluir essa fronteira
+ * devolve o painel ao estado em que tudo tem a mesma urgencia, ou seja,
+ * nenhuma.
+ */
+type Tone = "ok" | "warn" | "crit" | "unknown";
 
 const TONE_CLASS: Record<Tone, string> = {
   ok: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
   warn: "bg-amber-50 text-amber-800 ring-amber-600/20",
+  crit: "bg-red-50 text-red-700 ring-red-600/20",
   unknown: "bg-gray-100 text-gray-600 ring-gray-500/20",
 };
 
@@ -222,7 +237,15 @@ function LinhaExecucao({ esperado, run }: { esperado: JobExpectation; run: JobRu
 
   const idade = minutosDesde(run.started_at);
   const atrasado = idade !== null && idade > esperado.staleAfterMinutes;
-  const tone: Tone = run.status === "failed" || atrasado ? "warn" : run.status === "ok" ? "ok" : "unknown";
+
+  // Os dois casos sao `crit`, e nao `warn`, porque nenhuma rodada seguinte os
+  // desfaz sozinha. `staleAfterMinutes` ja embute ~30% de folga sobre o
+  // intervalo do cron: passar disso nao e' atraso, e' agendamento quebrado.
+  // E uma falha registrada e' passado — em 09/09/2026 o shopify-verify falhou e
+  // ficou 12 dias sem ninguem notar, com o painel mostrando o mesmo ambar de
+  // "aguarde" que ele mostra em dia imaturo.
+  const tone: Tone =
+    run.status === "failed" || atrasado ? "crit" : run.status === "ok" ? "ok" : "unknown";
 
   return (
     <li className="flex items-start justify-between gap-3 py-2">
@@ -233,7 +256,9 @@ function LinhaExecucao({ esperado, run }: { esperado: JobExpectation; run: JobRu
           {run.duration_ms !== null && ` · ${(run.duration_ms / 1000).toFixed(1)}s`}
         </p>
         {run.error_message && (
-          <p className="mt-0.5 truncate text-[11px] text-amber-700" title={run.error_message}>
+          // Acompanha o badge: se a execucao falhou, o badge e' `crit` e a
+          // mensagem nao pode ficar num tom mais brando que ele.
+          <p className="mt-0.5 truncate text-[11px] text-red-700" title={run.error_message}>
             {run.error_message}
           </p>
         )}
@@ -393,11 +418,16 @@ function PipelineCard({ pipeline }: { pipeline: PipelineStatus | null }) {
  */
 const VERIFICACAO_ROTULO: Record<VerificationView["status"], { texto: string; tone: Tone }> = {
   sem_registro: { texto: "sem registro", tone: "unknown" },
-  falhou: { texto: "falhou", tone: "warn" },
+  // A execucao lancou: nao ha relatorio do dia, e a proxima rodada so vem
+  // amanha. Nao ha nada a esperar, entao e' `crit`.
+  falhou: { texto: "falhou", tone: "crit" },
   formato_desconhecido: { texto: "formato não reconhecido", tone: "unknown" },
   provisoria: { texto: "parcial", tone: "unknown" },
   conferido: { texto: "confere", tone: "ok" },
-  divergente: { texto: "diverge", tone: "warn" },
+  // Dia MADURO e ainda divergindo — a fila ja drenou, entao o numero e' desvio
+  // de verdade e nao espera. `provisoria` continua cinza justamente para que
+  // esta linha signifique alguma coisa.
+  divergente: { texto: "diverge", tone: "crit" },
 };
 
 function VerificacaoCard({ view }: { view: VerificationView | null }) {
@@ -530,8 +560,15 @@ function VerificacaoCard({ view }: { view: VerificationView | null }) {
  * execucao produz os dois: o desvio acima e' o que foi medido, isto e' o que foi
  * feito a respeito. Separar em dois cards sugeriria duas rotinas independentes.
  *
- * `persistentes` ganha destaque proprio mesmo valendo zero na maior parte dos
- * dias: e o unico numero aqui que nao se resolve sozinho com o tempo.
+ * `persistentes` e `semCorrecao` ganham destaque proprio mesmo valendo zero na
+ * maior parte dos dias: sao os numeros que nao se resolvem sozinhos com o
+ * tempo. Os outros dois descrevem uma rodada; estes dois descrevem uma divida.
+ *
+ * `semCorrecao` e' o mais grave dos dois e era o unico que nao aparecia aqui.
+ * Persistente ja esteve corrigido e voltou a divergir — ha o que investigar,
+ * mas o mecanismo ao menos alcanca o pedido. Sem correcao significa que a
+ * re-resolucao RODOU contra a Admin API e o ledger continuou discordando: o
+ * automatico ja fez o que sabia fazer.
  */
 function ReconciliacaoBloco({
   reconciliacao,
@@ -548,14 +585,14 @@ function ReconciliacaoBloco({
     );
   }
 
-  const { corrigidos, pendentes, persistentes, detectadas, diaAdiado } = reconciliacao;
+  const { corrigidos, pendentes, persistentes, semCorrecao, detectadas, diaAdiado } = reconciliacao;
 
   return (
     <div className="mt-3 border-t border-gray-100 pt-3">
       <p className="text-[11px] font-medium text-gray-700">
         Reconciliação por pedido (D-1 a D-3)
       </p>
-      <dl className="mt-1 grid grid-cols-2 gap-3 text-[11px] sm:grid-cols-4">
+      <dl className="mt-1 grid grid-cols-2 gap-3 text-[11px] sm:grid-cols-5">
         <div>
           <dt className="text-gray-500">Detectadas</dt>
           <dd className="text-sm font-semibold text-gray-800">
@@ -580,13 +617,31 @@ function ReconciliacaoBloco({
           <dt className="text-gray-500">Persistentes</dt>
           <dd
             className={`text-sm font-semibold ${
-              persistentes > 0 ? "text-amber-700" : "text-gray-800"
+              persistentes > 0 ? "text-red-700" : "text-gray-800"
             }`}
           >
             {persistentes.toLocaleString("pt-BR")}
           </dd>
         </div>
+        <div>
+          <dt className="text-gray-500">Sem correção</dt>
+          <dd
+            className={`text-sm font-semibold ${
+              semCorrecao > 0 ? "text-red-700" : "text-gray-800"
+            }`}
+          >
+            {semCorrecao.toLocaleString("pt-BR")}
+          </dd>
+        </div>
       </dl>
+
+      {(semCorrecao > 0 || persistentes > 0) && (
+        <p className="mt-2 text-[11px] text-red-700">
+          Nenhum mecanismo automático fecha esses pedidos: a re-resolução já rodou contra a Shopify
+          e o ledger continuou discordando. Listagem por pedido em{" "}
+          <code className="rounded bg-red-50 px-1">npm run reconcile:shopify -- --listar</code>.
+        </p>
+      )}
 
       {diaAdiado !== null && (
         <p className="mt-2 text-[11px] text-gray-500">
