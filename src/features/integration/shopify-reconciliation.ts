@@ -41,8 +41,11 @@ import { findLedgerGatewayTotalsByOrderIds } from "./shopify-payment-resolution-
 import {
   countDivergencesByStatus,
   ensureShopifyReconciliationTable,
+  listRetryableDivergences,
+  markDivergenceAttemptFailed,
   markDivergenceOutcome,
   recordDetectedDivergences,
+  type ReconciliationDivergenceRow,
   type ReconciliationStatus,
 } from "./shopify-reconciliation-repository";
 import {
@@ -86,17 +89,97 @@ const MAX_FIXES = 60;
 /** Tolerancia em centavos para considerar que o ledger passou a bater. */
 const TOLERANCE_CENTS = 1;
 
+/**
+ * Espera, em dias, depois da 1a, 2a, 3a e 4a tentativa frustrada.
+ *
+ * Dias, e nao minutos, porque a rodada e' diaria (10:50 BRT): qualquer recuo
+ * menor que 24 h e' indistinguivel de "tenta de novo amanha" e so daria falsa
+ * sensacao de escalonamento. Dobrando, um pedido sem conserto e' tentado em
+ * D+0, D+1, D+3, D+7 e D+15 — cerca de duas semanas de paciencia antes de o
+ * sistema admitir que sozinho nao resolve.
+ *
+ * O recuo nao existe para "dar tempo de a Shopify se recuperar": existe para o
+ * pedido irrecuperavel parar de consumir uma vaga do teto e uma chamada a Admin
+ * API em toda rodada, o que empurraria para tras o dinheiro que ainda tem
+ * conserto.
+ */
+const RETRY_BACKOFF_DAYS = [1, 2, 4, 8] as const;
+
+/**
+ * Tentativas antes de a linha virar problema de gente.
+ *
+ * Derivado, nao escrito a mao: sao as esperas acima mais a tentativa que as
+ * inaugura. Manter os dois numeros independentes criaria o bug silencioso de um
+ * pedido que esgota o orcamento sem nunca ter esperado o ultimo intervalo.
+ */
+export const MAX_RETRY_ATTEMPTS = RETRY_BACKOFF_DAYS.length + 1;
+
+/**
+ * Quando a linha volta a ser elegivel, dado quantas tentativas ja foram gastas.
+ *
+ * `null` significa orcamento esgotado: nao ha proxima. Quem chama traduz isso
+ * em `sem_correcao`, que e' o unico status que o painel pinta de vermelho por
+ * significar "nenhum mecanismo alcanca isto".
+ */
+export function nextAttemptAfter(attemptsFeitas: number, now: Date): Date | null {
+  if (attemptsFeitas < 1) throw new Error("attemptsFeitas deve contar a tentativa atual.");
+  const dias = RETRY_BACKOFF_DAYS[attemptsFeitas - 1];
+  if (dias === undefined) return null;
+  return new Date(now.getTime() + dias * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * O que gravar depois de uma tentativa que produziu medicao.
+ *
+ * A regra que muda de comportamento em relacao ao que existia antes: divergir
+ * ainda **nao** e' mais sinonimo de `sem_correcao`. Enquanto houver tentativa no
+ * orcamento a linha segue `pendente`, porque um mecanismo ainda vai busca-la — e
+ * o painel reserva o vermelho para o que nenhum mecanismo alcanca. Marcar
+ * `sem_correcao` na primeira falha chamaria de emergencia uma fila que esta
+ * andando, e e' assim que um alerta vira ruido que ninguem le.
+ *
+ * `persistente` sobrevive a retentativa de proposito: "ja fechou e reabriu" e'
+ * um sinal sobre a CAUSA, nao sobre a fila, e rebaixa-lo a `pendente` apagaria a
+ * unica pista de defeito estrutural que a tabela guarda.
+ */
+export function decideRetryOutcome(args: {
+  aindaDiverge: boolean;
+  attemptsFeitas: number;
+  statusAnterior: ReconciliationStatus;
+  now: Date;
+}): { status: ReconciliationStatus; nextAttemptAt: Date | null } {
+  if (!args.aindaDiverge) return { status: "corrigido", nextAttemptAt: null };
+
+  const nextAttemptAt = nextAttemptAfter(args.attemptsFeitas, args.now);
+  if (nextAttemptAt === null) return { status: "sem_correcao", nextAttemptAt: null };
+
+  const status: ReconciliationStatus =
+    args.statusAnterior === "persistente" ? "persistente" : "pendente";
+  return { status, nextAttemptAt };
+}
+
 export type ReconciliationSummary = {
   /** Dias efetivamente varridos (D-1 pode ficar de fora se estiver imaturo). */
   days: string[];
   /** D-1 foi pulado porque a fila do dia ainda nao drenou. */
   skippedImmatureDay: string | null;
   comparedOrders: number;
+  /** Divergentes encontrados NA JANELA desta rodada. */
   detected: number;
+  /**
+   * Linhas elegiveis na fila, antes do teto.
+   *
+   * Pode ser maior que `detected`: a fila herda o que rodadas anteriores nao
+   * conseguiram fechar e que ja saiu da janela D-1..D-3. Era exatamente esse
+   * conjunto que nao tinha quem olhasse.
+   */
+  queued: number;
   corrected: number;
   stillDiverging: number;
   failed: number;
-  /** Divergencias que o teto da rodada deixou para a proxima. */
+  /** Esgotaram o orcamento de tentativas nesta rodada: agora esperam gente. */
+  exhausted: number;
+  /** Elegiveis que o teto da rodada deixou para a proxima. */
   deferred: number;
   /** A rodada so olhou: nao gravou nem corrigiu nada. */
   dryRun: boolean;
@@ -158,22 +241,84 @@ export async function runShopifyReconciliation(
   const immature = options.latestDayIsMature === false;
   const days = janelaDeDias(endDate, totalDays).filter((day) => !(immature && day === endDate));
 
-  const vazio: ReconciliationSummary = {
+  // Passo 1 — o que a janela mostra hoje. Nao corrige nada: so mede e registra.
+  const janela = await varrerJanela(storeDomain, accessToken, days);
+
+  if (!options.dryRun) {
+    await recordDetectedDivergences(
+      janela.divergences.map((item) => ({
+        externalOrderId: item.orderId,
+        day: janela.diaPorPedido.get(item.orderId) ?? endDate,
+        tenderCents: item.tenderCents,
+        ledgerCents: item.ledgerCents,
+        deltaCents: item.deltaCents,
+      }))
+    );
+  }
+
+  // Passo 2 — a fila. Ler da tabela em vez de corrigir direto a lista do passo 1
+  // e' o que torna a rotina auto-regulavel: o que acabou de ser detectado e o que
+  // sobrou de rodadas passadas entram pelo MESMO caminho, disputam o MESMO teto e
+  // saem ordenados pelo MESMO criterio (maior dinheiro primeiro). Antes, quem
+  // saisse da janela D-1..D-3 sem conserto nao tinha segunda chance.
+  const fila = options.dryRun
+    ? { rows: [], eligible: 0 }
+    : await listRetryableDivergences({ limit: maxFixes, maxAttempts: MAX_RETRY_ATTEMPTS });
+
+  // Passo 3 — trabalhar a fila dentro do orcamento da rodada.
+  const resultado = await corrigir(storeDomain, accessToken, fila.rows, janela.tenderPorPedido);
+
+  const summary: ReconciliationSummary = {
     days,
     skippedImmatureDay: immature ? endDate : null,
-    comparedOrders: 0,
-    detected: 0,
-    corrected: 0,
-    stillDiverging: 0,
-    failed: 0,
-    deferred: 0,
-    driftCents: 0,
-    driftFormatted: formatMoney(0),
+    comparedOrders: janela.tenderPorPedido.size,
+    detected: janela.divergences.length,
+    queued: fila.eligible,
+    corrected: resultado.corrected,
+    stillDiverging: resultado.stillDiverging,
+    failed: resultado.failed,
+    exhausted: resultado.exhausted,
+    deferred: Math.max(0, fila.eligible - fila.rows.length),
+    driftCents: janela.driftCents,
+    driftFormatted: formatMoney(janela.driftCents),
     byStatus: await countDivergencesByStatus(),
     dryRun: options.dryRun === true,
+    ...(options.dryRun ? { sample: janela.divergences } : {}),
   };
 
-  if (days.length === 0) return vazio;
+  logInfo("shopify_reconciliation_complete", summary);
+  return summary;
+}
+
+type VarreduraDaJanela = {
+  divergences: OrderDivergence[];
+  tenderPorPedido: ReadonlyMap<string, number>;
+  diaPorPedido: ReadonlyMap<string, string>;
+  driftCents: number;
+};
+
+/**
+ * Compara a janela contra a Shopify. So mede.
+ *
+ * Devolve vazio quando nao ha dia a varrer (D-1 imaturo com `days: 1`) em vez de
+ * abortar a rodada: a fila herdada de rodadas anteriores independe da janela, e
+ * era justamente para nao depender dela que a fila existe. Cada linha da fila
+ * carrega o proprio `tender_cents`, entao o passo seguinte trabalha sem esta
+ * medicao.
+ */
+async function varrerJanela(
+  storeDomain: string,
+  accessToken: string,
+  days: string[]
+): Promise<VarreduraDaJanela> {
+  if (days.length === 0) {
+    return {
+      divergences: [],
+      tenderPorPedido: new Map(),
+      diaPorPedido: new Map(),
+      driftCents: 0,
+    };
+  }
 
   // Uma unica busca paginada cobre o intervalo inteiro com a folga de um dia
   // para cada lado — nao uma busca por dia.
@@ -196,46 +341,12 @@ export async function runShopifyReconciliation(
   const ledgerPorPedido = await findLedgerGatewayTotalsByOrderIds([...candidatos]);
   const divergences = detectOrderDivergences(tenderPorPedido, ledgerPorPedido, TOLERANCE_CENTS);
 
-  const driftCents = divergences.reduce((soma, item) => soma + Math.abs(item.deltaCents), 0);
-
-  if (!options.dryRun) {
-    await recordDetectedDivergences(
-      divergences.map((item) => ({
-        externalOrderId: item.orderId,
-        day: diaPorPedido.get(item.orderId) ?? endDate,
-        tenderCents: item.tenderCents,
-        ledgerCents: item.ledgerCents,
-        deltaCents: item.deltaCents,
-      }))
-    );
-  }
-
-  const aCorrigir = options.dryRun ? [] : divergences.slice(0, maxFixes);
-  const { corrected, stillDiverging, failed } = await corrigir(
-    storeDomain,
-    accessToken,
-    aCorrigir,
-    tenderPorPedido
-  );
-
-  const summary: ReconciliationSummary = {
-    days,
-    skippedImmatureDay: immature ? endDate : null,
-    comparedOrders: tenderPorPedido.size,
-    detected: divergences.length,
-    corrected,
-    stillDiverging,
-    failed,
-    deferred: options.dryRun ? 0 : Math.max(0, divergences.length - aCorrigir.length),
-    driftCents,
-    driftFormatted: formatMoney(driftCents),
-    byStatus: await countDivergencesByStatus(),
-    dryRun: options.dryRun === true,
-    ...(options.dryRun ? { sample: divergences } : {}),
+  return {
+    divergences,
+    tenderPorPedido,
+    diaPorPedido,
+    driftCents: divergences.reduce((soma, item) => soma + Math.abs(item.deltaCents), 0),
   };
-
-  logInfo("shopify_reconciliation_complete", summary);
-  return summary;
 }
 
 /**
@@ -249,22 +360,37 @@ export async function runShopifyReconciliation(
 async function corrigir(
   storeDomain: string,
   accessToken: string,
-  divergences: OrderDivergence[],
+  fila: ReconciliationDivergenceRow[],
   tenderPorPedido: ReadonlyMap<string, number>
-): Promise<{ corrected: number; stillDiverging: number; failed: number }> {
+): Promise<{ corrected: number; stillDiverging: number; failed: number; exhausted: number }> {
   let corrected = 0;
   let stillDiverging = 0;
   let failed = 0;
+  let exhausted = 0;
 
-  for (const divergence of divergences) {
+  // Um unico instante para a rodada inteira: com `new Date()` por pedido, duas
+  // linhas com o mesmo numero de tentativas ganhariam agendamentos diferentes
+  // por causa do tempo de parede das chamadas, e o recuo deixaria de ser
+  // reproduzivel — inclusive em teste.
+  const now = new Date();
+
+  for (const linha of fila) {
+    const orderId = linha.externalOrderId;
+    const attemptsFeitas = linha.attempts + 1;
+
+    // O tender fresco da janela quando existe; senao o que ficou gravado na
+    // deteccao. Linha vinda de rodada antiga ja saiu da janela, entao a unica
+    // evidencia de quanto a Shopify diz ter recebido e' a que esta na tabela.
+    const tenderCents = tenderPorPedido.get(orderId) ?? linha.tenderCents;
+
     try {
       // Sem `clearSplitWhenEmpty`: o default preserva o rateio quando a Admin
       // API nao devolve transacao. Chegamos neste pedido porque o
       // tenderTransactions REPORTOU dinheiro nele — uma resposta vazia do
       // endpoint de transacoes contradiz essa evidencia, e apagar o ledger com
       // base nela deixaria o dado pior do que antes do conserto. Preservando, a
-      // divergencia sobrevive a medicao abaixo e vira `sem_correcao`.
-      await resolveShopifyOrderById(storeDomain, accessToken, divergence.orderId);
+      // divergencia sobrevive a medicao abaixo e segue na fila.
+      await resolveShopifyOrderById(storeDomain, accessToken, orderId);
 
       // Rele o ledger do pedido e aplica a MESMA regra de comparacao da
       // deteccao: confirmar o conserto por qualquer outro criterio abriria
@@ -277,31 +403,66 @@ async function corrigir(
       // tender — nao vira, porque o pedido pode ter pernas de credito na loja,
       // que o comparavel exclui dos dois lados. O veredito de "ainda diverge"
       // fica explicito na linha seguinte, com a tolerancia real.
-      const depois = await findLedgerGatewayTotalsByOrderIds([divergence.orderId]);
-      const [medida] = detectOrderDivergences(
-        new Map([[divergence.orderId, tenderPorPedido.get(divergence.orderId) ?? 0]]),
-        depois,
-        -1
-      );
+      const depois = await findLedgerGatewayTotalsByOrderIds([orderId]);
+      const [medida] = detectOrderDivergences(new Map([[orderId, tenderCents]]), depois, -1);
       const aindaDiverge = Math.abs(medida?.deltaCents ?? 0) > TOLERANCE_CENTS;
 
-      const status: ReconciliationStatus = aindaDiverge ? "sem_correcao" : "corrigido";
-      await markDivergenceOutcome(divergence.orderId, status, medida?.ledgerCents ?? 0);
+      const decisao = decideRetryOutcome({
+        aindaDiverge,
+        attemptsFeitas,
+        statusAnterior: linha.status,
+        now,
+      });
+      await markDivergenceOutcome(
+        orderId,
+        decisao.status,
+        medida?.ledgerCents ?? 0,
+        decisao.nextAttemptAt
+      );
 
-      if (aindaDiverge) stillDiverging += 1;
-      else corrected += 1;
+      if (!aindaDiverge) corrected += 1;
+      else {
+        stillDiverging += 1;
+        if (decisao.nextAttemptAt === null) exhausted += 1;
+      }
     } catch (error) {
-      // A linha fica `pendente` (recordDetectedDivergences ja gravou) e volta na
-      // proxima rodada. Um pedido que falha nao pode derrubar os outros.
+      // Um pedido que falha nao pode derrubar os outros. Mas tambem nao pode
+      // sair de graca: a tentativa custou uma chamada, entao ela e' contada e a
+      // linha recua igual — senao o pedido que falha por motivo permanente
+      // voltaria em toda rodada e nunca chegaria a gente.
       failed += 1;
+      const proxima = nextAttemptAfter(attemptsFeitas, now);
+      if (proxima === null) exhausted += 1;
+
       logError("shopify_reconciliation_order_failed", {
-        externalOrderId: divergence.orderId,
+        externalOrderId: orderId,
+        attempts: attemptsFeitas,
+        exhausted: proxima === null,
         error: error instanceof Error ? error.message : String(error),
       });
+
+      try {
+        await markDivergenceAttemptFailed(orderId, {
+          nextAttemptAt: proxima,
+          // Esgotou falhando: sai de `pendente` porque ninguem mais vem
+          // busca-lo, e uma linha que parece fila sendo beco sem saida e'
+          // exatamente o tipo de mentira que o painel nao pode contar.
+          status: proxima === null ? "sem_correcao" : undefined,
+        });
+      } catch (bookkeepingError) {
+        // Mesma regra de ouro do withJobRun: registrar nao derruba o trabalho.
+        logError("shopify_reconciliation_attempt_bookkeeping_failed", {
+          externalOrderId: orderId,
+          error:
+            bookkeepingError instanceof Error
+              ? bookkeepingError.message
+              : String(bookkeepingError),
+        });
+      }
     }
   }
 
-  return { corrected, stillDiverging, failed };
+  return { corrected, stillDiverging, failed, exhausted };
 }
 
 /** Os `total` dias terminando em `endDate`, do mais antigo para o mais novo. */

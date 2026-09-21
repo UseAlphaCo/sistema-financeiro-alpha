@@ -28,6 +28,7 @@
 import dotenv from "dotenv";
 
 import {
+  MAX_RETRY_ATTEMPTS,
   runShopifyReconciliation,
   type ReconciliationSummary,
 } from "../src/features/integration/shopify-reconciliation";
@@ -100,10 +101,14 @@ function imprimirResumo(summary: ReconciliationSummary) {
     console.log(`Adiado (imaturo):     ${summary.skippedImmatureDay}`);
   }
   console.log(`Pedidos comparados:   ${summary.comparedOrders}`);
-  console.log(`Divergencias:         ${summary.detected} (${summary.driftFormatted})`);
+  console.log(`Divergencias na janela: ${summary.detected} (${summary.driftFormatted})`);
+  // A fila inclui o que sobrou de rodadas anteriores, entao pode ser maior que
+  // a deteccao da janela — e a diferenca e' justamente a divida acumulada.
+  console.log(`Fila elegivel:        ${summary.queued}`);
   console.log(`  corrigidas:         ${summary.corrected}`);
   console.log(`  ainda divergindo:   ${summary.stillDiverging}`);
   console.log(`  falharam:           ${summary.failed}`);
+  console.log(`  esgotaram (gente):  ${summary.exhausted}`);
   console.log(`  adiadas pelo teto:  ${summary.deferred}`);
   console.log("\nAcumulado por status:");
   for (const status of STATUS_VALIDOS) {
@@ -148,11 +153,17 @@ function imprimirLista(
 
   console.log(`\n${linhas.length} divergencia(s):\n`);
   console.log(
-    ["dia".padEnd(11), "pedido".padEnd(16), "status".padEnd(13), "delta".padStart(13), "ocor."].join(
-      " "
-    )
+    [
+      "dia".padEnd(11),
+      "pedido".padEnd(16),
+      "status".padEnd(13),
+      "delta".padStart(13),
+      "ocor.",
+      "tent.",
+      "proxima tentativa",
+    ].join(" ")
   );
-  console.log("-".repeat(70));
+  console.log("-".repeat(95));
 
   for (const linha of linhas) {
     console.log(
@@ -161,11 +172,27 @@ function imprimirLista(
         linha.externalOrderId.padEnd(16),
         linha.status.padEnd(13),
         dinheiro(linha.deltaCents).padStart(13),
-        String(linha.occurrences),
+        String(linha.occurrences).padEnd(5),
+        String(linha.attempts).padEnd(5),
+        proximaTentativa(linha),
       ].join(" ")
     );
   }
   console.log("");
+}
+
+/**
+ * O que a coluna "proxima tentativa" deve dizer.
+ *
+ * Tres estados diferentes que um `next_attempt_at` nulo nao distingue sozinho, e
+ * confundi-los na tela e' o que faz alguem esperar por um conserto que nao vem:
+ * a linha ja fechou, a linha esgotou o orcamento e agora depende de gente, ou a
+ * linha nunca foi agendada e entra na proxima rodada.
+ */
+function proximaTentativa(linha: ReconciliationDivergenceRow): string {
+  if (linha.status === "corrigido") return "-";
+  if (linha.attempts >= MAX_RETRY_ATTEMPTS) return "esgotada (precisa de gente)";
+  return linha.nextAttemptAt ?? "na proxima rodada";
 }
 
 function dinheiro(cents: number): string {

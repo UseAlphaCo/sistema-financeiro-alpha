@@ -10,6 +10,8 @@ import {
   countDivergencesByStatus,
   ensureShopifyReconciliationTable,
   listDivergences,
+  listRetryableDivergences,
+  markDivergenceAttemptFailed,
   markDivergenceOutcome,
   recordDetectedDivergences,
 } from "./shopify-reconciliation-repository";
@@ -137,6 +139,27 @@ describe("shopify-reconciliation-repository (integration)", () => {
     // O "depois" do conserto anterior foi desmentido pela realidade.
     expect(row.ledger_cents_after).toBeNull();
     expect(row.corrected_at).toBeNull();
+    // O orcamento de tentativas recomeca SO aqui, na reabertura: houve
+    // evidencia nova de verdade. Redeteccao de quem nunca fechou nao zera nada,
+    // senao o pedido sem conserto seria retentado todo dia para sempre.
+    expect(row.attempts).toBe(0);
+    expect(row.next_attempt_at).toBeNull();
+  });
+
+  it("redeteccao de quem nunca fechou preserva as tentativas ja gastas", async () => {
+    const id = `${PREFIXO}sem-reset`;
+    await recordDetectedDivergences([
+      { externalOrderId: id, day: "2026-09-07", tenderCents: 5000, ledgerCents: 0, deltaCents: 5000 },
+    ]);
+    await markDivergenceOutcome(id, "pendente", 0, new Date("2026-12-01T00:00:00Z"));
+
+    await recordDetectedDivergences([
+      { externalOrderId: id, day: "2026-09-08", tenderCents: 5000, ledgerCents: 0, deltaCents: 5000 },
+    ]);
+
+    const row = await ler(id);
+    expect(row.attempts).toBe(1);
+    expect(row.next_attempt_at).not.toBeNull();
   });
 
   it("nao escreve nada quando a lista vem vazia", async () => {
@@ -159,5 +182,161 @@ describe("shopify-reconciliation-repository (integration)", () => {
     expect(contagem).toHaveProperty("pendente");
     expect(contagem).toHaveProperty("persistente");
     expect(typeof contagem.corrigido).toBe("number");
+  });
+
+  /**
+   * A fila — o consumidor que a tabela nunca teve.
+   *
+   * Estes testes rodam contra a MESMA tabela que a producao, entao nao da para
+   * afirmar contagens absolutas: qualquer divergencia real do dia entraria na
+   * conta. Duas defesas: os deltas de teste sao absurdamente altos (bilhoes de
+   * centavos), o que garante que a ordenacao por |delta| os coloca na frente de
+   * qualquer pedido de verdade; e as asserções sao sobre presenca, ausencia e
+   * diferenca, nunca sobre o total.
+   */
+  describe("fila de retentativa", () => {
+    const MAX_ATTEMPTS = 3;
+    const DELTA_ALTO = 900_000_000;
+
+    function idsDaFila(fila: { rows: { externalOrderId: string }[] }): string[] {
+      return fila.rows.map((linha) => linha.externalOrderId);
+    }
+
+    it("nao devolve quem ainda esta de recuo", async () => {
+      const pronto = `${PREFIXO}fila-pronto`;
+      const recuado = `${PREFIXO}fila-recuado`;
+
+      await recordDetectedDivergences([
+        {
+          externalOrderId: pronto,
+          day: "2026-09-07",
+          tenderCents: DELTA_ALTO,
+          ledgerCents: 0,
+          deltaCents: DELTA_ALTO,
+        },
+        {
+          externalOrderId: recuado,
+          day: "2026-09-07",
+          tenderCents: DELTA_ALTO,
+          ledgerCents: 0,
+          deltaCents: DELTA_ALTO,
+        },
+      ]);
+      await markDivergenceOutcome(recuado, "pendente", 0, new Date(Date.now() + 86_400_000));
+
+      const fila = await listRetryableDivergences({ limit: 50, maxAttempts: MAX_ATTEMPTS });
+
+      expect(idsDaFila(fila)).toContain(pronto);
+      expect(idsDaFila(fila)).not.toContain(recuado);
+    });
+
+    it("nao devolve quem ja fechou", async () => {
+      const fechado = `${PREFIXO}fila-fechado`;
+      await recordDetectedDivergences([
+        {
+          externalOrderId: fechado,
+          day: "2026-09-07",
+          tenderCents: DELTA_ALTO,
+          ledgerCents: 0,
+          deltaCents: DELTA_ALTO,
+        },
+      ]);
+      await markDivergenceOutcome(fechado, "corrigido", DELTA_ALTO);
+
+      const fila = await listRetryableDivergences({ limit: 50, maxAttempts: MAX_ATTEMPTS });
+      expect(idsDaFila(fila)).not.toContain(fechado);
+    });
+
+    it("para de devolver quando as tentativas se esgotam, mesmo sem recuo pendente", async () => {
+      // O portao do teto e' independente do portao do tempo: aqui
+      // next_attempt_at fica nulo (elegivel agora) e mesmo assim a linha sai.
+      const esgotado = `${PREFIXO}fila-esgotado`;
+      await recordDetectedDivergences([
+        {
+          externalOrderId: esgotado,
+          day: "2026-09-07",
+          tenderCents: DELTA_ALTO,
+          ledgerCents: 0,
+          deltaCents: DELTA_ALTO,
+        },
+      ]);
+
+      for (let i = 0; i < MAX_ATTEMPTS; i += 1) {
+        await markDivergenceOutcome(esgotado, "pendente", 0, null);
+      }
+
+      expect((await ler(esgotado)).attempts).toBe(MAX_ATTEMPTS);
+      const fila = await listRetryableDivergences({ limit: 50, maxAttempts: MAX_ATTEMPTS });
+      expect(idsDaFila(fila)).not.toContain(esgotado);
+    });
+
+    it("o teto corta pelo menor dinheiro e diz quanto ficou para a proxima", async () => {
+      const grande = `${PREFIXO}fila-grande`;
+      const medio = `${PREFIXO}fila-medio`;
+      const pequeno = `${PREFIXO}fila-pequeno`;
+
+      await recordDetectedDivergences([
+        {
+          externalOrderId: grande,
+          day: "2026-09-07",
+          tenderCents: DELTA_ALTO + 2,
+          ledgerCents: 0,
+          deltaCents: DELTA_ALTO + 2,
+        },
+        {
+          externalOrderId: medio,
+          day: "2026-09-07",
+          tenderCents: DELTA_ALTO + 1,
+          ledgerCents: 0,
+          deltaCents: DELTA_ALTO + 1,
+        },
+        {
+          externalOrderId: pequeno,
+          day: "2026-09-07",
+          tenderCents: DELTA_ALTO,
+          ledgerCents: 0,
+          deltaCents: DELTA_ALTO,
+        },
+      ]);
+
+      const fila = await listRetryableDivergences({ limit: 2, maxAttempts: MAX_ATTEMPTS });
+
+      expect(idsDaFila(fila)).toEqual([grande, medio]);
+      expect(idsDaFila(fila)).not.toContain(pequeno);
+      // `eligible` conta a fila inteira, antes do LIMIT: e' o que permite ao
+      // painel dizer "sobraram N" em vez de so "cortei no teto".
+      expect(fila.eligible).toBeGreaterThanOrEqual(3);
+      expect(fila.eligible - fila.rows.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("tentativa que explodiu conta e recua, sem inventar veredito sobre o ledger", async () => {
+      const falhou = `${PREFIXO}fila-falhou`;
+      await recordDetectedDivergences([
+        { externalOrderId: falhou, day: "2026-09-07", tenderCents: 5000, ledgerCents: 0, deltaCents: 5000 },
+      ]);
+
+      await markDivergenceAttemptFailed(falhou, { nextAttemptAt: new Date(Date.now() + 86_400_000) });
+
+      const row = await ler(falhou);
+      expect(row.attempts).toBe(1);
+      expect(row.status).toBe("pendente");
+      // Nao houve medicao: afirmar um ledger "depois" a partir de uma falha de
+      // transporte seria inventar numero.
+      expect(row.ledger_cents_after).toBeNull();
+      expect(row.next_attempt_at).not.toBeNull();
+    });
+
+    it("quem esgota falhando sai de pendente para nao parecer fila", async () => {
+      const desistiu = `${PREFIXO}fila-desistiu`;
+      await recordDetectedDivergences([
+        { externalOrderId: desistiu, day: "2026-09-07", tenderCents: 5000, ledgerCents: 0, deltaCents: 5000 },
+      ]);
+
+      await markDivergenceAttemptFailed(desistiu, { nextAttemptAt: null, status: "sem_correcao" });
+
+      const row = await ler(desistiu);
+      expect(row.status).toBe("sem_correcao");
+      expect(row.ledger_cents_after).toBeNull();
+    });
   });
 });

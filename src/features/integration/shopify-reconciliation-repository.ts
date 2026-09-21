@@ -73,10 +73,38 @@ export type ReconciliationDivergenceRow = {
   ledgerCentsAfter: number | null;
   status: ReconciliationStatus;
   occurrences: number;
+  /**
+   * Tentativas de conserto gastas no ciclo atual.
+   *
+   * Nao e' o mesmo que `occurrences`: aquele conta quantas vezes o pedido foi
+   * DETECTADO divergindo, este conta quantas vezes alguem tentou consertar.
+   * Um pedido pode ser detectado tres dias seguidos e ter uma unica tentativa,
+   * se o teto da rodada o adiou nas outras duas.
+   */
+  attempts: number;
   detectedAt: string;
   lastCheckedAt: string;
+  /**
+   * Quando a linha volta a ser elegivel para tentativa.
+   *
+   * `null` significa "elegivel agora" (nunca foi agendada), e nao "fora da
+   * fila" — quem tira da fila e' o status ou o teto de tentativas, nunca este
+   * campo. Manter um unico significado aqui evita o bug classico de um NULL que
+   * ora quer dizer "ja" ora quer dizer "nunca".
+   */
+  nextAttemptAt: string | null;
   correctedAt: string | null;
 };
+
+/**
+ * Status que significam "ainda aberto" e, portanto, elegiveis a retentativa.
+ *
+ * Lista explicita, e nao `status <> 'corrigido'`, de proposito: S3 e S5 vao
+ * acrescentar estados de FECHAMENTO (reconferido, aceito por gente). Com a
+ * negacao, cada estado novo entraria na fila por omissao e o sistema voltaria a
+ * bater na Shopify por pedido que alguem ja deu por encerrado.
+ */
+const STATUS_EM_ABERTO: ReconciliationStatus[] = ["pendente", "persistente", "sem_correcao"];
 
 export async function ensureShopifyReconciliationTable(): Promise<void> {
   const pool = getPool();
@@ -94,10 +122,21 @@ export async function ensureShopifyReconciliationTable(): Promise<void> {
       ledger_cents_after  bigint,
       status              text        NOT NULL,
       occurrences         integer     NOT NULL DEFAULT 1,
+      attempts            integer     NOT NULL DEFAULT 0,
       detected_at         timestamptz NOT NULL DEFAULT NOW(),
       last_checked_at     timestamptz NOT NULL DEFAULT NOW(),
+      next_attempt_at     timestamptz,
       corrected_at        timestamptz
     )
+  `);
+
+  // Aditivo para quem ja tem a tabela: o CREATE acima so vale em base nova, e o
+  // deploy nao roda `migrate deploy`. `ADD COLUMN IF NOT EXISTS` e' no-op quando
+  // a coluna existe, entao os dois caminhos convergem para o mesmo schema.
+  await pool.query(`
+    ALTER TABLE integration.shopify_reconciliation_divergences
+      ADD COLUMN IF NOT EXISTS attempts        integer NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz
   `);
 
   await pool.query(`
@@ -130,6 +169,13 @@ export type DetectedDivergence = {
  * uma correcao anterior deixou de valer no instante em que o pedido divergiu de
  * novo. Sem esse reset, um pedido persistente exibiria o "depois" de um conserto
  * que a realidade ja desmentiu.
+ *
+ * `attempts` segue a mesma logica, e por isso zera SO na transicao para
+ * `persistente`: ali houve evidencia nova de verdade — o pedido chegou a fechar
+ * e reabriu, entao o orcamento de tentativas recomeca. Uma redeteccao de quem
+ * nunca fechou nao e' evidencia nova, e zerar ali faria o pedido sem conserto
+ * ser retentado para sempre, todo dia, gastando o teto da rodada e uma chamada
+ * a Admin API sem nunca escalar para gente.
  */
 export async function recordDetectedDivergences(items: DetectedDivergence[]): Promise<number> {
   const pool = getPool();
@@ -155,6 +201,16 @@ export async function recordDetectedDivergences(items: DetectedDivergence[]): Pr
             THEN 'persistente'
           ELSE 'pendente'
         END,
+        attempts = CASE
+          WHEN integration.shopify_reconciliation_divergences.status = 'corrigido'
+            THEN 0
+          ELSE integration.shopify_reconciliation_divergences.attempts
+        END,
+        next_attempt_at = CASE
+          WHEN integration.shopify_reconciliation_divergences.status = 'corrigido'
+            THEN NULL
+          ELSE integration.shopify_reconciliation_divergences.next_attempt_at
+        END,
         occurrences     = integration.shopify_reconciliation_divergences.occurrences + 1,
         last_checked_at = NOW()
     `,
@@ -178,11 +234,16 @@ export async function recordDetectedDivergences(items: DetectedDivergence[]): Pr
  * bater. `corrected_at` so e' gravado quando fechou de fato — um pedido em
  * `sem_correcao` foi tocado, nao consertado, e datar isso como correcao faria o
  * relatorio mentir.
+ *
+ * `attempts` sobe SEMPRE, porque chegar aqui ja significa ter gasto uma chamada
+ * a Admin API. `nextAttemptAt` omitido (o default) quer dizer "nao reagende" —
+ * o caso de quem fechou ou de quem esgotou o orcamento e agora espera gente.
  */
 export async function markDivergenceOutcome(
   externalOrderId: string,
   status: ReconciliationStatus,
-  ledgerCentsAfter: number
+  ledgerCentsAfter: number,
+  nextAttemptAt: Date | null = null
 ): Promise<void> {
   const pool = getPool();
   if (!pool) return;
@@ -193,10 +254,47 @@ export async function markDivergenceOutcome(
          SET status             = $2,
              ledger_cents_after = $3,
              corrected_at       = CASE WHEN $2 = 'corrigido' THEN NOW() ELSE corrected_at END,
+             attempts           = attempts + 1,
+             next_attempt_at    = $4,
              last_checked_at    = NOW()
        WHERE external_order_id = $1
     `,
-    [externalOrderId, status, ledgerCentsAfter]
+    [externalOrderId, status, ledgerCentsAfter, nextAttemptAt]
+  );
+}
+
+/**
+ * Contabiliza uma tentativa que nao chegou a produzir veredito.
+ *
+ * Existe porque a tentativa que EXPLODE (rede, 429, Admin API fora) tambem
+ * custou uma chamada e tambem precisa recuar. Sem isto, o pedido que falha por
+ * um motivo permanente ficaria elegivel em toda rodada, gastando o teto e a
+ * cota da Shopify indefinidamente, e nunca escalaria para gente — que e'
+ * exatamente a cegueira que esta fase existe para fechar.
+ *
+ * Nunca escreve `ledger_cents_after`: nao houve medicao, e inventar veredito a
+ * partir de uma falha de transporte seria afirmar sobre o ledger uma coisa que
+ * ninguem verificou. `status` so muda quando quem chamou passa um — o caso de
+ * quem esgotou as tentativas falhando, que precisa sair de `pendente` para nao
+ * ficar parecendo fila no painel quando ninguem mais vai busca-lo.
+ */
+export async function markDivergenceAttemptFailed(
+  externalOrderId: string,
+  options: { nextAttemptAt: Date | null; status?: ReconciliationStatus }
+): Promise<void> {
+  const pool = getPool();
+  if (!pool) return;
+
+  await pool.query(
+    `
+      UPDATE integration.shopify_reconciliation_divergences
+         SET attempts        = attempts + 1,
+             next_attempt_at = $2,
+             status          = COALESCE($3, status),
+             last_checked_at = NOW()
+       WHERE external_order_id = $1
+    `,
+    [externalOrderId, options.nextAttemptAt, options.status ?? null]
   );
 }
 
@@ -227,39 +325,30 @@ export async function countDivergencesByStatus(): Promise<Record<ReconciliationS
   return zerado;
 }
 
-/** Divergencias para inspecao, mais recentes primeiro. Usado pelo CLI. */
-export async function listDivergences(
-  options: { status?: ReconciliationStatus; limit?: number } = {}
-): Promise<ReconciliationDivergenceRow[]> {
-  const pool = getPool();
-  if (!pool) return [];
+type DivergenceDbRow = {
+  external_order_id: string;
+  day: Date;
+  tender_cents: string;
+  ledger_cents_before: string;
+  delta_cents: string;
+  ledger_cents_after: string | null;
+  status: string;
+  occurrences: number;
+  attempts: number;
+  detected_at: Date;
+  last_checked_at: Date;
+  next_attempt_at: Date | null;
+  corrected_at: Date | null;
+};
 
-  const limit = options.limit ?? 100;
-  const result = await pool.query<{
-    external_order_id: string;
-    day: Date;
-    tender_cents: string;
-    ledger_cents_before: string;
-    delta_cents: string;
-    ledger_cents_after: string | null;
-    status: string;
-    occurrences: number;
-    detected_at: Date;
-    last_checked_at: Date;
-    corrected_at: Date | null;
-  }>(
-    `
-      SELECT external_order_id, day, tender_cents, ledger_cents_before, delta_cents,
-             ledger_cents_after, status, occurrences, detected_at, last_checked_at, corrected_at
-        FROM integration.shopify_reconciliation_divergences
-       WHERE ($1::text IS NULL OR status = $1)
-       ORDER BY day DESC, abs(delta_cents) DESC
-       LIMIT $2
-    `,
-    [options.status ?? null, limit]
-  );
+const COLUNAS_DIVERGENCIA = `
+  external_order_id, day, tender_cents, ledger_cents_before, delta_cents,
+  ledger_cents_after, status, occurrences, attempts, detected_at,
+  last_checked_at, next_attempt_at, corrected_at
+`;
 
-  return result.rows.map((row) => ({
+function mapDivergenceRow(row: DivergenceDbRow): ReconciliationDivergenceRow {
+  return {
     externalOrderId: row.external_order_id,
     // `day` e' DATE: o driver devolve Date a meia-noite LOCAL do processo, entao
     // toISOString() pode voltar um dia. Formatar pelos componentes locais e' o
@@ -271,10 +360,93 @@ export async function listDivergences(
     ledgerCentsAfter: row.ledger_cents_after === null ? null : Number(row.ledger_cents_after),
     status: row.status as ReconciliationStatus,
     occurrences: row.occurrences,
+    attempts: row.attempts,
     detectedAt: row.detected_at.toISOString(),
     lastCheckedAt: row.last_checked_at.toISOString(),
+    nextAttemptAt: row.next_attempt_at?.toISOString() ?? null,
     correctedAt: row.corrected_at?.toISOString() ?? null,
-  }));
+  };
+}
+
+/** Divergencias para inspecao, mais recentes primeiro. Usado pelo CLI. */
+export async function listDivergences(
+  options: { status?: ReconciliationStatus; limit?: number } = {}
+): Promise<ReconciliationDivergenceRow[]> {
+  const pool = getPool();
+  if (!pool) return [];
+
+  const limit = options.limit ?? 100;
+  const result = await pool.query<DivergenceDbRow>(
+    `
+      SELECT ${COLUNAS_DIVERGENCIA}
+        FROM integration.shopify_reconciliation_divergences
+       WHERE ($1::text IS NULL OR status = $1)
+       ORDER BY day DESC, abs(delta_cents) DESC
+       LIMIT $2
+    `,
+    [options.status ?? null, limit]
+  );
+
+  return result.rows.map(mapDivergenceRow);
+}
+
+export type RetryableDivergences = {
+  /** Ate `limit` linhas, maior dinheiro primeiro. */
+  rows: ReconciliationDivergenceRow[];
+  /**
+   * Quantas linhas estavam elegiveis ANTES do teto.
+   *
+   * Vem junto de proposito: sem este numero, `rows.length === limit` nao
+   * distingue "a fila tem exatamente o teto" de "a fila transbordou", e o
+   * painel nao teria como dizer honestamente quanto ficou para a proxima
+   * rodada. Sai da mesma query por window function, entao nao custa ida extra.
+   */
+  eligible: number;
+};
+
+/**
+ * A fila de tratamento: o que ainda esta aberto e ja pode ser tentado de novo.
+ *
+ * Este e' o consumidor que a tabela nunca teve. Antes disto `runShopifyReconciliation`
+ * so ESCREVIA divergencia: uma linha cuja correcao falhou, ou que o teto da
+ * rodada adiou, saia da janela D-1..D-3 e nunca mais era olhada por ninguem.
+ *
+ * Tres condicoes, cada uma tirando um tipo de linha da fila:
+ *
+ * - `status` em aberto      -> nao retenta o que ja fechou
+ * - `attempts < maxAttempts`-> nao insiste no que ja provou nao ceder; a linha
+ *   fica em `sem_correcao`, que o painel mostra em vermelho, esperando gente
+ * - `next_attempt_at`       -> respeita o recuo; `NULL` e' "nunca agendada",
+ *   logo elegivel agora
+ *
+ * A ordem por `|delta_cents|` decrescente e' a mesma da varredura da janela:
+ * quando o teto corta, o que fica para depois e' sempre o menor dinheiro.
+ */
+export async function listRetryableDivergences(options: {
+  limit: number;
+  maxAttempts: number;
+}): Promise<RetryableDivergences> {
+  const pool = getPool();
+  if (!pool) return { rows: [], eligible: 0 };
+
+  const result = await pool.query<DivergenceDbRow & { elegiveis: string }>(
+    `
+      SELECT ${COLUNAS_DIVERGENCIA}, (count(*) OVER ())::text AS elegiveis
+        FROM integration.shopify_reconciliation_divergences
+       WHERE status = ANY($1::text[])
+         AND attempts < $2
+         AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())
+       ORDER BY abs(delta_cents) DESC
+       LIMIT $3
+    `,
+    [STATUS_EM_ABERTO, options.maxAttempts, options.limit]
+  );
+
+  return {
+    rows: result.rows.map(mapDivergenceRow),
+    // `count(*) OVER ()` e' avaliado antes do LIMIT, entao conta a fila inteira.
+    eligible: result.rows.length === 0 ? 0 : Number(result.rows[0].elegiveis),
+  };
 }
 
 function formatDateOnly(value: Date): string {
