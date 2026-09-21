@@ -30,6 +30,32 @@ const DEFAULT_CONCURRENCY = 5;
 /** O que aconteceu com um pedido ao ser resolvido. */
 export type OrderResolutionOutcome = "resolvido" | "sem_transacao";
 
+export type ResolveOrderOptions = {
+  /**
+   * Se a Admin API nao devolver transacao resolvivel, APAGA o rateio que o
+   * pedido ja tinha. Default `false` — apagar e a excecao, nao a regra.
+   *
+   * `replaceShopifyPaymentGatewaySplit(id, [])` limpa todas as pernas do
+   * pedido: e contrato deliberado do repositorio, com teste proprio ("Lista
+   * vazia limpa tudo"). O problema nunca foi esse contrato, e sim quem o
+   * invoca sem ter motivo para apagar.
+   *
+   * Quem liga:  o job (findUnresolvedShopifyOrders alcanca pedido cujo
+   *             `mirror_updated_at` mudou desde a resolucao — se o payload
+   *             agora nao tem transacao, a perna velha precisa sair, senao
+   *             soma em dobro na janela).
+   * Quem NAO liga: a reconciliacao. Ela chega neste pedido justamente porque o
+   *             tenderTransactions REPORTOU dinheiro nele. Uma resposta vazia
+   *             do endpoint de transacoes contradiz a evidencia que trouxe o
+   *             pedido ate aqui, e zerar o ledger com base na fonte que
+   *             discorda troca um registro bom por um em branco — deixando o
+   *             dado pior do que antes de tentar consertar. Preservando, a
+   *             divergencia sobrevive e vira `sem_correcao`, que e' o estado
+   *             correto: "re-resolvido e o ledger continua discordando".
+   */
+  clearSplitWhenEmpty?: boolean;
+};
+
 /**
  * Resolve UM pedido: busca as transacoes na Shopify, grava o gateway titular e
  * substitui o rateio por gateway.
@@ -49,7 +75,8 @@ export type OrderResolutionOutcome = "resolvido" | "sem_transacao";
 export async function resolveShopifyOrderById(
   storeDomain: string,
   accessToken: string,
-  externalOrderId: string
+  externalOrderId: string,
+  options: ResolveOrderOptions = {}
 ): Promise<OrderResolutionOutcome> {
   const transactions = await fetchShopifyOrderTransactions(storeDomain, accessToken, externalOrderId);
   const dominant = resolveDominantPaymentMethod(transactions);
@@ -66,7 +93,14 @@ export async function resolveShopifyOrderById(
       total_amount_cents: 0,
       transaction_processed_at: null,
     });
-    await replaceShopifyPaymentGatewaySplit(externalOrderId, []);
+
+    // So apaga o rateio existente quem pediu explicitamente. Ver o docblock de
+    // ResolveOrderOptions.clearSplitWhenEmpty para por que o default e' nao
+    // apagar — e por que a reconciliacao depende disso.
+    if (options.clearSplitWhenEmpty === true) {
+      await replaceShopifyPaymentGatewaySplit(externalOrderId, []);
+    }
+
     return "sem_transacao";
   }
 
@@ -120,10 +154,15 @@ export async function runShopifyPaymentResolutionJob(
       const candidate = candidates[index++];
 
       try {
+        // Liga a limpeza porque o job alcanca tambem o pedido JA resolvido cujo
+        // `mirror_updated_at` mudou. Se o payload agora nao tem transacao, a
+        // perna velha precisa sair — senao ela soma em dobro na janela. Este e'
+        // o unico caminho com motivo para apagar; a reconciliacao usa o default.
         const outcome = await resolveShopifyOrderById(
           storeDomain,
           accessToken,
-          candidate.external_order_id
+          candidate.external_order_id,
+          { clearSplitWhenEmpty: true }
         );
 
         if (outcome === "sem_transacao") skipped += 1;

@@ -258,6 +258,12 @@ async function corrigir(
 
   for (const divergence of divergences) {
     try {
+      // Sem `clearSplitWhenEmpty`: o default preserva o rateio quando a Admin
+      // API nao devolve transacao. Chegamos neste pedido porque o
+      // tenderTransactions REPORTOU dinheiro nele — uma resposta vazia do
+      // endpoint de transacoes contradiz essa evidencia, e apagar o ledger com
+      // base nela deixaria o dado pior do que antes do conserto. Preservando, a
+      // divergencia sobrevive a medicao abaixo e vira `sem_correcao`.
       await resolveShopifyOrderById(storeDomain, accessToken, divergence.orderId);
 
       // Rele o ledger do pedido e aplica a MESMA regra de comparacao da
