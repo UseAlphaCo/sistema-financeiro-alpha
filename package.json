@@ -21,7 +21,8 @@
     "reconcile:shopify": "tsx scripts/reconcile-shopify.ts",
     "resolve:shopify-gateway": "tsx scripts/resolve-shopify-gateway-recent.ts",
     "backfill:shopify-split": "tsx scripts/backfill-shopify-gateway-split.ts",
-    "diag:shopify-pagamentos": "tsx scripts/diagnostico-pagamentos-shopify-dia.ts"
+    "diag:shopify-pagamentos": "tsx scripts/diagnostico-pagamentos-shopify-dia.ts",
+    "report:crons": "tsx scripts/report-cron-runs.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
