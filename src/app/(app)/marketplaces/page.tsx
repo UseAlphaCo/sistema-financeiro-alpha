@@ -5,8 +5,13 @@ import { listMarketplaceReadModelPaginated } from "@/features/transactions/read-
 import ExportControls from "./ExportControls";
 import DataFreshnessNotice, { getFreshness } from "../_components/DataFreshnessNotice";
 import PaymentMethodRevenueCards from "../_components/PaymentMethodRevenueCards";
-import FluxoDeCaixaTable from "./FluxoDeCaixaTable";
+import MarketplacesTable from "./MarketplacesTable";
+import MarketplaceTabs from "./MarketplaceTabs";
 import { PAYMENT_METHOD_LABELS } from "@/features/transactions/format";
+import {
+  ALL_MARKETPLACES,
+  resolveMarketplaceTab,
+} from "@/features/transactions/marketplace-catalog";
 import {
   PAYMENT_METHODS,
   type FinancialTransaction,
@@ -52,15 +57,6 @@ const PERIOD_OPTIONS: Array<{ label: string; value: PeriodPreset }> = [
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 
-const MARKETPLACE_OPTIONS = [
-  { value: "shopify", label: "Shopify" },
-  { value: "anymarket", label: "Anymarket" },
-  { value: "mercado_livre", label: "Mercado Livre" },
-  { value: "shopee", label: "Shopee" },
-  { value: "amazon", label: "Amazon" },
-  { value: "todos", label: "Todos" },
-] as const;
-
 function isPaymentMethod(value: string | undefined): value is PaymentMethod {
   if (!value) return false;
   return PAYMENT_METHODS.includes(value as PaymentMethod);
@@ -69,25 +65,6 @@ function isPaymentMethod(value: string | undefined): value is PaymentMethod {
 function isPeriodPreset(value: string | undefined): value is PeriodPreset {
   if (!value) return false;
   return PERIOD_PRESETS.includes(value as PeriodPreset);
-}
-
-function normalizeMarketplaceInput(value: string | undefined): string {
-  if (!value) return "shopify";
-
-  const normalized = value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim()
-    .replace(/[\s-]+/g, "_");
-
-  if (normalized === "mercadolivre") return "mercado_livre";
-
-  if (MARKETPLACE_OPTIONS.some((option) => option.value === normalized)) {
-    return normalized;
-  }
-
-  return "shopify";
 }
 
 function normalizeDateInput(value: string | undefined): string | undefined {
@@ -110,7 +87,7 @@ function buildFlowQuery(params: Record<string, string | undefined>) {
   return qs ? `?${qs}` : "";
 }
 
-export default async function FluxoDeCaixaPage({
+export default async function MarketplacesPage({
   searchParams,
 }: {
   searchParams: Promise<{
@@ -127,7 +104,8 @@ export default async function FluxoDeCaixaPage({
   const preset: PeriodPreset = isPeriodPreset(params.preset) ? params.preset : "yesterday";
   const startDate = normalizeDateInput(params.startDate);
   const endDate = normalizeDateInput(params.endDate);
-  const marketplace = normalizeMarketplaceInput(params.marketplace);
+  const marketplace = resolveMarketplaceTab(params.marketplace);
+  const marketplaceFilter = marketplace === ALL_MARKETPLACES ? undefined : marketplace;
   const paymentMethod = isPaymentMethod(params.paymentMethod)
     ? params.paymentMethod
     : undefined;
@@ -139,7 +117,7 @@ export default async function FluxoDeCaixaPage({
 
   const cashFlowFilters = {
     preset,
-    marketplace: marketplace === "todos" ? undefined : marketplace,
+    marketplace: marketplaceFilter,
     paymentMethod,
     startDate,
     endDate,
@@ -163,7 +141,7 @@ export default async function FluxoDeCaixaPage({
     return (
       <div>
         <div className="mb-6">
-          <h1 className="text-xl font-semibold text-gray-900">Fluxo de Caixa</h1>
+          <h1 className="text-xl font-semibold text-gray-900">Marketplaces</h1>
           <p className="mt-1 text-sm text-gray-500">Nao foi possivel carregar os dados no momento.</p>
         </div>
         <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -177,7 +155,7 @@ export default async function FluxoDeCaixaPage({
     const paginated = await listMarketplaceReadModelPaginated({
       page,
       limit,
-      marketplace: marketplace === "todos" ? undefined : marketplace,
+      marketplace: marketplaceFilter,
       paymentMethod,
       startDate: summaryResult.period.startDate,
       endDate: summaryResult.period.endDate,
@@ -189,7 +167,7 @@ export default async function FluxoDeCaixaPage({
     // Mantém o resumo visível mesmo se a listagem detalhada falhar, mas
     // sinaliza o erro (log + UI) em vez de aparentar "sem resultados".
     listFailed = true;
-    logError("fluxo_caixa_marketplace_entries_failed", {
+    logError("marketplaces_entries_failed", {
       marketplace,
       paymentMethod,
       startDate: summaryResult.period.startDate,
@@ -228,7 +206,7 @@ export default async function FluxoDeCaixaPage({
     <div>
       <div className="mb-6 flex items-start justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">Fluxo de Caixa</h1>
+          <h1 className="text-xl font-semibold text-gray-900">Marketplaces</h1>
           <p className="mt-1 text-sm text-gray-500">
             {formatDate(period.startDate)} — {formatDate(period.endDate)} ({period.days} dias)
           </p>
@@ -237,7 +215,7 @@ export default async function FluxoDeCaixaPage({
           {PERIOD_OPTIONS.map((option) => (
             <a
               key={option.value}
-              href={`/fluxo-de-caixa${buildFlowQuery({
+              href={`/marketplaces${buildFlowQuery({
                 preset: option.value,
                 marketplace,
                 paymentMethod,
@@ -255,10 +233,21 @@ export default async function FluxoDeCaixaPage({
         </div>
       </div>
 
+      <MarketplaceTabs
+        active={marketplace}
+        hrefFor={(tab) =>
+          // Troca de aba preserva os filtros e volta para a primeira pagina: a
+          // pagina N de um marketplace nao tem relacao com a de outro.
+          `/marketplaces${buildFlowQuery({ ...baseParams, marketplace: tab })}`
+        }
+      />
+
       <DataFreshnessNotice period={period} freshness={freshness} className="mb-6" />
 
-      <form method="GET" className="mb-6 grid grid-cols-1 gap-3 rounded-lg border border-gray-200 bg-white p-4 sm:grid-cols-6">
+      <form method="GET" className="mb-6 grid grid-cols-1 gap-3 rounded-lg border border-gray-200 bg-white p-4 sm:grid-cols-5">
         <input type="hidden" name="preset" value={preset} />
+        {/* A aba e escolhida fora do form; sem este campo, Filtrar voltaria ao default. */}
+        <input type="hidden" name="marketplace" value={marketplace} />
         <div>
           <label className="mb-1 block text-xs text-gray-600">Data inicial</label>
           <input
@@ -276,20 +265,6 @@ export default async function FluxoDeCaixaPage({
             defaultValue={endDate}
             className="w-full rounded-md border border-gray-300 px-2 py-2 text-sm"
           />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs text-gray-600">Marketplace</label>
-          <select
-            name="marketplace"
-            defaultValue={marketplace}
-            className="w-full rounded-md border border-gray-300 px-2 py-2 text-sm"
-          >
-            {MARKETPLACE_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
         </div>
         <div>
           <label className="mb-1 block text-xs text-gray-600">Forma de pagamento</label>
@@ -328,7 +303,7 @@ export default async function FluxoDeCaixaPage({
             Filtrar
           </button>
           <a
-            href="/fluxo-de-caixa"
+            href={`/marketplaces${buildFlowQuery({ marketplace })}`}
             className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
           >
             Limpar
@@ -383,7 +358,7 @@ export default async function FluxoDeCaixaPage({
           válidos; tente novamente em instantes.
         </div>
       ) : (
-        <FluxoDeCaixaTable items={marketplaceEntries} pagination={pagination} query={baseParams} />
+        <MarketplacesTable items={marketplaceEntries} pagination={pagination} query={baseParams} />
       )}
 
       {/* Breakdown por origem */}

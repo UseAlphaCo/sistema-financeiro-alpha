@@ -138,17 +138,21 @@ visiveis ao usuario, e um `?jobId=` aberto durante o deploy passaria a 404.
 `computeCashFlow` continua alimentando o Dashboard, que fica. Se o rename vier
 depois, que venha como commit isolado com `rewrites` por 30 dias.
 
-## Status de execucao (atualizado em 26/08/2026)
+## Status de execucao (atualizado em 23/09/2026)
 
 ### Resumo
 - Fase 0 concluida: `dev` sincronizada com `main` (ff20a0d) e gate completo verde
   (lint, typecheck, boundaries, contracts, 126 testes em 18 arquivos, build).
-- Fases 1 a 5 pendentes.
+- Fase 2 concluida em 23/09/2026 (Orbita MEU-261), junto com a troca do select de
+  marketplace por abas -- ver "Adendo da Fase 2" abaixo. `dev` estava em 6e24f3a,
+  igual a `main`.
+- Fases 1, 3, 4 e 5 pendentes. A Fase 1 nao era pre-requisito da 2 e ficou para
+  quando a tela nova comecar.
 
 ### Status por fase
 - Fase 0 - Concluida
 - Fase 1 - Pendente
-- Fase 2 - Pendente
+- Fase 2 - Concluida
 - Fase 3 - Pendente
 - Fase 4 - Pendente
 - Fase 5 - Pendente
@@ -228,7 +232,21 @@ que o move foi neutro.
 ## Fase 2 - Mover a tela atual para /marketplaces
 
 ### Status atual
-Pendente
+Concluida (23/09/2026)
+
+### Adendo da Fase 2 (MEU-261)
+- O `<select name="marketplace">` virou abas (`marketplaces/MarketplaceTabs.tsx`,
+  links com `aria-current`). A aba continua sendo o `?marketplace=`, entao o
+  export, os bookmarks e o redirect desta fase seguem valendo sem mudanca.
+- Catalogo unico em `src/features/transactions/marketplace-catalog.ts`, com as
+  chaves reais de `financial_orders.marketplace_key`: shopify, mercado_livre,
+  shopee, netshoes, tiktok_shop, amazon_global_api. Substitui o
+  `MARKETPLACE_OPTIONS` da pagina, que tinha dois defeitos: "Amazon" filtrava por
+  `amazon` (zero linhas) e Netshoes/TikTok Shop nao eram selecionaveis.
+- A opcao "Anymarket" saiu: e hub, nao marketplace.
+- O redirect temporario cobre tambem `/fluxo-de-caixa/:path*`.
+- Entregue ja nesta fase o item 9 da Fase 4 (`alterar-senha` -> `/dashboard`),
+  para nao depender do redirect.
 
 ### Objetivo
 Publicar Marketplaces com paridade total e nenhum link quebrado, mantendo

@@ -6,6 +6,7 @@ import type { UserRole } from "@/types/api";
 const PROTECTED_PAGE_PREFIXES = [
   "/dashboard",
   "/fluxo-de-caixa",
+  "/marketplaces",
   "/lancamentos",
   "/importacoes",
   "/integracoes",
@@ -185,6 +186,7 @@ export const config = {
     "/",
     "/dashboard/:path*",
     "/fluxo-de-caixa/:path*",
+    "/marketplaces/:path*",
     "/lancamentos/:path*",
     "/importacoes/:path*",
     "/integracoes/:path*",

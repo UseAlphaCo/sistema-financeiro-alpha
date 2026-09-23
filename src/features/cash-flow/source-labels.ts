@@ -1,3 +1,5 @@
+import { findMarketplaceLabel } from "@/features/transactions/marketplace-catalog";
+
 const SOURCE_LABELS: Record<string, string> = {
   manual: "Manual",
   import: "Importação",
@@ -12,6 +14,11 @@ const SOURCE_LABELS: Record<string, string> = {
 export function formatOriginLabel(value: string): string {
   const direct = SOURCE_LABELS[value];
   if (direct) return direct;
+
+  // `bySource` chega com o rotulo gravado pelo mapper ("Amazon Global Api");
+  // o catalogo das abas e quem define como cada marketplace e chamado na tela.
+  const catalog = findMarketplaceLabel(value);
+  if (catalog) return catalog;
 
   if (/^[A-Z]/.test(value)) {
     return value;

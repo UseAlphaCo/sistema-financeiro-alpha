@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { formatOriginLabel } from "@/features/cash-flow/source-labels";
 import { formatPaymentMethod, parseOrderNumber } from "@/features/transactions/format";
 import type { FinancialTransaction } from "@/features/transactions/types";
 
@@ -37,7 +38,10 @@ type ColumnConfig = {
   align: "left" | "right";
 };
 
-const COLUMN_STORAGE_KEY = "fluxo-de-caixa-visible-columns";
+const COLUMN_STORAGE_KEY = "marketplaces-visible-columns";
+// Chave de antes do rename para /marketplaces: lida uma vez quando a nova ainda
+// nao existe, para nao perder a preferencia de quem ja usava. Nunca e gravada.
+const LEGACY_COLUMN_STORAGE_KEY = "fluxo-de-caixa-visible-columns";
 
 const COLUMN_CONFIGS: ColumnConfig[] = [
   { id: "marketplace", label: "Marketplace", align: "left" },
@@ -84,11 +88,17 @@ function buildFlowQuery(params: QueryState & { page: number }): string {
   return qs ? `?${qs}` : "";
 }
 
+// Mesmo rotulo das abas e do "Por origem" ("Amazon", nao "Amazon Global Api").
+function formatMarketplaceCell(item: FinancialTransaction): string {
+  const value = item.marketplace ?? item.externalSource;
+  return value ? formatOriginLabel(value) : "—";
+}
+
 function getPageCount(pagination: Pagination): number {
   return Math.max(1, Math.ceil(pagination.total / Math.max(1, pagination.limit)));
 }
 
-export default function FluxoDeCaixaTable({
+export default function MarketplacesTable({
   items,
   pagination,
   query,
@@ -103,7 +113,9 @@ export default function FluxoDeCaixaTable({
     }
 
     try {
-      const stored = window.localStorage.getItem(COLUMN_STORAGE_KEY);
+      const stored =
+        window.localStorage.getItem(COLUMN_STORAGE_KEY) ??
+        window.localStorage.getItem(LEGACY_COLUMN_STORAGE_KEY);
       if (!stored) {
         return DEFAULT_VISIBILITY;
       }
@@ -142,7 +154,7 @@ export default function FluxoDeCaixaTable({
   );
 
   const pageLink = (page: number) =>
-    `/fluxo-de-caixa${buildFlowQuery({
+    `/marketplaces${buildFlowQuery({
       ...query,
       page,
     })}`;
@@ -210,7 +222,7 @@ export default function FluxoDeCaixaTable({
             <tbody className="divide-y divide-gray-100">
               {items.map((item) => (
                 <tr key={item.id} className="hover:bg-gray-50">
-                  {visibility.marketplace && <td className="whitespace-nowrap px-4 py-3 text-gray-700 capitalize">{item.marketplace ?? item.externalSource ?? "—"}</td>}
+                  {visibility.marketplace && <td className="whitespace-nowrap px-4 py-3 text-gray-700 capitalize">{formatMarketplaceCell(item)}</td>}
                   {visibility.orderNumber && <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">{parseOrderNumber(item)}</td>}
                   {visibility.occurredAt && <td className="whitespace-nowrap px-4 py-3 text-gray-600">{formatDate(item.occurredAt)}</td>}
                   {visibility.paymentMethod && <td className="whitespace-nowrap px-4 py-3 text-gray-600">{formatPaymentMethod(item)}</td>}

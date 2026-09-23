@@ -216,7 +216,7 @@ function renderCsv(rows: ExportRow[]): Buffer {
 
 async function renderXlsx(rows: ExportRow[]): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet("Fluxo de caixa");
+  const worksheet = workbook.addWorksheet("Marketplaces");
 
   worksheet.columns = [
     { header: "Marketplace", key: "marketplace", width: 20 },
@@ -276,7 +276,7 @@ async function collectRows(
 
 function buildFileName(format: CashFlowExportFormat): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `fluxo-caixa-${stamp}.${format === "csv" ? "csv" : "xlsx"}`;
+  return `marketplaces-${stamp}.${format === "csv" ? "csv" : "xlsx"}`;
 }
 
 function addDays(date: Date, days: number): Date {

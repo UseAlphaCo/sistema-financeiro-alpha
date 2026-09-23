@@ -1,7 +1,7 @@
 # Backlog Tecnico: Separacao Marketplaces e Fluxo de Caixa
 
 Data: 2026-08-26
-Status: Fase 0 concluida, Fases 1 a 5 prontas para execucao
+Status: Fases 0 e 2 concluidas (Fase 2 em 23/09/2026, MEU-261); Fases 1, 3, 4 e 5 prontas para execucao
 Referencia de plano: docs/PLAN-SEPARACAO-MARKETPLACES-FLUXO-CAIXA.md
 Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
 
@@ -71,6 +71,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
     em _components/, compartilhado com o Dashboard.
 - Definicao de pronto:
   - `grep -rn "fluxo-de-caixa" src/app/\(app\)/marketplaces` sem resultado.
+- Status: CONCLUIDO em 23/09/2026 (MEU-261)
 
 5. MKTFLX-004 - Navegacao, proxy e redirect temporario
 - Prioridade: P0
@@ -86,6 +87,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
 - Definicao de pronto:
   - Deslogado, `/marketplaces` redireciona para `/login`. Rota autenticada fora
     do matcher e o unico defeito desta lista com consequencia de seguranca.
+- Status: CONCLUIDO em 23/09/2026 (MEU-261)
 
 6. MKTFLX-005 - Chaves de estado, telemetria e nomes de export
 - Prioridade: P1
@@ -105,6 +107,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
 - Definicao de pronto:
   - Preferencia de colunas preservada apos o deploy; export baixa com nome
     coerente com a tela.
+- Status: CONCLUIDO em 23/09/2026 (MEU-261)
 
 ### Fase 3 - Dominio dos lancamentos
 

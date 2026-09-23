@@ -20,8 +20,8 @@ export default async function FinanceiroLayout({
           <a href="/dashboard" className="hover:text-gray-900">
             Dashboard
           </a>
-          <a href="/fluxo-de-caixa" className="hover:text-gray-900">
-            Fluxo de Caixa
+          <a href="/marketplaces" className="hover:text-gray-900">
+            Marketplaces
           </a>
           <LancamentosMenu />
           <a href="/importacoes" className="hover:text-gray-900">
