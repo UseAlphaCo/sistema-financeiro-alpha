@@ -109,7 +109,7 @@ export async function ensureJobRunsTable(): Promise<void> {
     )
   `);
 
-  // O painel de /integracoes le "a ultima execucao de cada job", que e'
+  // O painel de /integracoes le "as execucoes recentes de cada job", que e'
   // exatamente este indice.
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_job_runs_name_started_at
@@ -220,35 +220,17 @@ export async function withJobRun<T>(
 }
 
 /**
- * Ultima execucao de cada job, para o painel.
+ * Execucoes recentes de um job, mais recente primeiro.
  *
- * DISTINCT ON casa com idx_job_runs_name_started_at: le uma linha por job em
- * vez de varrer a tabela.
+ * E' a leitura do painel de /integracoes: a primeira linha e' "a ultima
+ * execucao", e o conjunto alimenta a linha do tempo e o watchdog
+ * (assessPipelineHealth em job-names.ts), que conta execucoes em 24 h contra o
+ * esperado. Substituiu o `DISTINCT ON` por job, que so via a ultima e por isso
+ * nao enxergava slot perdido nem falha que ja deixou de ser a mais recente.
+ *
+ * Casa com idx_job_runs_name_started_at. Tabela ainda inexistente vira lista
+ * vazia, que o painel mostra como "sem registro".
  */
-export async function listLatestJobRuns(): Promise<JobRunRow[]> {
-  const pool = getPool();
-  if (!pool) return [];
-
-  try {
-    const result = await pool.query<JobRunRow>(`
-      SELECT DISTINCT ON (job_name)
-             id, job_name, started_at, finished_at, status,
-             params, result, error_message, request_id, duration_ms
-        FROM integration.job_runs
-       ORDER BY job_name, started_at DESC
-    `);
-    return result.rows;
-  } catch (error) {
-    // Tabela ainda nao existe neste ambiente: e' ausencia de dado, nao falha da
-    // tela. O painel distingue lista vazia de "nunca rodou".
-    logError("job_run_list_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return [];
-  }
-}
-
-/** Execucoes recentes de um job, para a linha do tempo do painel. */
 export async function listJobRunsByName(jobName: string, limit = 10): Promise<JobRunRow[]> {
   const pool = getPool();
   if (!pool) return [];

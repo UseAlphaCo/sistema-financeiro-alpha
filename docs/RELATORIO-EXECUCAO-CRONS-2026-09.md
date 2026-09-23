@@ -25,9 +25,10 @@ não de números repetidos nele. Se a agenda mudar em
 duas listas divergentes fariam o relatório acusar "faltou execução" para um job que roda exatamente
 como foi agendado.
 
-Ele existe porque o painel de `/integracoes` responde **"como está agora"**: lê a última execução de
-cada job. A pergunta de acompanhamento é outra — *"como foi a semana"* —, e uma falha que se curou na
-rodada seguinte desaparece do painel sem deixar rastro visível.
+Ele existe porque o painel de `/integracoes` responde **"como está agora"**: olha as últimas 24 h de
+cada job (desde 23/09, ver [Watchdog no painel](#watchdog-no-painel-2309)). A pergunta de
+acompanhamento é outra — *"como foi a semana"* —, e uma falha mais antiga que 24 h desaparece do
+painel sem deixar rastro visível.
 
 ## Status das execuções
 
@@ -138,12 +139,39 @@ O argumento não é teórico e já está registrado no código, em
 mostrava a falha — ninguém abriu a tela. Uma semana de 100% de sucesso, como a que este relatório
 mede, é exatamente a condição em que se para de olhar o painel.
 
+## Watchdog no painel (23/09)
+
+A MEU-307 tirou a decisão de "este job está errado" de dentro do JSX do painel e a pôs numa função
+pura, `assessPipelineHealth` em [job-names.ts](../src/features/integration/job-names.ts). O painel
+ganhou um bloco no topo com o veredito consolidado. Por job:
+
+| Veredito | Tom | Quando |
+|---|---|---|
+| `falhou` | crítico | a última execução agendada terminou em erro |
+| `travado` | crítico | a última está `running` há mais de 2× o `maxDuration` da rota: a Vercel já a matou |
+| `atrasado` | crítico | a última começou há mais que `staleAfterMinutes` |
+| `poucas_execucoes` | atenção | menos execuções que `expectedPerDay` em 24 h + 15 min |
+| `falhas_recentes` | atenção | a última foi bem, mas outra das últimas 24 h falhou ou morreu `running` |
+
+Três decisões que não são detalhe:
+
+- **Só execução agendada conta**, pelo mesmo prefixo `cf-cron-` deste relatório. Contar disparo
+  manual esconderia o pior caso: o agendador parado e alguém rodando o job à mão para testar.
+- **`maxDurationSeconds` é cópia do `maxDuration` da rota**, com teste que falha se as duas
+  divergirem. É o que separa `running` legítimo de travado.
+- **`pipelineAlertText` devolve texto só para os casos críticos.** Nenhum canal consome isso ainda: a
+  função existe para que ligar o heartbeat externo ou um webhook seja uma chamada, não um refactor.
+
+A ressalva da seção anterior continua de pé: o watchdog fala pelo painel, então não detecta a própria
+morte nem o cenário em que ninguém abre a tela. O heartbeat externo segue sendo a peça que falta.
+
 ## Conclusão
 
 - **Execução:** saudável, sem ressalva. 183/183 agendadas, zero falha, zero atraso, folga de tempo
   confortável em três dos quatro jobs.
 - **Medição:** deixou de ser SQL ad-hoc — `npm run report:crons` repete o relatório a qualquer
   momento, derivando a expectativa da mesma fonte que o painel usa.
-- **Vigilância:** continua passiva. É a única pendência real, e está endereçada em task separada.
+- **Vigilância:** o painel passou a dar veredito (falhou, travado, atrasado, execuções faltando),
+  mas continua passiva: depende de alguém abrir a tela. O alerta externo segue em task separada.
 - **A vigiar:** `shopify-payment-resolution` em 50% do `maxDuration`, e a divergência recorrente do
   `shopify-verify`.

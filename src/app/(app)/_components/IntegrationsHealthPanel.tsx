@@ -1,7 +1,15 @@
 import { unstable_cache } from "next/cache";
 
-import { JOB_EXPECTATIONS, JOB_NAMES, type JobExpectation } from "@/features/integration/job-names";
-import { listLatestJobRuns, type JobRunRow } from "@/features/integration/job-run-repository";
+import {
+  assessPipelineHealth,
+  isScheduledRun,
+  JOB_EXPECTATIONS,
+  JOB_NAMES,
+  type JobHealth,
+  type JobVerdict,
+  type PipelineHealth,
+} from "@/features/integration/job-names";
+import { listJobRunsByName, type JobRunRow } from "@/features/integration/job-run-repository";
 import {
   getPipelineStatus,
   type PipelineStatus,
@@ -136,6 +144,28 @@ function toSweepView(sweep: SweepStatus): SweepView {
 }
 
 /**
+ * Execucoes recentes de cada job esperado, mais recente primeiro.
+ *
+ * A ultima execucao so nao basta: o watchdog precisa contar quantas houve em 24 h
+ * contra `expectedPerDay` e enxergar a falha que ja deixou de ser a ultima. O
+ * teto por job e' o dobro do esperado mais folga para execucoes manuais, o que
+ * cobre a janela de contagem com sobra — quatro consultas pelo indice
+ * (job_name, started_at DESC), em paralelo.
+ *
+ * `Record`, e nao `Map`: o resultado passa pelo unstable_cache, que serializa em
+ * JSON, e um Map voltaria como objeto vazio.
+ */
+async function carregarExecucoes(): Promise<Record<string, JobRunRow[]>> {
+  const porJob = await Promise.all(
+    JOB_EXPECTATIONS.map(
+      async (esperado) =>
+        [esperado.name, await listJobRunsByName(esperado.name, esperado.expectedPerDay * 2 + 4)] as const
+    )
+  );
+  return Object.fromEntries(porJob);
+}
+
+/**
  * Carrega cada fonte isoladamente.
  *
  * Promise.allSettled e nao Promise.all: uma fonte quebrada deve virar "sem
@@ -144,7 +174,7 @@ function toSweepView(sweep: SweepStatus): SweepView {
  */
 async function carregar() {
   const [runs, sweep, pipeline] = await Promise.allSettled([
-    listLatestJobRuns(),
+    carregarExecucoes(),
     getSyncSweepStatus(),
     getPipelineStatus(7),
   ]);
@@ -174,9 +204,12 @@ export default async function IntegrationsHealthPanel() {
   // Sai da mesma leitura de job_runs que o bloco de execucoes ja fez: o recibo
   // da verificacao esta no `result` daquela linha. Nenhuma consulta a mais.
   const verificacao =
-    runs === null
-      ? null
-      : buildVerificationView(runs.find((run) => run.job_name === JOB_NAMES.shopifyVerify));
+    runs === null ? null : buildVerificationView(runs[JOB_NAMES.shopifyVerify]?.[0]);
+
+  // O veredito e' calculado aqui, fora do cache: as linhas podem ter ate 60 s,
+  // mas "ha quanto tempo" precisa ser contra o relogio de agora, senao um job
+  // atrasado so apareceria atrasado um minuto depois.
+  const saude = runs === null ? null : assessPipelineHealth(new Map(Object.entries(runs)), new Date());
 
   return (
     <div className="space-y-4">
@@ -187,8 +220,10 @@ export default async function IntegrationsHealthPanel() {
         </p>
       </div>
 
+      <SaudeGeralBloco saude={saude} />
+
       <div className="grid gap-4 lg:grid-cols-2">
-        <ExecucoesCard runs={runs} />
+        <ExecucoesCard saude={saude} runs={runs} />
         <MirrorCard sweep={sweep} />
       </div>
 
@@ -198,8 +233,85 @@ export default async function IntegrationsHealthPanel() {
   );
 }
 
-function ExecucoesCard({ runs }: { runs: JobRunRow[] | null }) {
-  if (runs === null) {
+const VEREDITO_ROTULO: Record<JobVerdict, string> = {
+  falhou: "falhou",
+  travado: "travado",
+  atrasado: "atrasado",
+  poucas_execucoes: "execuções faltando",
+  falhas_recentes: "falhas recentes",
+  rodando: "rodando",
+  ok: "ok",
+  sem_registro: "sem registro",
+};
+
+/**
+ * Veredito consolidado, no topo e antes de qualquer detalhe.
+ *
+ * Existe porque em 09/09/2026 o shopify-verify falhou e o painel mostrou isso
+ * numa linha entre outras, sem destaque, por 12 dias. O silencio precisava deixar
+ * de ser indistinguivel de sucesso: quando algo esta errado, a primeira coisa na
+ * tela diz o que e' — e quando nada esta, diz isso tambem, em vez de deixar o
+ * admin inferir "ok" da ausencia de vermelho.
+ *
+ * A decisao vem de assessPipelineHealth (job-names.ts), que e' pura e testada.
+ * Este bloco so desenha.
+ */
+function SaudeGeralBloco({ saude }: { saude: PipelineHealth | null }) {
+  if (saude === null) {
+    return (
+      <div className="rounded-lg border border-dashed border-gray-300 bg-white px-4 py-3 text-xs text-gray-600">
+        — Não foi possível ler o registro de execuções, então não há veredito sobre os crons.
+      </div>
+    );
+  }
+
+  const MOLDURA: Record<Tone, string> = {
+    ok: "border-emerald-200 bg-emerald-50",
+    warn: "border-amber-200 bg-amber-50",
+    crit: "border-red-300 bg-red-50",
+    unknown: "border-gray-200 bg-gray-50",
+  };
+  const TITULO: Record<Tone, string> = {
+    ok: "Todos os crons rodaram dentro do esperado",
+    warn: "Crons rodando, com algo a olhar",
+    crit: "Cron parado ou falhando — nenhuma rodada seguinte resolve sozinha",
+    unknown: "Crons sem registro suficiente para veredito",
+  };
+
+  return (
+    <section
+      className={`rounded-lg border px-4 py-3 ${MOLDURA[saude.severity]}`}
+      aria-live="polite"
+    >
+      <div className="flex items-center gap-2">
+        <Badge tone={saude.severity}>
+          {saude.problems.length === 0 ? "ok" : `${saude.problems.length} job(s)`}
+        </Badge>
+        <p className="text-sm font-semibold text-gray-900">{TITULO[saude.severity]}</p>
+      </div>
+      {saude.problems.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {saude.problems.map((job) => (
+            <li key={job.name} className="text-xs text-gray-800">
+              <span className="font-medium">{job.label}</span>{" "}
+              <Badge tone={job.severity}>{VEREDITO_ROTULO[job.verdict]}</Badge>{" "}
+              <span className="text-gray-600">{job.detail}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function ExecucoesCard({
+  saude,
+  runs,
+}: {
+  saude: PipelineHealth | null;
+  runs: Record<string, JobRunRow[]> | null;
+}) {
+  if (saude === null || runs === null) {
     return (
       <Card title="Execuções de cron">
         <SemDado motivo="não foi possível ler o registro de execuções" />
@@ -207,65 +319,85 @@ function ExecucoesCard({ runs }: { runs: JobRunRow[] | null }) {
     );
   }
 
-  const porNome = new Map(runs.map((run) => [run.job_name, run]));
-
   return (
     <Card
       title="Execuções de cron"
-      hint="Última execução de cada job. Uma execução que rodou sem mudar nada também aparece aqui."
+      hint="Última execução de cada job e a linha do tempo recente. Uma execução que rodou sem mudar nada também aparece aqui."
     >
       <ul className="divide-y divide-gray-100">
-        {JOB_EXPECTATIONS.map((esperado) => (
-          <LinhaExecucao key={esperado.name} esperado={esperado} run={porNome.get(esperado.name)} />
+        {saude.jobs.map((job) => (
+          <LinhaExecucao key={job.name} job={job} runs={runs[job.name] ?? []} />
         ))}
       </ul>
     </Card>
   );
 }
 
-function LinhaExecucao({ esperado, run }: { esperado: JobExpectation; run: JobRunRow | undefined }) {
+const MARCA_STATUS: Record<string, string> = {
+  ok: "bg-emerald-500",
+  failed: "bg-red-500",
+  running: "bg-gray-400",
+};
+
+function LinhaExecucao({ job, runs }: { job: JobHealth; runs: JobRunRow[] }) {
+  // A ultima AGENDADA, a mesma que o veredito olhou. Mostrar aqui a ultima de
+  // qualquer origem poria "ha 14 min" ao lado de um badge "atrasado", porque um
+  // teste manual rodou ha 14 min.
+  const ultima = runs.find(isScheduledRun);
+
   // Sem linha nenhuma nao e' o mesmo que atrasado: pode ser que o job ainda nao
   // tenha rodado uma unica vez desde que o registro passou a existir.
-  if (!run) {
+  if (!ultima) {
     return (
       <li className="flex items-center justify-between gap-3 py-2">
-        <span className="text-xs text-gray-700">{esperado.label}</span>
-        <Badge tone="unknown">sem registro</Badge>
+        <span className="text-xs text-gray-700">{job.label}</span>
+        <Badge tone="unknown">{VEREDITO_ROTULO.sem_registro}</Badge>
       </li>
     );
   }
 
-  const idade = minutosDesde(run.started_at);
-  const atrasado = idade !== null && idade > esperado.staleAfterMinutes;
-
-  // Os dois casos sao `crit`, e nao `warn`, porque nenhuma rodada seguinte os
-  // desfaz sozinha. `staleAfterMinutes` ja embute ~30% de folga sobre o
-  // intervalo do cron: passar disso nao e' atraso, e' agendamento quebrado.
-  // E uma falha registrada e' passado — em 09/09/2026 o shopify-verify falhou e
-  // ficou 12 dias sem ninguem notar, com o painel mostrando o mesmo ambar de
-  // "aguarde" que ele mostra em dia imaturo.
-  const tone: Tone =
-    run.status === "failed" || atrasado ? "crit" : run.status === "ok" ? "ok" : "unknown";
+  const idade = minutosDesde(ultima.started_at);
+  // A contagem tambem fica visivel quando esta tudo certo: "8 / 8" e' o que
+  // permite notar, antes do alerta, um job que vive no limite.
+  const contagem = `${job.runsInWindow} / ${job.expectedPerDay} em 24 h`;
 
   return (
     <li className="flex items-start justify-between gap-3 py-2">
       <div className="min-w-0">
-        <p className="text-xs font-medium text-gray-800">{esperado.label}</p>
+        <p className="text-xs font-medium text-gray-800">{job.label}</p>
         <p className="text-[11px] text-gray-500">
-          {instante(run.started_at)} · {descreverIdade(idade)}
-          {run.duration_ms !== null && ` · ${(run.duration_ms / 1000).toFixed(1)}s`}
+          {instante(ultima.started_at)} · {descreverIdade(idade)}
+          {ultima.duration_ms !== null && ` · ${(ultima.duration_ms / 1000).toFixed(1)}s`} ·{" "}
+          {contagem}
         </p>
-        {run.error_message && (
-          // Acompanha o badge: se a execucao falhou, o badge e' `crit` e a
-          // mensagem nao pode ficar num tom mais brando que ele.
-          <p className="mt-0.5 truncate text-[11px] text-red-700" title={run.error_message}>
-            {run.error_message}
+        {job.severity !== "ok" && job.severity !== "unknown" && (
+          // Acompanha o badge: a frase nao pode ficar num tom mais brando que ele.
+          <p
+            className={`mt-0.5 truncate text-[11px] ${job.severity === "crit" ? "text-red-700" : "text-amber-800"}`}
+            title={job.detail}
+          >
+            {job.detail}
           </p>
         )}
+        {/* Linha do tempo, mais antiga a esquerda. So cor nao basta: cada marca
+            leva o status, o horario e a origem no title e no rotulo acessivel.
+            Disparo manual sai esmaecido: aparece, mas nao conta no veredito. */}
+        <ol className="mt-1 flex gap-0.5" aria-label={`Execuções recentes de ${job.label}`}>
+          {[...runs].reverse().map((run) => {
+            const manual = !isScheduledRun(run);
+            const rotulo = `${instante(run.started_at)} · ${run.status}${manual ? " · manual" : ""}`;
+            return (
+              <li
+                key={run.id}
+                className={`h-2 w-2 rounded-sm ${MARCA_STATUS[run.status] ?? "bg-gray-300"} ${manual ? "opacity-30" : ""}`}
+                title={rotulo}
+                aria-label={rotulo}
+              />
+            );
+          })}
+        </ol>
       </div>
-      <Badge tone={tone}>
-        {run.status === "failed" ? "falhou" : atrasado ? "atrasado" : run.status === "running" ? "rodando" : "ok"}
-      </Badge>
+      <Badge tone={job.severity}>{VEREDITO_ROTULO[job.verdict]}</Badge>
     </li>
   );
 }

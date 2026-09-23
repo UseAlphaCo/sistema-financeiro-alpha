@@ -9,7 +9,6 @@ import {
   closeJobRunPool,
   ensureJobRunsTable,
   listJobRunsByName,
-  listLatestJobRuns,
   withJobRun,
   type JobRunRow,
 } from "./job-run-repository";
@@ -95,12 +94,13 @@ describe("job-run-repository (integration)", () => {
     expect(falha?.finished_at).not.toBeNull();
   });
 
-  it("listLatestJobRuns devolve uma linha por job, a mais recente", async () => {
-    const todas = await listLatestJobRuns();
-    const doTeste = todas.filter((l: JobRunRow) => l.job_name === TEST_JOB);
-
-    expect(doTeste).toHaveLength(1);
+  it("listJobRunsByName devolve a mais recente primeiro e respeita o teto", async () => {
+    // O watchdog do painel le a PRIMEIRA linha como "a ultima execucao": uma
+    // ordem invertida faria um job falhado ha pouco aparecer como saudavel.
+    const [maisRecente] = await listJobRunsByName(TEST_JOB);
     // As duas execucoes acima rodaram nesta ordem; a mais recente e' a que falhou.
-    expect(doTeste[0].request_id).toBe("req-erro");
+    expect(maisRecente.request_id).toBe("req-erro");
+
+    expect(await listJobRunsByName(TEST_JOB, 1)).toHaveLength(1);
   });
 });
