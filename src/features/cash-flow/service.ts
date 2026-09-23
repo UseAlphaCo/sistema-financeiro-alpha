@@ -4,14 +4,8 @@ import { canCompare, resolveCoverage } from "@/features/transactions/read-model-
 import { normalizeMarketplaceToken } from "@/features/transactions/read-model-filters";
 import { PAYMENT_METHODS, type PaymentMethod } from "@/features/transactions/types";
 import { isMirrorReadModelEnabled, isShopifyPaymentsBasisEnabled } from "@/shared/read-model-config";
-import {
-  endOfZonedDay,
-  getDateRangeForPeriod,
-  getDateRangeForPreset,
-  getPreviousPeriodRange,
-  startOfZonedDay,
-  zonedDayKey,
-} from "@/lib/date-utils";
+import { getPreviousPeriodRange } from "@/lib/date-utils";
+import { resolveCashFlowDateRange } from "@/features/cash-flow/period";
 import {
   listFinancialReadModelTransactions,
   listShopifyGatewayPaymentsInWindow,
@@ -24,6 +18,10 @@ import type {
   CashFlowPeriod,
   CashFlowSummary,
 } from "@/features/cash-flow/types";
+
+// Re-export: a semantica de periodo mora em period.ts, compartilhada com a tela
+// de lancamentos (entries-service.ts) sem arrastar o grafo do mirror.
+export { resolveCashFlowDateRange };
 
 type AggregateRow = {
   source: string;
@@ -254,37 +252,6 @@ function sumTotals(rows: AggregateRow[]) {
   return { income, expense };
 }
 
-/**
- * Fronteira do filtro de data, sempre no dia de calendario de Brasilia.
- *
- * Construia a data com `new Date(ano, mes, dia)` + `setHours`, que resolve no
- * fuso do processo -- correto na maquina local, deslocado em 3 h na Vercel
- * (UTC). Ver o cabecalho de src/lib/date-utils.ts.
- *
- * Aceita as duas formas que o schema de actions.ts permite: `YYYY-MM-DD` e ISO
- * completo. O caminho ISO existia so no papel -- `"2026-08-24T00:00:00Z"` caia
- * em `Number("24T00:00:00Z")` = NaN e a funcao lancava.
- */
-function parseLocalIsoDate(date: string, endOfDay = false): Date {
-  const dayKey = /^\d{4}-\d{2}-\d{2}$/.test(date)
-    ? date
-    : (() => {
-        const instant = new Date(date);
-        if (Number.isNaN(instant.getTime())) {
-          throw new Error(`invalid local date filter: ${date}`);
-        }
-        return zonedDayKey(instant);
-      })();
-
-  const boundary = endOfDay ? endOfZonedDay(dayKey) : startOfZonedDay(dayKey);
-
-  if (Number.isNaN(boundary.getTime())) {
-    throw new Error(`invalid local date filter: ${date}`);
-  }
-
-  return boundary;
-}
-
 function shouldUseMirrorReadModel(): boolean {
   return isMirrorReadModelEnabled();
 }
@@ -445,28 +412,6 @@ export function summarizeTransactions(
     bySource,
     byPaymentMethod: Array.from(byPaymentMethodMap.values()),
   };
-}
-
-// Extraida para testabilidade sem depender de banco: se so uma das pontas do
-// range vier preenchida (ex.: usuario preencheu so "Data inicial"), a busca
-// deve usar aquele dia, e nao cair silenciosamente no preset (que defaultava
-// para "yesterday" e ignorava a data digitada).
-export function resolveCashFlowDateRange(
-  filters: Pick<CashFlowFilters, "startDate" | "endDate" | "preset" | "days">,
-  now: Date
-): { start: Date; end: Date } {
-  if (filters.startDate || filters.endDate) {
-    return {
-      start: parseLocalIsoDate(filters.startDate ?? filters.endDate!),
-      end: parseLocalIsoDate(filters.endDate ?? filters.startDate!, true),
-    };
-  }
-
-  if (filters.preset) {
-    return getDateRangeForPreset(filters.preset, now);
-  }
-
-  return getDateRangeForPeriod(filters.days ?? 30, now);
 }
 
 export async function computeCashFlow(

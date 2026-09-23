@@ -5,14 +5,26 @@ const nextConfig: NextConfig = {
     return [
       { source: "/financeiro", destination: "/dashboard", permanent: false },
       { source: "/financeiro/:path*", destination: "/:path*", permanent: false },
-      // TEMPORARIO: a tela de marketplaces saiu de /fluxo-de-caixa. Enquanto a
-      // tela nova de Fluxo de Caixa nao existir, toda URL antiga vai para
-      // Marketplaces (a querystring segue junto). Quando a tela nova entrar,
-      // esta regra vira as duas regras `has` da decisao D2 em
-      // docs/PLAN-SEPARACAO-MARKETPLACES-FLUXO-CAIXA.md -- incondicional, ela
-      // tornaria a rota reaproveitada inalcancavel.
-      { source: "/fluxo-de-caixa", destination: "/marketplaces", permanent: false },
-      { source: "/fluxo-de-caixa/:path*", destination: "/marketplaces/:path*", permanent: false },
+      // Links salvos da tela de marketplaces, que morava em /fluxo-de-caixa ate
+      // 23/09/2026. Condicional de proposito (decisao D2 em
+      // docs/PLAN-SEPARACAO-MARKETPLACES-FLUXO-CAIXA.md): `redirects()` roda antes
+      // do roteamento, e uma regra incondicional deixaria a tela nova de Fluxo de
+      // Caixa inalcancavel. A tela antiga sempre submetia `marketplace`, entao a
+      // assinatura cobre todo link que ela gerava.
+      // INVARIANTE: a tela de Fluxo de Caixa nao pode aceitar `marketplace` nem
+      // `paymentMethod`. Remover estas regras a partir de 23/12/2026.
+      {
+        source: "/fluxo-de-caixa",
+        has: [{ type: "query", key: "marketplace" }],
+        destination: "/marketplaces",
+        permanent: false,
+      },
+      {
+        source: "/fluxo-de-caixa",
+        has: [{ type: "query", key: "paymentMethod" }],
+        destination: "/marketplaces",
+        permanent: false,
+      },
     ];
   },
 };

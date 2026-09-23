@@ -146,16 +146,34 @@ depois, que venha como commit isolado com `rewrites` por 30 dias.
 - Fase 2 concluida em 23/09/2026 (Orbita MEU-261), junto com a troca do select de
   marketplace por abas -- ver "Adendo da Fase 2" abaixo. `dev` estava em 6e24f3a,
   igual a `main`.
-- Fases 1, 3, 4 e 5 pendentes. A Fase 1 nao era pre-requisito da 2 e ficou para
-  quando a tela nova comecar.
+- Fases 1, 3 e 4 concluidas em 23/09/2026, na mesma entrega (MEU-261): a regra e
+  que Marketplaces nao sai sem a tela nova de Fluxo de Caixa. Ver "Adendo das
+  Fases 1, 3 e 4" abaixo.
+- Fase 5 parcial: isolamento do lado novo provado por teste e verificacao manual
+  feita em localhost com banco real. Falta o teste de regressao do lado
+  Marketplaces (entrega 2) e o CONTEXT-TREE.md (entrega 5).
+
+### Adendo das Fases 1, 3 e 4 (MEU-261)
+- Decisoes de produto fechadas por escrito com a pessoa: `transfer` fora de
+  Entradas/Saidas/Saldo (contador proprio, aparece na tabela); so
+  `approved`/`applied` contam; quebra por categoria separa entrada de saida.
+- `entries-actions.ts` e `entries-validations.ts` nao foram criados: nenhuma rota
+  ou client consome o servico, e a pagina (Server Component) valida a
+  querystring e chama `computeCashFlowEntries` direto, como Marketplaces faz com
+  `computeCashFlow`. Se surgir API, o contrato `ActionResult<T>` entra com ela.
+- Redirect: saiu o incondicional da Fase 2 e entraram as duas regras `has` da
+  D2, com data-alvo de remocao 23/12/2026 anotada em next.config.ts.
+- Verificacao manual: 6 lancamentos de controle (entrada, saida, entrada sem
+  categoria, pendente, transferencia, entrada no dia anterior) nas categorias
+  reais; numeros da tela conferidos com a pessoa; depois soft delete dos 6.
 
 ### Status por fase
 - Fase 0 - Concluida
-- Fase 1 - Pendente
+- Fase 1 - Concluida
 - Fase 2 - Concluida
-- Fase 3 - Pendente
-- Fase 4 - Pendente
-- Fase 5 - Pendente
+- Fase 3 - Concluida
+- Fase 4 - Concluida
+- Fase 5 - Parcial
 
 ### Pendencias operacionais
 - Fechar por escrito, antes da Fase 3, tres decisoes de produto: tratamento de
@@ -207,7 +225,7 @@ e a tela nova nasceria com os bugs de fuso que `main` ja corrigiu.
 ## Fase 1 - Extrair a semantica de periodo
 
 ### Status atual
-Pendente
+Concluida (23/09/2026)
 
 ### Objetivo
 Dar as duas telas uma fonte unica de "periodo" e "periodo anterior", sem que a
@@ -295,7 +313,7 @@ Publicar Marketplaces com paridade total e nenhum link quebrado, mantendo
 ## Fase 3 - Dominio dos lancamentos (sem UI)
 
 ### Status atual
-Pendente
+Concluida (23/09/2026)
 
 ### Objetivo
 Entregar a consulta e a agregacao da tela nova, testaveis, antes de existir tela.
@@ -344,7 +362,7 @@ sem `DATABASE_URL` no ambiente.
 ## Fase 4 - Tela nova em /fluxo-de-caixa
 
 ### Status atual
-Pendente
+Concluida (23/09/2026)
 
 ### Objetivo
 Publicar Fluxo de Caixa lendo so lancamentos, e trocar o redirect incondicional
@@ -401,7 +419,7 @@ em commits distintos -- separar produziria 404 ou tela inalcancavel.
 ## Fase 5 - Isolamento, verificacao e documentacao
 
 ### Status atual
-Pendente
+Parcial (23/09/2026): falta o teste de regressao do lado Marketplaces e o CONTEXT-TREE.md
 
 ### Objetivo
 Provar que as duas telas nao se contaminam, verificar em ambiente real e deixar
@@ -441,7 +459,7 @@ falhar.
 ## Verificacao tecnica obrigatoria
 
 ### Status atual
-Executada na base sincronizada (Fase 0). Pendente para as Fases 1 a 5.
+Executada na Fase 0 e novamente em 23/09/2026, apos as Fases 1 a 4.
 
 1. Executar npm run lint.
 2. Executar npm run typecheck.

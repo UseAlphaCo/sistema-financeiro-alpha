@@ -1,7 +1,7 @@
 # Backlog Tecnico: Separacao Marketplaces e Fluxo de Caixa
 
 Data: 2026-08-26
-Status: Fases 0 e 2 concluidas (Fase 2 em 23/09/2026, MEU-261); Fases 1, 3, 4 e 5 prontas para execucao
+Status: Fases 0 a 4 concluidas (1 a 4 em 23/09/2026, MEU-261); Fase 5 parcial
 Referencia de plano: docs/PLAN-SEPARACAO-MARKETPLACES-FLUXO-CAIXA.md
 Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
 
@@ -55,6 +55,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
 - Definicao de pronto:
   - src/features/cash-flow/service.test.ts passa sem uma linha alterada.
 
+- Status: CONCLUIDO em 23/09/2026 (MEU-261)
 ### Fase 2 - Marketplaces
 
 4. MKTFLX-003 - Mover a tela para /marketplaces
@@ -122,6 +123,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
 - Definicao de pronto:
   - Filtros invalidos devolvem ActionResult de erro, sem lancar.
 
+- Status: NAO FEITO por decisao: sem consumidor de API, a pagina chama o servico direto (ver adendo no plano)
 8. MKTFLX-007 - Repositorio Prisma-only de lancamentos
 - Prioridade: P0
 - Estimativa: 1 dia
@@ -140,6 +142,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
 - Definicao de pronto:
   - O modulo nao importa @/features/transactions/read-model nem pg.
 
+- Status: CONCLUIDO em 23/09/2026 (MEU-261)
 9. MKTFLX-008 - Servico de agregacao e comparativo
 - Prioridade: P0
 - Estimativa: 1 dia
@@ -154,6 +157,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
 - Definicao de pronto:
   - Entradas menos Saidas igual a Saldo para qualquer combinacao dos tres tipos.
 
+- Status: CONCLUIDO em 23/09/2026 (MEU-261)
 10. MKTFLX-009 - Testes do dominio
 - Prioridade: P0
 - Estimativa: 1 dia
@@ -169,6 +173,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
   - Cada caso de borda com um `it` nomeado; suite verde com TZ=UTC e sem
     DATABASE_URL.
 
+- Status: CONCLUIDO em 23/09/2026 (MEU-261)
 ### Fase 4 - Tela nova em /fluxo-de-caixa
 
 11. MKTFLX-010 - Shell da pagina e formulario de filtros
@@ -187,6 +192,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
   - Filtros sobrevivem a recarregamento pela querystring; nenhum import de
     read-model na pagina.
 
+- Status: CONCLUIDO em 23/09/2026 (MEU-261)
 12. MKTFLX-011 - Cards de KPI com comparativo
 - Prioridade: P0
 - Estimativa: 0.5 dia
@@ -199,6 +205,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
   - Os tres cards batem com a soma manual dos lancamentos de controle em banco
     real.
 
+- Status: CONCLUIDO em 23/09/2026 (MEU-261)
 13. MKTFLX-012 - Tabela paginada de lancamentos
 - Prioridade: P0
 - Estimativa: 1 dia
@@ -212,6 +219,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
 - Definicao de pronto:
   - Ultima pagina sem "Proxima"; `?page=999` mostra vazio, nao erro.
 
+- Status: CONCLUIDO em 23/09/2026 (MEU-261)
 14. MKTFLX-013 - Quebra por categoria
 - Prioridade: P1
 - Estimativa: 0.5 dia
@@ -224,6 +232,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
 - Definicao de pronto:
   - Soma dos totais por categoria igual a Entradas mais Saidas do periodo.
 
+- Status: CONCLUIDO em 23/09/2026 (MEU-261)
 15. MKTFLX-014 - Estados vazio e de erro, e redirect condicional
 - Prioridade: P0
 - Estimativa: 0.5 dia
@@ -241,6 +250,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
     renderiza zeros; `/fluxo-de-caixa` puro serve a tela nova e
     `/fluxo-de-caixa?marketplace=shopify` redireciona com a query intacta.
 
+- Status: CONCLUIDO em 23/09/2026 (MEU-261)
 ### Fase 5 - Isolamento, verificacao e docs
 
 16. MKTFLX-015 - Testes de regressao de isolamento
@@ -256,6 +266,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
 - Definicao de pronto:
   - Remover o filtro de origem de qualquer um dos dois lados faz um teste falhar.
 
+- Status: PARCIAL: lado novo coberto (mocks que lancam + buildEntriesWhere); falta o lado Marketplaces
 17. MKTFLX-016 - Verificacao manual em ambiente real
 - Prioridade: P0
 - Estimativa: 0.5 dia
@@ -267,6 +278,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
 - Definicao de pronto:
   - Os 12 passos com resultado registrado e nenhum desvio aberto.
 
+- Status: CONCLUIDO em 23/09/2026 em localhost com banco real (MEU-261)
 18. MKTFLX-017 - Documentacao de feature e referencias
 - Prioridade: P2
 - Estimativa: 0.5 dia
@@ -284,6 +296,7 @@ Branch de execucao: `dev` (sincronizada com `main` em ff20a0d)
   - Nenhuma referencia em docs ou comentarios usa /fluxo-de-caixa para designar a
     tela de marketplaces.
 
+- Status: PARCIAL: feature-cash-flow.md e next.config.ts atualizados; falta CONTEXT-TREE.md e comentarios antigos
 19. MKTFLX-018 - Gate e PR
 - Prioridade: P0
 - Estimativa: 0.5 dia
