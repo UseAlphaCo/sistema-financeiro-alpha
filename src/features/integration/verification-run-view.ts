@@ -108,6 +108,15 @@ export type VerificationView = {
     semCorrecao: number;
     /** Divergencias detectadas nesta rodada, corrigidas ou nao. */
     detectadas: number;
+    /**
+     * Abertas que a reconferencia fechou nesta rodada sem chamar a Shopify.
+     *
+     * Zero tambem quando a execucao e' anterior a reconferencia e o campo nao
+     * existe: aqui zero e ausente dizem a mesma coisa ("nada fechou por outro
+     * caminho"), ao contrario dos contadores de aberto, e o painel so exibe
+     * este numero quando ele e' positivo.
+     */
+    reconferidas: number;
     driftFormatted: string;
     /** D-1 ficou de fora por estar imaturo. */
     diaAdiado: string | null;
@@ -223,6 +232,7 @@ function lerReconciliacao(value: unknown): VerificationView["reconciliacao"] {
       persistentes: 0,
       semCorrecao: 0,
       detectadas: 0,
+      reconferidas: 0,
       driftFormatted: "—",
       diaAdiado: null,
       erro,
@@ -239,6 +249,7 @@ function lerReconciliacao(value: unknown): VerificationView["reconciliacao"] {
     persistentes: porStatus ? (asNumber(porStatus.persistente) ?? 0) : 0,
     semCorrecao: porStatus ? (asNumber(porStatus.sem_correcao) ?? 0) : 0,
     detectadas,
+    reconferidas: asNumber(value.reconferred) ?? 0,
     driftFormatted: asString(value.driftFormatted) ?? "—",
     diaAdiado: asString(value.skippedImmatureDay),
     erro: null,

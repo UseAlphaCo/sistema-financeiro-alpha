@@ -456,6 +456,33 @@ Pedido corrigido que **volta** a divergir. Separa "atrasou e fechou" de defeito 
 o funil de candidatos da Fase 5 — que continua bloqueada a montante, mas agora tem uma lista em vez
 de uma suspeita.
 
+### Reconferência (23/09/2026): o placar passa a ser de estado
+
+Até aqui a tabela só tinha uma transição de saída: o conserto da própria rotina (`corrigido`). Uma
+divergência resolvida por **outro** caminho (materialização tardia, job de resolução, backfill)
+ficava `pendente` para sempre, e o "Em aberto" do painel só crescia, o que tirava dele o sentido de
+"aberto agora".
+
+A cada rodada, antes da fila de retentativa, a rotina re-mede contra o ledger **todo** o conjunto
+aberto, inclusive o que está em recuo e o `sem_correcao` que já esgotou as tentativas. Quem deixou
+de divergir fecha como `fechado_por_reconferencia`:
+
+- **sem chamada à Admin API**, só leitura do ledger (`findLedgerGatewayTotalsByOrderIds` +
+  `detectOrderDivergences`, com a mesma tolerância da detecção);
+- **sem gastar tentativa** (`attempts` não sobe) e **sem datar correção** (`corrected_at` nulo):
+  quem consertou foi outro mecanismo, e somar isso a `corrigido` inflaria a taxa de conserto da
+  rotina com trabalho que ela não fez;
+- se o pedido voltar a divergir, reabre como `persistente`, igual a um `corrigido`.
+
+Os status abertos (`pendente`, `persistente`, `sem_correcao`) viram estado atual; os fechados
+continuam acumulando, porque a falta de retenção segue deliberada. O CLI imprime os dois grupos
+separados, e o painel mostra quantas fecharam na reconferência da última rodada.
+
+Medido em 23/09 com dados reais: aplicada aos 22 pedidos já `corrigido`, a regra fecharia os 22, e
+o ledger medido bate ao centavo com o `ledger_cents_after` gravado no conserto. A rota completa
+(chamada real) rodou em 75 s: 2.142 pedidos comparados, 5 detectados e 5 corrigidos
+(R$ 2.174,38), com `reconferred: 0`, já que não havia nada aberto antes da rodada.
+
 ### Medições de 20/09/2026
 
 | Medição | Resultado |

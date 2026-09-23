@@ -38,6 +38,22 @@
 -- pedidos ja divergiram vale mais que o espaco, e `persistente` so tem
 -- significado contra o passado.
 --
+-- Placar de ESTADO, nao de acumulado (desde 23/09/2026): a falta de retencao
+-- continua deliberada, mas nao contamina mais o painel. A cada rodada a
+-- reconferencia re-mede contra o ledger TODO o conjunto aberto (inclusive o que
+-- esta em recuo e o que ja esgotou tentativas) e fecha como
+-- 'fechado_por_reconferencia' o que deixou de divergir por outro caminho --
+-- materializacao tardia, job de resolucao, backfill. Sem isso nao havia
+-- transicao de saida para esses casos: a linha ficava 'pendente' para sempre e o
+-- "Em aberto" crescia monotonicamente. Hoje os status abertos (pendente,
+-- persistente, sem_correcao) significam "aberto agora"; os fechados (corrigido,
+-- fechado_por_reconferencia) sao historico e acumulam.
+--
+-- 'fechado_por_reconferencia' e distinto de 'corrigido' de proposito: quem
+-- fechou foi outro mecanismo. Fechar assim nao gasta tentativa (attempts nao
+-- sobe) nem data correcao (corrected_at fica nulo). Se o pedido voltar a
+-- divergir, reabre como 'persistente', igual a um corrigido.
+--
 -- Por que fora do Prisma: mesmo motivo de shopify-order-payment-resolution.sql,
 -- financial-orders.sql e job-runs.sql -- a tabela vive no schema `integration`,
 -- no banco CORE, fora do schema.prisma/prisma/migrations, e o deploy roda apenas
@@ -62,12 +78,18 @@ CREATE TABLE IF NOT EXISTS integration.shopify_reconciliation_divergences (
   delta_cents         bigint      NOT NULL,
   -- Comparavel do ledger depois da re-resolucao. NULL enquanto nao corrigido.
   ledger_cents_after  bigint,
-  -- pendente | corrigido | persistente | sem_correcao
+  -- Abertos: pendente | persistente | sem_correcao
+  -- Fechados: corrigido | fechado_por_reconferencia
   status              text        NOT NULL,
   -- Quantas vezes este pedido foi detectado como divergente.
   occurrences         integer     NOT NULL DEFAULT 1,
+  -- Tentativas de conserto contra a Admin API no ciclo atual. Zera so na
+  -- reabertura (-> persistente).
+  attempts            integer     NOT NULL DEFAULT 0,
   detected_at         timestamptz NOT NULL DEFAULT NOW(),
   last_checked_at     timestamptz NOT NULL DEFAULT NOW(),
+  -- Quando a linha volta a ser elegivel para tentativa. NULL = elegivel agora.
+  next_attempt_at     timestamptz,
   corrected_at        timestamptz
 );
 

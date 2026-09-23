@@ -258,10 +258,49 @@ describe("buildVerificationView: reconciliacao", () => {
       persistentes: 2,
       semCorrecao: 0,
       detectadas: 4,
+      reconferidas: 0,
       driftFormatted: "R$ 1.204,55",
       diaAdiado: null,
       erro: null,
     });
+  });
+
+  it("le as fechadas pela reconferencia", () => {
+    const view = buildVerificationView(
+      comReconciliacao({
+        days: ["2026-09-20", "2026-09-21", "2026-09-22"],
+        skippedImmatureDay: null,
+        detected: 1,
+        reconferred: 4,
+        corrected: 1,
+        driftFormatted: "R$ 12,00",
+        byStatus: {
+          pendente: 0,
+          corrigido: 9,
+          persistente: 0,
+          sem_correcao: 0,
+          fechado_por_reconferencia: 4,
+        },
+      })
+    );
+
+    expect(view.reconciliacao?.reconferidas).toBe(4);
+  });
+
+  it("execucao anterior a reconferencia le zero, sem quebrar", () => {
+    // O campo nao existe nas linhas de job_runs gravadas antes de 23/09/2026.
+    const view = buildVerificationView(
+      comReconciliacao({
+        days: ["2026-09-18"],
+        skippedImmatureDay: null,
+        detected: 0,
+        corrected: 0,
+        driftFormatted: "R$ 0,00",
+        byStatus: { pendente: 0, corrigido: 0, persistente: 0, sem_correcao: 0 },
+      })
+    );
+
+    expect(view.reconciliacao?.reconferidas).toBe(0);
   });
 
   /**

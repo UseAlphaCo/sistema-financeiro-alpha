@@ -48,7 +48,10 @@ const STATUS_VALIDOS: ReconciliationStatus[] = [
   "corrigido",
   "persistente",
   "sem_correcao",
+  "fechado_por_reconferencia",
 ];
+
+const STATUS_FECHADOS: ReconciliationStatus[] = ["corrigido", "fechado_por_reconferencia"];
 
 type Args = {
   rodar: boolean;
@@ -102,6 +105,8 @@ function imprimirResumo(summary: ReconciliationSummary) {
   }
   console.log(`Pedidos comparados:   ${summary.comparedOrders}`);
   console.log(`Divergencias na janela: ${summary.detected} (${summary.driftFormatted})`);
+  // Fechadas sem chamada a Shopify: outro mecanismo ja tinha resolvido.
+  console.log(`Fechadas na reconferencia: ${summary.reconferred}`);
   // A fila inclui o que sobrou de rodadas anteriores, entao pode ser maior que
   // a deteccao da janela — e a diferenca e' justamente a divida acumulada.
   console.log(`Fila elegivel:        ${summary.queued}`);
@@ -110,10 +115,7 @@ function imprimirResumo(summary: ReconciliationSummary) {
   console.log(`  falharam:           ${summary.failed}`);
   console.log(`  esgotaram (gente):  ${summary.exhausted}`);
   console.log(`  adiadas pelo teto:  ${summary.deferred}`);
-  console.log("\nAcumulado por status:");
-  for (const status of STATUS_VALIDOS) {
-    console.log(`  ${status.padEnd(14)} ${summary.byStatus[status]}`);
-  }
+  imprimirContagem(summary.byStatus);
 
   if (summary.sample && summary.sample.length > 0) {
     console.log("\nPedidos que divergem (maior desvio primeiro):\n");
@@ -137,14 +139,28 @@ function imprimirResumo(summary: ReconciliationSummary) {
   console.log("");
 }
 
+/**
+ * Separa o que e' estado do que e' historico. Os abertos sao podados pela
+ * reconferencia a cada rodada; os fechados acumulam, porque a tabela nao tem
+ * retencao. Imprimir tudo sob "acumulado" fazia o operador ler o aberto como
+ * soma historica, que ele deixou de ser.
+ */
+function imprimirContagem(contagem: Record<ReconciliationStatus, number>) {
+  console.log("\nEm aberto agora:");
+  for (const status of STATUS_VALIDOS.filter((item) => !STATUS_FECHADOS.includes(item))) {
+    console.log(`  ${status.padEnd(26)} ${contagem[status]}`);
+  }
+  console.log("Fechadas (historico):");
+  for (const status of STATUS_FECHADOS) {
+    console.log(`  ${status.padEnd(26)} ${contagem[status]}`);
+  }
+}
+
 function imprimirLista(
   linhas: ReconciliationDivergenceRow[],
   contagem: Record<ReconciliationStatus, number>
 ) {
-  console.log("\nAcumulado por status:");
-  for (const status of STATUS_VALIDOS) {
-    console.log(`  ${status.padEnd(14)} ${contagem[status]}`);
-  }
+  imprimirContagem(contagem);
 
   if (linhas.length === 0) {
     console.log("\nNenhuma divergencia registrada para o filtro pedido.\n");
@@ -156,21 +172,21 @@ function imprimirLista(
     [
       "dia".padEnd(11),
       "pedido".padEnd(16),
-      "status".padEnd(13),
+      "status".padEnd(26),
       "delta".padStart(13),
       "ocor.",
       "tent.",
       "proxima tentativa",
     ].join(" ")
   );
-  console.log("-".repeat(95));
+  console.log("-".repeat(108));
 
   for (const linha of linhas) {
     console.log(
       [
         linha.day.padEnd(11),
         linha.externalOrderId.padEnd(16),
-        linha.status.padEnd(13),
+        linha.status.padEnd(26),
         dinheiro(linha.deltaCents).padStart(13),
         String(linha.occurrences).padEnd(5),
         String(linha.attempts).padEnd(5),
@@ -190,7 +206,7 @@ function imprimirLista(
  * linha nunca foi agendada e entra na proxima rodada.
  */
 function proximaTentativa(linha: ReconciliationDivergenceRow): string {
-  if (linha.status === "corrigido") return "-";
+  if (STATUS_FECHADOS.includes(linha.status)) return "-";
   if (linha.attempts >= MAX_RETRY_ATTEMPTS) return "esgotada (precisa de gente)";
   return linha.nextAttemptAt ?? "na proxima rodada";
 }

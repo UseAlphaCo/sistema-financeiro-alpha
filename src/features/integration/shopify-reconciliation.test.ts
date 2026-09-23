@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   decideRetryOutcome,
+  findReconferredClosures,
   MAX_RETRY_ATTEMPTS,
   nextAttemptAfter,
 } from "./shopify-reconciliation";
@@ -131,5 +132,88 @@ describe("decideRetryOutcome", () => {
         now: AGORA,
       })
     ).toEqual({ status: "corrigido", nextAttemptAt: null });
+  });
+});
+
+describe("findReconferredClosures", () => {
+  function ledger(entradas: Record<string, Record<string, number>>) {
+    return new Map(
+      Object.entries(entradas).map(([pedido, porGateway]) => [
+        pedido,
+        new Map(Object.entries(porGateway)),
+      ])
+    );
+  }
+
+  it("fecha quem outro mecanismo ja acertou e mantem quem segue divergindo", () => {
+    const fechamentos = findReconferredClosures(
+      [
+        { externalOrderId: "acertado", tenderCents: 10_000 },
+        { externalOrderId: "divergente", tenderCents: 10_000 },
+      ],
+      new Map(),
+      ledger({ acertado: { pix: 10_000 }, divergente: { pix: 7_000 } })
+    );
+
+    expect(fechamentos).toEqual([{ externalOrderId: "acertado", ledgerCents: 10_000 }]);
+  });
+
+  it("usa o tender fresco da janela antes do gravado na linha", () => {
+    // A linha foi gravada com 10.000, mas a Shopify agora reporta 12.000 (uma
+    // captura que chegou depois). O ledger ja tem os 12.000: fechar contra o
+    // numero velho manteria aberto um pedido que esta certo — e fechar contra
+    // o velho quando o ledger tem 10.000 fecharia um pedido errado.
+    const abertas = [{ externalOrderId: "p1", tenderCents: 10_000 }];
+
+    expect(
+      findReconferredClosures(abertas, new Map([["p1", 12_000]]), ledger({ p1: { pix: 12_000 } }))
+    ).toHaveLength(1);
+    expect(
+      findReconferredClosures(abertas, new Map([["p1", 12_000]]), ledger({ p1: { pix: 10_000 } }))
+    ).toHaveLength(0);
+  });
+
+  it("sem tender fresco, confia no gravado — a linha ja saiu da janela", () => {
+    const fechamentos = findReconferredClosures(
+      [{ externalOrderId: "antigo", tenderCents: 5_000 }],
+      new Map([["outro-pedido", 1]]),
+      ledger({ antigo: { appmax: 5_000 } })
+    );
+
+    expect(fechamentos).toEqual([{ externalOrderId: "antigo", ledgerCents: 5_000 }]);
+  });
+
+  it("aplica a mesma tolerancia da deteccao, nem mais frouxa nem mais estrita", () => {
+    // 1 centavo fecha, 2 nao. Um criterio diferente do da varredura faria o
+    // pedido oscilar entre fechado e persistente sem nada mudar no ledger.
+    const fechamentos = findReconferredClosures(
+      [
+        { externalOrderId: "um-centavo", tenderCents: 10_001 },
+        { externalOrderId: "dois-centavos", tenderCents: 10_002 },
+      ],
+      new Map(),
+      ledger({ "um-centavo": { pix: 10_000 }, "dois-centavos": { pix: 10_000 } })
+    );
+
+    expect(fechamentos.map((item) => item.externalOrderId)).toEqual(["um-centavo"]);
+  });
+
+  it("pedido sem nenhuma perna no ledger nao fecha", () => {
+    expect(
+      findReconferredClosures([{ externalOrderId: "sem-ledger", tenderCents: 3_000 }], new Map(), ledger({}))
+    ).toEqual([]);
+  });
+
+  it("grava o comparavel, sem as pernas de credito na loja", () => {
+    // A Shopify nao emite tender para credito na loja, entao o comparavel exclui
+    // essa perna dos dois lados. O ledger_cents_after registra o comparavel, nao
+    // o total real do pedido — mesma convencao da coluna em `corrigir`.
+    const fechamentos = findReconferredClosures(
+      [{ externalOrderId: "com-credito", tenderCents: 8_000 }],
+      new Map(),
+      ledger({ "com-credito": { pix: 8_000, shopify_store_credit: 2_000 } })
+    );
+
+    expect(fechamentos).toEqual([{ externalOrderId: "com-credito", ledgerCents: 8_000 }]);
   });
 });

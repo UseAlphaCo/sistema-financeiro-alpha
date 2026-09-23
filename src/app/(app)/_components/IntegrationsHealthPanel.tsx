@@ -564,6 +564,11 @@ function VerificacaoCard({ view }: { view: VerificationView | null }) {
  * maior parte dos dias: sao os numeros que nao se resolvem sozinhos com o
  * tempo. Os outros dois descrevem uma rodada; estes dois descrevem uma divida.
  *
+ * "Em aberto", "Persistentes" e "Sem correcao" sao estado atual, nao soma
+ * historica: a reconferencia re-mede todo o conjunto aberto a cada rodada e fecha
+ * o que outro mecanismo ja acertou. Antes dela, uma linha resolvida por fora
+ * ficava aberta para sempre e o "Em aberto" so crescia.
+ *
  * `semCorrecao` e' o mais grave dos dois e era o unico que nao aparecia aqui.
  * Persistente ja esteve corrigido e voltou a divergir — ha o que investigar,
  * mas o mecanismo ao menos alcanca o pedido. Sem correcao significa que a
@@ -585,7 +590,8 @@ function ReconciliacaoBloco({
     );
   }
 
-  const { corrigidos, pendentes, persistentes, semCorrecao, detectadas, diaAdiado } = reconciliacao;
+  const { corrigidos, pendentes, persistentes, semCorrecao, detectadas, reconferidas, diaAdiado } =
+    reconciliacao;
 
   return (
     <div className="mt-3 border-t border-gray-100 pt-3">
@@ -634,6 +640,13 @@ function ReconciliacaoBloco({
           </dd>
         </div>
       </dl>
+
+      {reconferidas > 0 && (
+        <p className="mt-2 text-[11px] text-gray-500">
+          {reconferidas.toLocaleString("pt-BR")} divergência(s) fechada(s) na reconferência: outro
+          mecanismo já tinha acertado o ledger, então saíram do placar sem chamada à Shopify.
+        </p>
+      )}
 
       {(semCorrecao > 0 || persistentes > 0) && (
         <p className="mt-2 text-[11px] text-red-700">

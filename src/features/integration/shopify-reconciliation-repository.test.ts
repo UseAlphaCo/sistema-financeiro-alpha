@@ -6,10 +6,12 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  closeDivergencesByReconference,
   closeShopifyReconciliationPool,
   countDivergencesByStatus,
   ensureShopifyReconciliationTable,
   listDivergences,
+  listOpenDivergences,
   listRetryableDivergences,
   markDivergenceAttemptFailed,
   markDivergenceOutcome,
@@ -337,6 +339,121 @@ describe("shopify-reconciliation-repository (integration)", () => {
       const row = await ler(desistiu);
       expect(row.status).toBe("sem_correcao");
       expect(row.ledger_cents_after).toBeNull();
+    });
+  });
+
+  /**
+   * Reconferencia — a transicao de saida que a tabela nao tinha.
+   *
+   * Mesma disciplina da fila: a tabela e' a de producao, entao as asserções sao
+   * sobre presenca e sobre a linha de teste, nunca sobre contagem absoluta.
+   */
+  describe("reconferencia", () => {
+    const DELTA_ALTO = 800_000_000;
+
+    function detectar(id: string) {
+      return recordDetectedDivergences([
+        {
+          externalOrderId: id,
+          day: "2026-09-07",
+          tenderCents: DELTA_ALTO,
+          ledgerCents: 0,
+          deltaCents: DELTA_ALTO,
+        },
+      ]);
+    }
+
+    it("lista todo aberto, inclusive o que esta de recuo e o que esgotou tentativas", async () => {
+      // A fila de retentativa nao traz nenhum destes dois. A reconferencia
+      // precisa trazer: e' so leitura de ledger, e o `sem_correcao` esgotado e'
+      // exatamente a linha que ficaria vermelha para sempre sem ela.
+      const recuado = `${PREFIXO}reconf-recuado`;
+      const esgotado = `${PREFIXO}reconf-esgotado`;
+      const fechado = `${PREFIXO}reconf-ja-fechado`;
+      await detectar(recuado);
+      await detectar(esgotado);
+      await detectar(fechado);
+      await markDivergenceOutcome(recuado, "pendente", 0, new Date(Date.now() + 86_400_000));
+      for (let i = 0; i < 6; i += 1) await markDivergenceOutcome(esgotado, "sem_correcao", 0);
+      await markDivergenceOutcome(fechado, "corrigido", DELTA_ALTO);
+
+      const ids = (await listOpenDivergences()).map((linha) => linha.externalOrderId);
+
+      expect(ids).toContain(recuado);
+      expect(ids).toContain(esgotado);
+      expect(ids).not.toContain(fechado);
+    });
+
+    it("fecha sem gastar tentativa e sem datar como correcao", async () => {
+      const id = `${PREFIXO}reconf-fecha`;
+      await detectar(id);
+      await markDivergenceOutcome(id, "pendente", 0, new Date(Date.now() + 86_400_000));
+
+      const fechadas = await closeDivergencesByReconference([
+        { externalOrderId: id, ledgerCents: DELTA_ALTO },
+      ]);
+
+      const row = await ler(id);
+      expect(fechadas).toBe(1);
+      expect(row.status).toBe("fechado_por_reconferencia");
+      expect(Number(row.ledger_cents_after)).toBe(DELTA_ALTO);
+      // Nenhuma chamada a Admin API: o orcamento nao se mexe.
+      expect(row.attempts).toBe(1);
+      // Quem consertou foi outro mecanismo; a rotina nao se credita.
+      expect(row.corrected_at).toBeNull();
+      expect(row.next_attempt_at).toBeNull();
+    });
+
+    it("sai da fila de retentativa e do conjunto aberto", async () => {
+      const id = `${PREFIXO}reconf-sai-da-fila`;
+      await detectar(id);
+      await closeDivergencesByReconference([{ externalOrderId: id, ledgerCents: DELTA_ALTO }]);
+
+      const fila = await listRetryableDivergences({ limit: 200, maxAttempts: 5 });
+      const abertas = await listOpenDivergences();
+
+      expect(fila.rows.map((linha) => linha.externalOrderId)).not.toContain(id);
+      expect(abertas.map((linha) => linha.externalOrderId)).not.toContain(id);
+    });
+
+    it("nao reclassifica linha que ja tinha fechado por conserto", async () => {
+      // Corrida entre a leitura e o UPDATE: quem ja esta `corrigido` guarda o
+      // credito do conserto, e a reconferencia nao pode reescrever isso.
+      const id = `${PREFIXO}reconf-corrigido`;
+      await detectar(id);
+      await markDivergenceOutcome(id, "corrigido", DELTA_ALTO);
+
+      const fechadas = await closeDivergencesByReconference([
+        { externalOrderId: id, ledgerCents: DELTA_ALTO },
+      ]);
+
+      expect(fechadas).toBe(0);
+      expect((await ler(id)).status).toBe("corrigido");
+    });
+
+    it("fechado pela reconferencia que volta a divergir reabre como persistente", async () => {
+      const id = `${PREFIXO}reconf-reabre`;
+      await detectar(id);
+      await markDivergenceOutcome(id, "pendente", 0, new Date(Date.now() + 86_400_000));
+      await closeDivergencesByReconference([{ externalOrderId: id, ledgerCents: DELTA_ALTO }]);
+
+      await detectar(id);
+
+      const row = await ler(id);
+      expect(row.status).toBe("persistente");
+      // Reabertura e' evidencia nova: o orcamento recomeca, igual a um corrigido.
+      expect(row.attempts).toBe(0);
+      expect(row.next_attempt_at).toBeNull();
+      expect(row.ledger_cents_after).toBeNull();
+    });
+
+    it("a contagem expoe o status novo", async () => {
+      const contagem = await countDivergencesByStatus();
+      expect(contagem.fechado_por_reconferencia).toBeGreaterThanOrEqual(1);
+    });
+
+    it("lista vazia nao escreve nada", async () => {
+      await expect(closeDivergencesByReconference([])).resolves.toBe(0);
     });
   });
 });

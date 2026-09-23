@@ -62,7 +62,17 @@ export type ReconciliationStatus =
   /** Ja esteve corrigido e voltou a divergir. Candidato a defeito estrutural. */
   | "persistente"
   /** Re-resolvido, mas o ledger continua discordando. Precisa de gente. */
-  | "sem_correcao";
+  | "sem_correcao"
+  /**
+   * Deixou de divergir sem que a reconciliacao consertasse nada.
+   *
+   * Outro mecanismo fechou (materializacao tardia, job de resolucao, backfill) e
+   * a reconferencia so constatou. Separado de `corrigido` de proposito: somar os
+   * dois inflaria a taxa de conserto da rotina com trabalho que ela nao fez, e o
+   * historico que `occurrences`/`detected_at` preservam deixaria de dizer QUEM
+   * resolveu.
+   */
+  | "fechado_por_reconferencia";
 
 export type ReconciliationDivergenceRow = {
   externalOrderId: string;
@@ -105,6 +115,17 @@ export type ReconciliationDivergenceRow = {
  * bater na Shopify por pedido que alguem ja deu por encerrado.
  */
 const STATUS_EM_ABERTO: ReconciliationStatus[] = ["pendente", "persistente", "sem_correcao"];
+
+/**
+ * Status de quem ja chegou a fechar. Redeteccao de qualquer um deles e' reabertura.
+ *
+ * Um SQL so para os dois: a regra de reabertura (`persistente`, orcamento zerado)
+ * nao pode depender de quem fechou. Um pedido fechado pela reconferencia que volta
+ * a divergir e' tao "fechou e reabriu" quanto um consertado aqui — tratar como
+ * redeteccao comum o devolveria a `pendente` com as tentativas velhas, e a unica
+ * pista de defeito estrutural sumiria.
+ */
+const SQL_STATUS_FECHADOS = `('corrigido', 'fechado_por_reconferencia')`;
 
 export async function ensureShopifyReconciliationTable(): Promise<void> {
   const pool = getPool();
@@ -160,8 +181,9 @@ export type DetectedDivergence = {
  * que a linha ja dizia, e essa decisao e' a razao de a tabela existir:
  *
  * - linha nova            -> `pendente`
- * - ja estava `corrigido` -> **`persistente`**: foi consertado e voltou a
- *   divergir, o que e' um sinal categoricamente diferente de "atrasou de novo"
+ * - ja estava fechada     -> **`persistente`**: fechou (por conserto aqui ou
+ *   pela reconferencia) e voltou a divergir, o que e' um sinal categoricamente
+ *   diferente de "atrasou de novo"
  * - qualquer outro estado -> segue `pendente`
  *
  * `detected_at` nunca e' reescrito (e a primeira vez que o pedido apareceu);
@@ -197,17 +219,17 @@ export async function recordDetectedDivergences(items: DetectedDivergence[]): Pr
         ledger_cents_after  = NULL,
         corrected_at        = NULL,
         status = CASE
-          WHEN integration.shopify_reconciliation_divergences.status = 'corrigido'
+          WHEN integration.shopify_reconciliation_divergences.status IN ${SQL_STATUS_FECHADOS}
             THEN 'persistente'
           ELSE 'pendente'
         END,
         attempts = CASE
-          WHEN integration.shopify_reconciliation_divergences.status = 'corrigido'
+          WHEN integration.shopify_reconciliation_divergences.status IN ${SQL_STATUS_FECHADOS}
             THEN 0
           ELSE integration.shopify_reconciliation_divergences.attempts
         END,
         next_attempt_at = CASE
-          WHEN integration.shopify_reconciliation_divergences.status = 'corrigido'
+          WHEN integration.shopify_reconciliation_divergences.status IN ${SQL_STATUS_FECHADOS}
             THEN NULL
           ELSE integration.shopify_reconciliation_divergences.next_attempt_at
         END,
@@ -298,13 +320,68 @@ export async function markDivergenceAttemptFailed(
   );
 }
 
-/** Contagem por status, para o resumo da rodada e o painel. */
+export type ReconferenceClosure = {
+  externalOrderId: string;
+  /** Comparavel do ledger medido na reconferencia. */
+  ledgerCents: number;
+};
+
+/**
+ * Fecha, sem tocar a Shopify, as linhas que a reconferencia viu batendo.
+ *
+ * `attempts` NAO sobe: nenhuma chamada a Admin API foi gasta, e o orcamento
+ * existe para medir insistencia contra a Shopify, nao leituras do ledger.
+ * `corrected_at` fica como esta (nulo): esta rotina nao corrigiu nada, e datar
+ * isso como correcao faria o relatorio atribuir a ela um conserto alheio.
+ * `last_checked_at` vira a data do fechamento, ja que o status e' terminal.
+ *
+ * O `WHERE status = ANY(abertos)` protege contra uma corrida com a propria
+ * rodada: uma linha que fechou por outro caminho entre a leitura e este UPDATE
+ * nao e' reclassificada. Devolve quantas linhas fecharam de fato.
+ */
+export async function closeDivergencesByReconference(
+  closures: ReconferenceClosure[]
+): Promise<number> {
+  const pool = getPool();
+  if (!pool || closures.length === 0) return 0;
+
+  const result = await pool.query(
+    `
+      UPDATE integration.shopify_reconciliation_divergences AS d
+         SET status             = 'fechado_por_reconferencia',
+             ledger_cents_after = f.ledger_cents,
+             next_attempt_at    = NULL,
+             last_checked_at    = NOW()
+        FROM UNNEST($1::text[], $2::bigint[]) AS f(external_order_id, ledger_cents)
+       WHERE d.external_order_id = f.external_order_id
+         AND d.status = ANY($3::text[])
+    `,
+    [
+      closures.map((item) => item.externalOrderId),
+      closures.map((item) => item.ledgerCents),
+      STATUS_EM_ABERTO,
+    ]
+  );
+
+  return result.rowCount ?? 0;
+}
+
+/**
+ * Contagem por status, para o resumo da rodada e o painel.
+ *
+ * Os status abertos (`pendente`, `persistente`, `sem_correcao`) sao ESTADO: a
+ * reconferencia fecha a cada rodada o que deixou de divergir, entao o numero
+ * significa "aberto agora". Os fechados (`corrigido`,
+ * `fechado_por_reconferencia`) continuam acumulados, porque a tabela nao tem
+ * retencao — sao historico, nao placar.
+ */
 export async function countDivergencesByStatus(): Promise<Record<ReconciliationStatus, number>> {
   const zerado: Record<ReconciliationStatus, number> = {
     pendente: 0,
     corrigido: 0,
     persistente: 0,
     sem_correcao: 0,
+    fechado_por_reconferencia: 0,
   };
 
   const pool = getPool();
@@ -385,6 +462,39 @@ export async function listDivergences(
        LIMIT $2
     `,
     [options.status ?? null, limit]
+  );
+
+  return result.rows.map(mapDivergenceRow);
+}
+
+/**
+ * Todo o conjunto em aberto, para a reconferencia.
+ *
+ * Mais largo que `listRetryableDivergences` de proposito: ignora o recuo e o teto
+ * de tentativas. A reconferencia so le o ledger, que e' barato, e a linha que mais
+ * precisa dela e' justamente a que a fila nao traz mais: `sem_correcao` com o
+ * orcamento esgotado. Sem isto, um pedido que algum outro mecanismo consertou
+ * depois de a rotina desistir ficaria vermelho no painel para sempre.
+ *
+ * O `limit` e' salvaguarda, nao paginacao: em regime normal o conjunto aberto
+ * cabe em dezenas. Encostar nele ja e' anomalia, e quem chama registra isso em
+ * log em vez de fingir que reconferiu tudo.
+ */
+export async function listOpenDivergences(
+  options: { limit?: number } = {}
+): Promise<ReconciliationDivergenceRow[]> {
+  const pool = getPool();
+  if (!pool) return [];
+
+  const result = await pool.query<DivergenceDbRow>(
+    `
+      SELECT ${COLUNAS_DIVERGENCIA}
+        FROM integration.shopify_reconciliation_divergences
+       WHERE status = ANY($1::text[])
+       ORDER BY abs(delta_cents) DESC
+       LIMIT $2
+    `,
+    [STATUS_EM_ABERTO, options.limit ?? 1000]
   );
 
   return result.rows.map(mapDivergenceRow);

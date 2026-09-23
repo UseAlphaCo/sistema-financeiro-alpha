@@ -39,14 +39,17 @@ import { normalizeShopifyStoreDomain, stripWrappingQuotes } from "./shopify-orde
 import { resolveShopifyOrderById } from "./shopify-payment-resolution-job";
 import { findLedgerGatewayTotalsByOrderIds } from "./shopify-payment-resolution-repository";
 import {
+  closeDivergencesByReconference,
   countDivergencesByStatus,
   ensureShopifyReconciliationTable,
+  listOpenDivergences,
   listRetryableDivergences,
   markDivergenceAttemptFailed,
   markDivergenceOutcome,
   recordDetectedDivergences,
   type ReconciliationDivergenceRow,
   type ReconciliationStatus,
+  type ReconferenceClosure,
 } from "./shopify-reconciliation-repository";
 import {
   fetchTenderTransactions,
@@ -167,6 +170,13 @@ export type ReconciliationSummary = {
   /** Divergentes encontrados NA JANELA desta rodada. */
   detected: number;
   /**
+   * Linhas abertas que a reconferencia fechou sem chamar a Shopify.
+   *
+   * Outro mecanismo ja tinha resolvido; a rodada so constatou. Em dryRun, conta
+   * as que fecharia.
+   */
+  reconferred: number;
+  /**
    * Linhas elegiveis na fila, antes do teto.
    *
    * Pode ser maior que `detected`: a fila herda o que rodadas anteriores nao
@@ -187,7 +197,10 @@ export type ReconciliationSummary = {
   sample?: OrderDivergence[];
   driftCents: number;
   driftFormatted: string;
-  /** Contagem acumulada por status, para o painel. */
+  /**
+   * Contagem por status, para o painel. Os abertos sao estado atual (a
+   * reconferencia os poda a cada rodada); os fechados, historico acumulado.
+   */
   byStatus: Record<ReconciliationStatus, number>;
 };
 
@@ -256,7 +269,13 @@ export async function runShopifyReconciliation(
     );
   }
 
-  // Passo 2 — a fila. Ler da tabela em vez de corrigir direto a lista do passo 1
+  // Passo 2 — reconferencia. Antes de gastar qualquer chamada a Admin API, re-mede
+  // TODO o conjunto aberto contra o ledger atual e fecha o que deixou de divergir
+  // por outro caminho. So le banco; e' o que impede a fila de retentar pedido ja
+  // resolvido e o placar de crescer para sempre.
+  const reconferencia = await reconferirAbertos(janela.tenderPorPedido, options.dryRun === true);
+
+  // Passo 3 — a fila. Ler da tabela em vez de corrigir direto a lista do passo 1
   // e' o que torna a rotina auto-regulavel: o que acabou de ser detectado e o que
   // sobrou de rodadas passadas entram pelo MESMO caminho, disputam o MESMO teto e
   // saem ordenados pelo MESMO criterio (maior dinheiro primeiro). Antes, quem
@@ -265,7 +284,7 @@ export async function runShopifyReconciliation(
     ? { rows: [], eligible: 0 }
     : await listRetryableDivergences({ limit: maxFixes, maxAttempts: MAX_RETRY_ATTEMPTS });
 
-  // Passo 3 — trabalhar a fila dentro do orcamento da rodada.
+  // Passo 4 — trabalhar a fila dentro do orcamento da rodada.
   const resultado = await corrigir(storeDomain, accessToken, fila.rows, janela.tenderPorPedido);
 
   const summary: ReconciliationSummary = {
@@ -273,6 +292,7 @@ export async function runShopifyReconciliation(
     skippedImmatureDay: immature ? endDate : null,
     comparedOrders: janela.tenderPorPedido.size,
     detected: janela.divergences.length,
+    reconferred: reconferencia.closed,
     queued: fila.eligible,
     corrected: resultado.corrected,
     stillDiverging: resultado.stillDiverging,
@@ -347,6 +367,73 @@ async function varrerJanela(
     diaPorPedido,
     driftCents: divergences.reduce((soma, item) => soma + Math.abs(item.deltaCents), 0),
   };
+}
+
+/** Teto de linhas abertas lidas pela reconferencia numa rodada. Salvaguarda. */
+const MAX_RECONFERENCE_ROWS = 1000;
+
+/**
+ * Quais linhas abertas deixaram de divergir, dado o ledger de agora.
+ *
+ * Pura, para a regra ser verificavel sem banco. O tender usado e' o fresco da
+ * janela quando existe e o gravado na linha quando nao — o mesmo criterio de
+ * `corrigir`, porque linha que ja saiu de D-1..D-3 nao tem outra evidencia do
+ * que a Shopify recebeu.
+ *
+ * A comparacao e' a de `detectOrderDivergences`, com a MESMA tolerancia da
+ * deteccao. Um criterio mais frouxo aqui fecharia na reconferencia o que a
+ * varredura seguinte reabriria como `persistente`, e o pedido passaria a oscilar
+ * entre os dois estados sem nada ter mudado no ledger.
+ */
+export function findReconferredClosures(
+  abertas: ReadonlyArray<Pick<ReconciliationDivergenceRow, "externalOrderId" | "tenderCents">>,
+  tenderPorPedido: ReadonlyMap<string, number>,
+  ledgerPorPedido: ReadonlyMap<string, Map<string, number>>
+): ReconferenceClosure[] {
+  const tenderEfetivo = new Map(
+    abertas.map((linha) => [
+      linha.externalOrderId,
+      tenderPorPedido.get(linha.externalOrderId) ?? linha.tenderCents,
+    ])
+  );
+
+  // Tolerancia -1 pelo mesmo motivo de `corrigir`: devolve a medicao de todo
+  // pedido, inclusive o que fecha em zero, para gravar o ledger comparavel de
+  // verdade. O veredito vem logo abaixo, com a tolerancia real.
+  return detectOrderDivergences(tenderEfetivo, ledgerPorPedido, -1)
+    .filter((medida) => Math.abs(medida.deltaCents) <= TOLERANCE_CENTS)
+    .map((medida) => ({ externalOrderId: medida.orderId, ledgerCents: medida.ledgerCents }));
+}
+
+/**
+ * Passo de reconferencia: le o aberto, re-mede e fecha o que ja bate.
+ *
+ * Roda DEPOIS de gravar a deteccao da janela, e isso e' deliberado: um pedido que
+ * a varredura acabou de ver divergindo foi medido com o mesmo tender e o mesmo
+ * ledger, entao a reconferencia o mantem aberto. Quem fecha aqui e' quem a
+ * varredura NAO viu divergir — dentro da janela porque passou a bater, fora dela
+ * porque ninguem mais olhava.
+ */
+async function reconferirAbertos(
+  tenderPorPedido: ReadonlyMap<string, number>,
+  dryRun: boolean
+): Promise<{ closed: number }> {
+  const abertas = await listOpenDivergences({ limit: MAX_RECONFERENCE_ROWS });
+  if (abertas.length === 0) return { closed: 0 };
+
+  if (abertas.length === MAX_RECONFERENCE_ROWS) {
+    logError("shopify_reconciliation_reconference_truncated", {
+      limit: MAX_RECONFERENCE_ROWS,
+    });
+  }
+
+  const ledger = await findLedgerGatewayTotalsByOrderIds(
+    abertas.map((linha) => linha.externalOrderId)
+  );
+  const fechamentos = findReconferredClosures(abertas, tenderPorPedido, ledger);
+
+  if (dryRun) return { closed: fechamentos.length };
+  return { closed: await closeDivergencesByReconference(fechamentos) };
 }
 
 /**
