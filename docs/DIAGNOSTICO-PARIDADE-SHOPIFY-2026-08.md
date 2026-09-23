@@ -483,6 +483,24 @@ o ledger medido bate ao centavo com o `ledger_cents_after` gravado no conserto. 
 (chamada real) rodou em 75 s: 2.142 pedidos comparados, 5 detectados e 5 corrigidos
 (R$ 2.174,38), com `reconferred: 0`, já que não havia nada aberto antes da rodada.
 
+### Fila de tratamento na tela (23/09/2026)
+
+A lista por pedido, que só existia no CLI, passou a aparecer em `/integracoes` para admin e
+financeiro, com duas ações:
+
+- **Reprocessar:** devolve o pedido para a rodada das 10:50 BRT. Não chama a Shopify na hora. Numa
+  linha que já esgotou as tentativas, devolve **uma** tentativa, e não um orçamento novo: só zerar
+  `next_attempt_at` não a recolocaria na fila, que filtra `attempts < max`.
+- **Aceitar:** fecha como `aceito`, por decisão humana, gravando quem (`accepted_by`), quando e,
+  opcionalmente, por quê. Redetecção com o mesmo delta não desfaz o aceite, porque a janela de três
+  dias redetectaria a mesma divergência. Delta diferente reabre como `persistente`.
+
+Rota em `/api/financial/integrations/shopify/divergences` (GET a fila; POST em `/<pedido>` com
+`{ action }`), com `withApiSecurity` e roles admin e financeiro, fora de `/api/internal`, que é
+credencial de máquina. A tela e o CLI leem as mesmas funções (`listOpenDivergences` e
+`countDivergencesByStatus`), então contam a mesma coisa. O placar do bloco de reconciliação no
+painel continua sendo o do fim da última rodada, e agora diz isso.
+
 ### Medições de 20/09/2026
 
 | Medição | Resultado |

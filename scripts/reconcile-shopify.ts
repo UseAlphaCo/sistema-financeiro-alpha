@@ -49,9 +49,10 @@ const STATUS_VALIDOS: ReconciliationStatus[] = [
   "persistente",
   "sem_correcao",
   "fechado_por_reconferencia",
+  "aceito",
 ];
 
-const STATUS_FECHADOS: ReconciliationStatus[] = ["corrigido", "fechado_por_reconferencia"];
+const STATUS_FECHADOS: ReconciliationStatus[] = ["corrigido", "fechado_por_reconferencia", "aceito"];
 
 type Args = {
   rodar: boolean;

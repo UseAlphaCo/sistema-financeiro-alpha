@@ -730,6 +730,10 @@ function ReconciliacaoBloco({
       <p className="text-[11px] font-medium text-gray-700">
         Reconciliação por pedido (D-1 a D-3)
       </p>
+      <p className="text-[11px] text-gray-500">
+        Placar ao fim da última rodada. O estado de agora, com as ações, fica em &quot;Divergências com
+        a Shopify&quot;.
+      </p>
       <dl className="mt-1 grid grid-cols-2 gap-3 text-[11px] sm:grid-cols-5">
         <div>
           <dt className="text-gray-500">Detectadas</dt>
@@ -783,8 +787,8 @@ function ReconciliacaoBloco({
       {(semCorrecao > 0 || persistentes > 0) && (
         <p className="mt-2 text-[11px] text-red-700">
           Nenhum mecanismo automático fecha esses pedidos: a re-resolução já rodou contra a Shopify
-          e o ledger continuou discordando. Listagem por pedido em{" "}
-          <code className="rounded bg-red-50 px-1">npm run reconcile:shopify -- --listar</code>.
+          e o ledger continuou discordando. Trate pedido a pedido em &quot;Divergências com a
+          Shopify&quot;, logo abaixo.
         </p>
       )}
 

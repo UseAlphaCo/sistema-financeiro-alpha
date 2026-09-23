@@ -1,6 +1,7 @@
 import { auth } from "@/core/auth/auth";
 
 import IntegrationsHealthPanel from "../_components/IntegrationsHealthPanel";
+import DivergenciasFila from "./divergencias-fila";
 import IntegracoesClient from "./integracoes-client";
 
 /**
@@ -16,11 +17,16 @@ import IntegracoesClient from "./integracoes-client";
  */
 export default async function IntegracoesPage() {
   const session = await auth();
-  const isAdmin = session?.user?.role === "admin";
+  const role = session?.user?.role;
+  const isAdmin = role === "admin";
+  // A fila de divergencias e' trabalho do financeiro tambem, ao contrario do
+  // painel de saude. A rota que a alimenta aplica a mesma regra de role.
+  const podeTratarDivergencias = role === "admin" || role === "financeiro";
 
   return (
     <div className="space-y-6">
       {isAdmin && <IntegrationsHealthPanel />}
+      {podeTratarDivergencias && <DivergenciasFila />}
       <IntegracoesClient />
     </div>
   );

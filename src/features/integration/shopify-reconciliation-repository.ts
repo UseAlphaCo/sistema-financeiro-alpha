@@ -72,7 +72,13 @@ export type ReconciliationStatus =
    * historico que `occurrences`/`detected_at` preservam deixaria de dizer QUEM
    * resolveu.
    */
-  | "fechado_por_reconferencia";
+  | "fechado_por_reconferencia"
+  /**
+   * Fechamento humano deliberado: alguem olhou e decidiu que a divergencia nao
+   * sera corrigida (ex.: diferenca explicada fora do sistema). Guarda quem, quando
+   * e por que em `accepted_*`. Unico status que nenhum automatismo produz.
+   */
+  | "aceito";
 
 export type ReconciliationDivergenceRow = {
   externalOrderId: string;
@@ -104,28 +110,53 @@ export type ReconciliationDivergenceRow = {
    */
   nextAttemptAt: string | null;
   correctedAt: string | null;
+  /** Quem aceitou (e-mail da sessao). Preenchido so pelo aceite humano. */
+  acceptedBy: string | null;
+  acceptedAt: string | null;
+  acceptNote: string | null;
 };
 
 /**
  * Status que significam "ainda aberto" e, portanto, elegiveis a retentativa.
  *
- * Lista explicita, e nao `status <> 'corrigido'`, de proposito: S3 e S5 vao
- * acrescentar estados de FECHAMENTO (reconferido, aceito por gente). Com a
- * negacao, cada estado novo entraria na fila por omissao e o sistema voltaria a
- * bater na Shopify por pedido que alguem ja deu por encerrado.
+ * Lista explicita, e nao `status <> 'corrigido'`, de proposito: cada estado de
+ * FECHAMENTO novo (`fechado_por_reconferencia`, `aceito`) entraria na fila por
+ * omissao com a negacao, e o sistema voltaria a bater na Shopify por pedido que
+ * alguem ja deu por encerrado.
  */
-const STATUS_EM_ABERTO: ReconciliationStatus[] = ["pendente", "persistente", "sem_correcao"];
+export const STATUS_EM_ABERTO: readonly ReconciliationStatus[] = [
+  "pendente",
+  "persistente",
+  "sem_correcao",
+];
 
 /**
  * Status de quem ja chegou a fechar. Redeteccao de qualquer um deles e' reabertura.
  *
- * Um SQL so para os dois: a regra de reabertura (`persistente`, orcamento zerado)
+ * Um SQL so para todos: a regra de reabertura (`persistente`, orcamento zerado)
  * nao pode depender de quem fechou. Um pedido fechado pela reconferencia que volta
  * a divergir e' tao "fechou e reabriu" quanto um consertado aqui — tratar como
  * redeteccao comum o devolveria a `pendente` com as tentativas velhas, e a unica
  * pista de defeito estrutural sumiria.
+ *
+ * `aceito` esta na lista, mas com uma guarda antes dela (SQL_ACEITE_MANTIDO): a
+ * divergencia aceita continua divergindo por definicao, e a varredura D-1..D-3 a
+ * redetectaria por ate tres dias. So reabre se o valor mudar.
  */
-const SQL_STATUS_FECHADOS = `('corrigido', 'fechado_por_reconferencia')`;
+const SQL_STATUS_FECHADOS = `('corrigido', 'fechado_por_reconferencia', 'aceito')`;
+
+/**
+ * Redeteccao que NAO desfaz um aceite: mesmo pedido, mesmo delta ao centavo.
+ *
+ * Quem aceitou decidiu sobre aquele valor. Um delta diferente e' evidencia nova
+ * (outra captura, outro estorno) que ninguem avaliou, e reabre como
+ * `persistente`. `accepted_*` fica gravado mesmo assim, como historico de que
+ * aquele pedido ja teve um aceite.
+ */
+const SQL_ACEITE_MANTIDO = `(
+  integration.shopify_reconciliation_divergences.status = 'aceito'
+  AND integration.shopify_reconciliation_divergences.delta_cents = EXCLUDED.delta_cents
+)`;
 
 export async function ensureShopifyReconciliationTable(): Promise<void> {
   const pool = getPool();
@@ -147,7 +178,10 @@ export async function ensureShopifyReconciliationTable(): Promise<void> {
       detected_at         timestamptz NOT NULL DEFAULT NOW(),
       last_checked_at     timestamptz NOT NULL DEFAULT NOW(),
       next_attempt_at     timestamptz,
-      corrected_at        timestamptz
+      corrected_at        timestamptz,
+      accepted_by         text,
+      accepted_at         timestamptz,
+      accept_note         text
     )
   `);
 
@@ -157,7 +191,10 @@ export async function ensureShopifyReconciliationTable(): Promise<void> {
   await pool.query(`
     ALTER TABLE integration.shopify_reconciliation_divergences
       ADD COLUMN IF NOT EXISTS attempts        integer NOT NULL DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz
+      ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz,
+      ADD COLUMN IF NOT EXISTS accepted_by     text,
+      ADD COLUMN IF NOT EXISTS accepted_at     timestamptz,
+      ADD COLUMN IF NOT EXISTS accept_note     text
   `);
 
   await pool.query(`
@@ -181,9 +218,11 @@ export type DetectedDivergence = {
  * que a linha ja dizia, e essa decisao e' a razao de a tabela existir:
  *
  * - linha nova            -> `pendente`
- * - ja estava fechada     -> **`persistente`**: fechou (por conserto aqui ou
- *   pela reconferencia) e voltou a divergir, o que e' um sinal categoricamente
- *   diferente de "atrasou de novo"
+ * - `aceito`, mesmo delta -> segue `aceito`: e' a divergencia que alguem ja
+ *   avaliou, redetectada pela janela de tres dias
+ * - ja estava fechada     -> **`persistente`**: fechou (por conserto aqui, pela
+ *   reconferencia ou por aceite com outro valor) e voltou a divergir, o que e'
+ *   um sinal categoricamente diferente de "atrasou de novo"
  * - qualquer outro estado -> segue `pendente`
  *
  * `detected_at` nunca e' reescrito (e a primeira vez que o pedido apareceu);
@@ -219,16 +258,20 @@ export async function recordDetectedDivergences(items: DetectedDivergence[]): Pr
         ledger_cents_after  = NULL,
         corrected_at        = NULL,
         status = CASE
+          WHEN ${SQL_ACEITE_MANTIDO} THEN 'aceito'
           WHEN integration.shopify_reconciliation_divergences.status IN ${SQL_STATUS_FECHADOS}
             THEN 'persistente'
           ELSE 'pendente'
         END,
         attempts = CASE
+          WHEN ${SQL_ACEITE_MANTIDO}
+            THEN integration.shopify_reconciliation_divergences.attempts
           WHEN integration.shopify_reconciliation_divergences.status IN ${SQL_STATUS_FECHADOS}
             THEN 0
           ELSE integration.shopify_reconciliation_divergences.attempts
         END,
         next_attempt_at = CASE
+          WHEN ${SQL_ACEITE_MANTIDO} THEN NULL
           WHEN integration.shopify_reconciliation_divergences.status IN ${SQL_STATUS_FECHADOS}
             THEN NULL
           ELSE integration.shopify_reconciliation_divergences.next_attempt_at
@@ -372,7 +415,7 @@ export async function closeDivergencesByReconference(
  * Os status abertos (`pendente`, `persistente`, `sem_correcao`) sao ESTADO: a
  * reconferencia fecha a cada rodada o que deixou de divergir, entao o numero
  * significa "aberto agora". Os fechados (`corrigido`,
- * `fechado_por_reconferencia`) continuam acumulados, porque a tabela nao tem
+ * `fechado_por_reconferencia`, `aceito`) continuam acumulados, porque a tabela nao tem
  * retencao — sao historico, nao placar.
  */
 export async function countDivergencesByStatus(): Promise<Record<ReconciliationStatus, number>> {
@@ -382,6 +425,7 @@ export async function countDivergencesByStatus(): Promise<Record<ReconciliationS
     persistente: 0,
     sem_correcao: 0,
     fechado_por_reconferencia: 0,
+    aceito: 0,
   };
 
   const pool = getPool();
@@ -416,12 +460,16 @@ type DivergenceDbRow = {
   last_checked_at: Date;
   next_attempt_at: Date | null;
   corrected_at: Date | null;
+  accepted_by: string | null;
+  accepted_at: Date | null;
+  accept_note: string | null;
 };
 
 const COLUNAS_DIVERGENCIA = `
   external_order_id, day, tender_cents, ledger_cents_before, delta_cents,
   ledger_cents_after, status, occurrences, attempts, detected_at,
-  last_checked_at, next_attempt_at, corrected_at
+  last_checked_at, next_attempt_at, corrected_at, accepted_by, accepted_at,
+  accept_note
 `;
 
 function mapDivergenceRow(row: DivergenceDbRow): ReconciliationDivergenceRow {
@@ -442,6 +490,9 @@ function mapDivergenceRow(row: DivergenceDbRow): ReconciliationDivergenceRow {
     lastCheckedAt: row.last_checked_at.toISOString(),
     nextAttemptAt: row.next_attempt_at?.toISOString() ?? null,
     correctedAt: row.corrected_at?.toISOString() ?? null,
+    acceptedBy: row.accepted_by,
+    acceptedAt: row.accepted_at?.toISOString() ?? null,
+    acceptNote: row.accept_note,
   };
 }
 
@@ -557,6 +608,95 @@ export async function listRetryableDivergences(options: {
     // `count(*) OVER ()` e' avaliado antes do LIMIT, entao conta a fila inteira.
     eligible: result.rows.length === 0 ? 0 : Number(result.rows[0].elegiveis),
   };
+}
+
+/**
+ * Recoloca uma divergencia aberta na fila da proxima rodada.
+ *
+ * Zerar `next_attempt_at` so nao basta para quem ja esgotou o orcamento: a fila
+ * filtra `attempts < maxAttempts`, e a linha continuaria de fora. Por isso
+ * `attempts` desce para no maximo `maxAttempts - 1` — exatamente UMA tentativa a
+ * mais, e nao um orcamento novo. Se ela falhar, `decideRetryOutcome` devolve a
+ * linha a `sem_correcao` sozinho. `sem_correcao` volta a `pendente` porque agora
+ * ha um mecanismo que vai busca-la, e o vermelho do painel e' reservado para o
+ * que nenhum mecanismo alcanca.
+ *
+ * Nao chama a Shopify: a tentativa acontece na rodada diaria, com o teto e o
+ * portao de ritmo de sempre. Devolve a linha atualizada, ou `null` se o pedido
+ * nao existe ou nao esta aberto.
+ */
+export async function requeueDivergence(
+  externalOrderId: string,
+  maxAttempts: number
+): Promise<ReconciliationDivergenceRow | null> {
+  const pool = getPool();
+  if (!pool) return null;
+
+  const result = await pool.query<DivergenceDbRow>(
+    `
+      UPDATE integration.shopify_reconciliation_divergences
+         SET next_attempt_at = NULL,
+             attempts        = LEAST(attempts, $2 - 1),
+             status          = CASE WHEN status = 'sem_correcao' THEN 'pendente' ELSE status END
+       WHERE external_order_id = $1
+         AND status = ANY($3::text[])
+      RETURNING ${COLUNAS_DIVERGENCIA}
+    `,
+    [externalOrderId, maxAttempts, STATUS_EM_ABERTO]
+  );
+
+  return result.rows[0] ? mapDivergenceRow(result.rows[0]) : null;
+}
+
+/**
+ * Fecha uma divergencia aberta por decisao humana.
+ *
+ * So linha aberta pode ser aceita: aceitar o que ja fechou reescreveria o
+ * historico de quem fechou. `next_attempt_at` zera porque a linha sai da fila.
+ * `attempts` e `corrected_at` ficam como estao — ninguem tentou nem corrigiu
+ * nada neste gesto. Devolve a linha atualizada, ou `null` se o pedido nao existe
+ * ou nao esta aberto.
+ */
+export async function acceptDivergence(
+  externalOrderId: string,
+  options: { acceptedBy: string; note: string | null }
+): Promise<ReconciliationDivergenceRow | null> {
+  const pool = getPool();
+  if (!pool) return null;
+
+  const result = await pool.query<DivergenceDbRow>(
+    `
+      UPDATE integration.shopify_reconciliation_divergences
+         SET status          = 'aceito',
+             accepted_by     = $2,
+             accepted_at     = NOW(),
+             accept_note     = $3,
+             next_attempt_at = NULL
+       WHERE external_order_id = $1
+         AND status = ANY($4::text[])
+      RETURNING ${COLUNAS_DIVERGENCIA}
+    `,
+    [externalOrderId, options.acceptedBy, options.note, STATUS_EM_ABERTO]
+  );
+
+  return result.rows[0] ? mapDivergenceRow(result.rows[0]) : null;
+}
+
+/** Uma linha por id, qualquer status. Para distinguir "nao existe" de "ja fechou". */
+export async function getDivergence(
+  externalOrderId: string
+): Promise<ReconciliationDivergenceRow | null> {
+  const pool = getPool();
+  if (!pool) return null;
+
+  const result = await pool.query<DivergenceDbRow>(
+    `SELECT ${COLUNAS_DIVERGENCIA}
+       FROM integration.shopify_reconciliation_divergences
+      WHERE external_order_id = $1`,
+    [externalOrderId]
+  );
+
+  return result.rows[0] ? mapDivergenceRow(result.rows[0]) : null;
 }
 
 function formatDateOnly(value: Date): string {

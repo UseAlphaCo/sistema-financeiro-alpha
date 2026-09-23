@@ -6,16 +6,19 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  acceptDivergence,
   closeDivergencesByReconference,
   closeShopifyReconciliationPool,
   countDivergencesByStatus,
   ensureShopifyReconciliationTable,
+  getDivergence,
   listDivergences,
   listOpenDivergences,
   listRetryableDivergences,
   markDivergenceAttemptFailed,
   markDivergenceOutcome,
   recordDetectedDivergences,
+  requeueDivergence,
 } from "./shopify-reconciliation-repository";
 
 const conn = process.env.CORE_DB_URL ?? process.env.DATABASE_URL;
@@ -454,6 +457,113 @@ describe("shopify-reconciliation-repository (integration)", () => {
 
     it("lista vazia nao escreve nada", async () => {
       await expect(closeDivergencesByReconference([])).resolves.toBe(0);
+    });
+  });
+
+  /** As duas acoes do operador na tela. */
+  describe("acoes do operador", () => {
+    const DELTA = 700_000_000;
+    const MAX = 5;
+
+    function detectar(id: string, deltaCents = DELTA) {
+      return recordDetectedDivergences([
+        { externalOrderId: id, day: "2026-09-07", tenderCents: deltaCents, ledgerCents: 0, deltaCents },
+      ]);
+    }
+
+    it("reprocessar tira do recuo sem mexer nas tentativas de quem ainda tem orcamento", async () => {
+      const id = `${PREFIXO}op-recuado`;
+      await detectar(id);
+      await markDivergenceOutcome(id, "pendente", 0, new Date(Date.now() + 4 * 86_400_000));
+
+      const linha = await requeueDivergence(id, MAX);
+
+      expect(linha?.nextAttemptAt).toBeNull();
+      expect(linha?.attempts).toBe(1);
+      const fila = await listRetryableDivergences({ limit: 200, maxAttempts: MAX });
+      expect(fila.rows.map((item) => item.externalOrderId)).toContain(id);
+    });
+
+    it("reprocessar esgotada devolve UMA tentativa e tira do vermelho", async () => {
+      // So zerar next_attempt_at nao recolocaria na fila: ela filtra attempts < max.
+      const id = `${PREFIXO}op-esgotada`;
+      await detectar(id);
+      for (let i = 0; i < MAX; i += 1) await markDivergenceOutcome(id, "sem_correcao", 0);
+
+      const linha = await requeueDivergence(id, MAX);
+
+      expect(linha?.attempts).toBe(MAX - 1);
+      expect(linha?.status).toBe("pendente");
+      const fila = await listRetryableDivergences({ limit: 200, maxAttempts: MAX });
+      expect(fila.rows.map((item) => item.externalOrderId)).toContain(id);
+    });
+
+    it("reprocessar mantem persistente, que e' pista de causa", async () => {
+      const id = `${PREFIXO}op-persistente`;
+      await detectar(id);
+      await markDivergenceOutcome(id, "corrigido", DELTA);
+      await detectar(id);
+
+      expect((await requeueDivergence(id, MAX))?.status).toBe("persistente");
+    });
+
+    it("aceitar registra quem, quando e por que, e tira da fila", async () => {
+      const id = `${PREFIXO}op-aceita`;
+      await detectar(id);
+
+      const linha = await acceptDivergence(id, {
+        acceptedBy: "financeiro@exemplo.com",
+        note: "estorno feito direto no gateway",
+      });
+
+      expect(linha?.status).toBe("aceito");
+      expect(linha?.acceptedBy).toBe("financeiro@exemplo.com");
+      expect(linha?.acceptedAt).not.toBeNull();
+      expect(linha?.acceptNote).toBe("estorno feito direto no gateway");
+      const abertas = await listOpenDivergences();
+      expect(abertas.map((item) => item.externalOrderId)).not.toContain(id);
+    });
+
+    it("nenhuma acao alcanca linha ja fechada", async () => {
+      const id = `${PREFIXO}op-fechada`;
+      await detectar(id);
+      await markDivergenceOutcome(id, "corrigido", DELTA);
+
+      expect(await requeueDivergence(id, MAX)).toBeNull();
+      expect(await acceptDivergence(id, { acceptedBy: "x@exemplo.com", note: null })).toBeNull();
+      expect((await getDivergence(id))?.status).toBe("corrigido");
+    });
+
+    it("redeteccao com o mesmo delta nao desfaz o aceite", async () => {
+      // A janela D-1..D-3 redetecta a mesma divergencia por ate tres dias. Sem
+      // esta regra, o aceite duraria ate a rodada seguinte.
+      const id = `${PREFIXO}op-aceite-mantido`;
+      await detectar(id);
+      await acceptDivergence(id, { acceptedBy: "x@exemplo.com", note: null });
+
+      await detectar(id);
+
+      const row = await ler(id);
+      expect(row.status).toBe("aceito");
+      expect(row.occurrences).toBe(2);
+    });
+
+    it("redeteccao com outro delta reabre como persistente", async () => {
+      const id = `${PREFIXO}op-aceite-reaberto`;
+      await detectar(id);
+      await acceptDivergence(id, { acceptedBy: "x@exemplo.com", note: null });
+
+      await detectar(id, DELTA + 1500);
+
+      const row = await ler(id);
+      expect(row.status).toBe("persistente");
+      expect(row.attempts).toBe(0);
+      // O registro do aceite anterior fica, como historico.
+      expect(row.accepted_by).toBe("x@exemplo.com");
+    });
+
+    it("a contagem expoe aceito", async () => {
+      expect((await countDivergencesByStatus()).aceito).toBeGreaterThanOrEqual(1);
     });
   });
 });

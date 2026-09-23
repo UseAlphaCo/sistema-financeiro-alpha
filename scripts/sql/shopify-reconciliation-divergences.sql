@@ -47,12 +47,18 @@
 -- transicao de saida para esses casos: a linha ficava 'pendente' para sempre e o
 -- "Em aberto" crescia monotonicamente. Hoje os status abertos (pendente,
 -- persistente, sem_correcao) significam "aberto agora"; os fechados (corrigido,
--- fechado_por_reconferencia) sao historico e acumulam.
+-- fechado_por_reconferencia, aceito) sao historico e acumulam.
 --
 -- 'fechado_por_reconferencia' e distinto de 'corrigido' de proposito: quem
 -- fechou foi outro mecanismo. Fechar assim nao gasta tentativa (attempts nao
 -- sobe) nem data correcao (corrected_at fica nulo). Se o pedido voltar a
 -- divergir, reabre como 'persistente', igual a um corrigido.
+--
+-- 'aceito' (desde 23/09/2026) e o fechamento humano, pela fila de tratamento em
+-- /integracoes: alguem decidiu que a divergencia nao sera corrigida. Guarda quem,
+-- quando e por que. Redeteccao com o MESMO delta nao desfaz o aceite -- a janela
+-- D-1..D-3 redetectaria a mesma divergencia por ate tres dias. Delta diferente e
+-- evidencia nova e reabre como 'persistente'.
 --
 -- Por que fora do Prisma: mesmo motivo de shopify-order-payment-resolution.sql,
 -- financial-orders.sql e job-runs.sql -- a tabela vive no schema `integration`,
@@ -79,7 +85,7 @@ CREATE TABLE IF NOT EXISTS integration.shopify_reconciliation_divergences (
   -- Comparavel do ledger depois da re-resolucao. NULL enquanto nao corrigido.
   ledger_cents_after  bigint,
   -- Abertos: pendente | persistente | sem_correcao
-  -- Fechados: corrigido | fechado_por_reconferencia
+  -- Fechados: corrigido | fechado_por_reconferencia | aceito
   status              text        NOT NULL,
   -- Quantas vezes este pedido foi detectado como divergente.
   occurrences         integer     NOT NULL DEFAULT 1,
@@ -90,7 +96,12 @@ CREATE TABLE IF NOT EXISTS integration.shopify_reconciliation_divergences (
   last_checked_at     timestamptz NOT NULL DEFAULT NOW(),
   -- Quando a linha volta a ser elegivel para tentativa. NULL = elegivel agora.
   next_attempt_at     timestamptz,
-  corrected_at        timestamptz
+  corrected_at        timestamptz,
+  -- Aceite humano (tela de /integracoes): quem, quando e por que. Ficam gravados
+  -- mesmo se a divergencia reabrir depois, como historico.
+  accepted_by         text,
+  accepted_at         timestamptz,
+  accept_note         text
 );
 
 -- O painel e o CLI leem "o que esta aberto, mais recente primeiro".
